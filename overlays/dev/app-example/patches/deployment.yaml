@@ -1,13 +1,13 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: app-example
+  name: hello-world-api
 spec:
   replicas: 1
   template:
     spec:
       containers:
-        - name: app
+        - name: hello-world-api
           resources:
             requests:
               cpu: 50m
