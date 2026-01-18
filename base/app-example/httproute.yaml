@@ -16,5 +16,5 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: hello-world-api
+        - name: dev-hello-world-api
           port: 80
