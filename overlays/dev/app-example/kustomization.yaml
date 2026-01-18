@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: app-example-dev
+
+namespace: app-example-dev
+
+namePrefix: dev-
+nameSuffix: ""
+
+labels:
+  - pairs:
+      environment: dev
+      app.kubernetes.io/instance: app-example-dev
+    includeSelectors: true
+
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "0"
+
+resources:
+  - ../../../base/app-example
+
+patches:
+  - path: patches/deployment.yaml
+  - path: patches/configmap.yaml
+  - path: patches/namespace.yaml
+
+images:
+  - name: hello-world-api
+    newTag: latest

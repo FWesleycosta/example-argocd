@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-example-config
+  labels:
+    app.kubernetes.io/name: app-example
+data:
+  APP_NAME: "app-example"
+  LOG_LEVEL: "info"
+  TZ: "America/Sao_Paulo"

@@ -1,0 +1,20 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hello-world-api
+  labels:
+    app: hello-world-api
+spec:
+  parentRefs:
+    - name: main-gateway
+      namespace: nginx-gateway
+  hostnames:
+    - "hello-world.local"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: hello-world-api
+          port: 80
