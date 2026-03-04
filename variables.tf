@@ -1,102 +1,105 @@
-################################################################################
-# Required Variables
-################################################################################
-
-variable "name" {
-  description = "Nome da State Machine"
+variable "pipe_name" {
+  description = "Nome do EventBridge Pipe."
   type        = string
-
-  validation {
-    condition     = length(var.name) > 0 && length(var.name) <= 80
-    error_message = "O nome deve ter entre 1 e 80 caracteres."
-  }
 }
 
-variable "definition" {
-  description = "Definição da State Machine em JSON (Amazon States Language)"
+variable "role_arn" {
+  description = "ARN da IAM Role que o Pipe vai assumir para acessar source e target."
   type        = string
-
-  validation {
-    condition     = can(jsondecode(var.definition))
-    error_message = "A definição deve ser um JSON válido."
-  }
 }
 
-################################################################################
-# Optional Variables
-################################################################################
-
-variable "type" {
-  description = "Tipo da State Machine: STANDARD ou EXPRESS"
+variable "desired_state" {
+  description = "Estado desejado do Pipe. RUNNING ou STOPPED."
   type        = string
-  default     = "STANDARD"
+  default     = "RUNNING"
 
   validation {
-    condition     = contains(["STANDARD", "EXPRESS"], var.type)
-    error_message = "O tipo deve ser STANDARD ou EXPRESS."
+    condition     = contains(["RUNNING", "STOPPED"], var.desired_state)
+    error_message = "desired_state deve ser RUNNING ou STOPPED."
   }
 }
 
-variable "tags" {
-  description = "Tags a serem aplicadas em todos os recursos"
-  type        = map(string)
-  default     = {}
+
+variable "source_arn" {
+  description = "ARN do recurso de origem (SQS, DynamoDB Stream, Kinesis Stream)."
+  type        = string
 }
 
-variable "additional_policy_arns" {
-  description = "Lista de ARNs de políticas IAM adicionais para anexar à role do Step Functions"
-  type        = list(string)
-  default     = []
-}
-
-################################################################################
-# Logging
-################################################################################
-
-variable "create_log_group" {
-  description = "Se deve criar um CloudWatch Log Group para a State Machine"
-  type        = bool
-  default     = false
-}
-
-variable "log_retention_in_days" {
-  description = "Dias de retenção dos logs no CloudWatch"
-  type        = number
-  default     = 30
-
-  validation {
-    condition     = contains([1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.log_retention_in_days)
-    error_message = "O valor de retenção deve ser um dos valores aceitos pelo CloudWatch."
-  }
-}
-
-variable "logging_configuration" {
-  description = "Configuração de logging da State Machine"
+variable "source_parameters" {
+  description = <<-EOT
+    Parâmetros do source. Preencha apenas o bloco correspondente ao tipo de source.
+    - sqs:      batch_size, maximum_batching_window_in_seconds
+    - dynamodb: starting_position (TRIM_HORIZON | LATEST), batch_size
+    - kinesis:  starting_position (TRIM_HORIZON | LATEST | AT_TIMESTAMP), batch_size
+  EOT
   type = object({
-    log_group_arn          = string
-    include_execution_data = optional(bool, true)
-    level                  = optional(string, "ERROR")
+    sqs = optional(object({
+      batch_size                         = optional(number, 10)
+      maximum_batching_window_in_seconds = optional(number, 0)
+    }))
+    dynamodb = optional(object({
+      starting_position = string
+      batch_size        = optional(number, 10)
+    }))
+    kinesis = optional(object({
+      starting_position = string
+      batch_size        = optional(number, 10)
+    }))
   })
-  default = null
-
-  validation {
-    condition     = var.logging_configuration == null || contains(["ALL", "ERROR", "FATAL", "OFF"], try(var.logging_configuration.level, "ERROR"))
-    error_message = "O nível de log deve ser ALL, ERROR, FATAL ou OFF."
-  }
+  default = {}
 }
 
-variable "kms_key_id" {
-  description = "ARN da chave KMS para encriptar os logs"
+variable "target_arn" {
+  description = "ARN do recurso de destino (Step Functions, Lambda, SQS, EventBus)."
+  type        = string
+}
+
+variable "target_parameters" {
+  description = <<-EOT
+    Parâmetros do target. Preencha apenas o bloco correspondente ao tipo de target.
+    - sfn:      invocation_type (FIRE_AND_FORGET | REQUEST_RESPONSE)
+    - lambda:   invocation_type (FIRE_AND_FORGET | REQUEST_RESPONSE)
+    - sqs:      message_group_id (obrigatório para FIFO)
+    - eventbus: detail_type, source
+  EOT
+  type = object({
+    sfn = optional(object({
+      invocation_type = optional(string, "FIRE_AND_FORGET")
+    }))
+    lambda = optional(object({
+      invocation_type = optional(string, "FIRE_AND_FORGET")
+    }))
+    sqs = optional(object({
+      message_group_id = optional(string)
+    }))
+    eventbus = optional(object({
+      detail_type = string
+      source      = string
+    }))
+  })
+  default = {}
+}
+
+
+variable "log_group_arn" {
+  description = "ARN do CloudWatch Log Group para logs do Pipe. Null desativa os logs."
   type        = string
   default     = null
 }
 
-################################################################################
-# Tracing
-################################################################################
+variable "log_level" {
+  description = "Nível de log. ERROR, INFO ou TRACE."
+  type        = string
+  default     = "ERROR"
 
-variable "tracing_enabled" {
-  description = "Habilitar X-Ray tracing na State Machine"
-  type        = bool
-  default     = false
+  validation {
+    condition     = contains(["ERROR", "INFO", "TRACE"], var.log_level)
+    error_message = "log_level deve ser ERROR, INFO ou TRACE."
+  }
+}
+
+variable "tags" {
+  description = "Tags aplicadas a todos os recursos."
+  type        = map(string)
+  default     = {}
 }
