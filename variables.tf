@@ -3,11 +3,6 @@ variable "pipe_name" {
   type        = string
 }
 
-variable "role_arn" {
-  description = "ARN da IAM Role que o Pipe vai assumir para acessar source e target."
-  type        = string
-}
-
 variable "desired_state" {
   description = "Estado desejado do Pipe. RUNNING ou STOPPED."
   type        = string
