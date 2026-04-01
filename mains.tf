@@ -1,44 +1,21 @@
-variable "lifecycle_rules" {
-  description = "List of lifecycle rules for the S3 bucket"
+variable "ssm_parameters" {
+  description = "Lista de parâmetros SSM a serem criados (vazio = não cria nenhum)"
   type = list(object({
-    id                           = string
-    enabled                      = optional(bool, true)
-    prefix                       = optional(string, "")
-    expiration_days              = optional(number, null)
-    noncurrent_version_expiration_days = optional(number, null)
+    name        = string
+    description = string
+    type        = string
+    value       = string
   }))
-  default = []
+  default = []  # vazio = não cria nada
 }
 
 
-resource "aws_s3_bucket_lifecycle_configuration" "this" {
-  count  = length(var.lifecycle_rules) > 0 ? 1 : 0
-  bucket = aws_s3_bucket.this.id
+resource "aws_ssm_parameter" "this" {
+  for_each = { for idx, param in var.ssm_parameters : param.name => param }
 
-  dynamic "rule" {
-    for_each = var.lifecycle_rules
-    content {
-      id     = rule.value.id
-      status = rule.value.enabled ? "Enabled" : "Disabled"
-
-      filter {
-        prefix = rule.value.prefix
-      }
-
-      dynamic "expiration" {
-        for_each = rule.value.expiration_days != null ? [1] : []
-        content {
-          days = rule.value.expiration_days
-        }
-      }
-
-      dynamic "noncurrent_version_expiration" {
-        for_each = rule.value.noncurrent_version_expiration_days != null ? [1] : []
-        content {
-          noncurrent_days = rule.value.noncurrent_version_expiration_days
-        }
-      }
-    }
-  }
+  name        = each.value.name
+  description = each.value.description
+  type        = each.value.type
+  value       = each.value.value
+  tags        = var.tags
 }
-
