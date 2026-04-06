@@ -46,9 +46,8 @@ steps:
 
       rm -f "$TFVARS"
 
-      python3 - "$CONFIG" "$TFVARS" "$REPO" "$MEMORY" "$TIMEOUT" "$TRACING" "$RUNTIME" \
-        "${{ parameters.environment }}" "${{ parameters.lambda_description }}" "${{ parameters.aws_region }}" "${{ parameters.app_name }}" \
-        "${{ parameters.subnets_privates }}" "${{ parameters.vpc_id }}" <<'PYEOF'
+      PYSCRIPT=$(mktemp /tmp/gen_tfvars_XXXXXX.py)
+      cat > "$PYSCRIPT" << 'PYEOF'
 import sys
 import subprocess
 
@@ -58,7 +57,6 @@ def yq(expr):
     return subprocess.check_output(['yq', 'e', expr, config_path]).decode().strip()
 
 def yq_safe(expr, default=''):
-    """Executa yq sem estourar erro se o campo nao existir no YAML."""
     try:
         result = subprocess.check_output(
             ['yq', 'e', expr, config_path],
@@ -152,4 +150,10 @@ with open(tfvars_path, 'w') as f:
 print('##[section] terraform.auto.tfvars gerado:')
 print('\n'.join(lines))
 PYEOF
+
+      python3 "$PYSCRIPT" "$CONFIG" "$TFVARS" "$REPO" "$MEMORY" "$TIMEOUT" "$TRACING" "$RUNTIME" \
+        "${{ parameters.environment }}" "${{ parameters.lambda_description }}" "${{ parameters.aws_region }}" "${{ parameters.app_name }}" \
+        "${{ parameters.subnets_privates }}" "${{ parameters.vpc_id }}"
+
+      rm -f "$PYSCRIPT"
     displayName: "Gerar terraform.auto.tfvars [${{ parameters.environment }}]"
