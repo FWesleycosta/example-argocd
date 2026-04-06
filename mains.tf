@@ -1,21 +1,17 @@
-variable "ssm_parameters" {
-  description = "Lista de parâmetros SSM a serem criados (vazio = não cria nenhum)"
-  type = list(object({
-    name        = string
-    description = string
-    type        = string
-    value       = string
-  }))
-  default = []  # vazio = não cria nada
-}
-
-
-resource "aws_ssm_parameter" "this" {
-  for_each = { for idx, param in var.ssm_parameters : param.name => param }
-
-  name        = each.value.name
-  description = each.value.description
-  type        = each.value.type
-  value       = each.value.value
-  tags        = var.tags
-}
+      # — SSM Parameters block —
+      lines.append('')
+      lines.append('ssm_parameters = {')
+      for idx, p in enumerate(ssm_params):
+          lines.append(f'  param_{idx} = {{')
+          lines.append(f'    name  = "{p["name"]}"')
+          lines.append(f'    value = "{p["value"]}"')
+          lines.append(f'  }}')
+      lines.append('}')
+ 
+      with open(tfvars_path, 'w') as f:
+          f.write('\n'.join(lines) + '\n')
+ 
+      print('##[section] terraform.auto.tfvars gerado:')
+      print('\n'.join(lines))
+      PYEOF
+    displayName: "Gerar terraform.auto.tfvars [${{ parameters.environment }}]"
