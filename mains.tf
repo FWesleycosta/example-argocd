@@ -1,39 +1,20 @@
-variable "name" {
-  description = "Nome da REST API"
-  type        = string
+locals {
+  endpoint_type        = var.api_type == "public" ? "REGIONAL" : "PRIVATE"
+  vpc_endpoint_id      = var.api_type == "private" ? var.vpc_endpoint_apigw : null
+  api_key_required     = var.api_type == "public"
+  domain_name_resolved = var.api_type == "public" ? module.domain_name[0].domain_name : local.full_domain_name
 
-  validation {
-    condition     = length(var.name) > 0
-    error_message = "O nome da REST API não pode ser vazio."
-  }
+  redeployment_trigger_ids = concat(
+    [
+      module.resource_proxy.id,
+      module.method_proxy.id,
+      module.integration_proxy.id,
+    ],
+    var.api_type == "public" ? [
+      module.method_root[0].id,
+      module.integration_root[0].id,
+    ] : [
+      module.rest_api.rest_api_policy_id,
+    ]
+  )
 }
-
-variable "description" {
-  description = "Descrição da REST API"
-  type        = string
-  default     = null
-}
-
-variable "endpoint_type" {
-  description = "Tipo do endpoint da API. Valores válidos: EDGE, REGIONAL, PRIVATE"
-  type        = string
-  default     = "REGIONAL"
-
-  validation {
-    condition     = contains(["EDGE", "REGIONAL", "PRIVATE"], var.endpoint_type)
-    error_message = "endpoint_type deve ser EDGE, REGIONAL ou PRIVATE."
-  }
-}
-
-variable "vpc_endpoint_id" {
-  description = "ID do VPC Endpoint para APIs do tipo PRIVATE"
-  type        = string
-  default     = null
-}
-
-variable "tags" {
-  description = "Tags a serem aplicadas à REST API"
-  type        = map(string)
-  default     = {}
-}
-
