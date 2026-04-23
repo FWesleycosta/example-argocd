@@ -1,4 +1,4 @@
-inlineScript: |
+      inlineScript: |
         set -euo pipefail
 
         cd $(System.DefaultWorkingDirectory)/terraform
@@ -34,22 +34,34 @@ inlineScript: |
           exit 0
         fi
 
-        # ===== DEBUG temporário: ver exatamente o que está no log =====
-        echo "===== DEBUG: linhas com Error no log ====="
-        grep -nE "Error:" /tmp/tf_output.log || echo "nenhum match de 'Error:'"
-        echo "===== DEBUG: linhas com Base Path no log ====="
+        # ============================================================
+        # BLOCO DE DEBUG - REMOVER APÓS VALIDAÇÃO
+        # ============================================================
+        echo ""
+        echo "===== DEBUG: linhas contendo 'Error' ====="
+        grep -n "Error" /tmp/tf_output.log | head -10 || echo "nenhum match de 'Error'"
+        echo ""
+        echo "===== DEBUG: linhas contendo 'BasePath' ou 'CreateBasePathMapping' ====="
         grep -nE "BasePathConflictException|Base path already exists|CreateBasePathMapping" /tmp/tf_output.log || echo "nenhum match de Base Path"
+        echo ""
+        echo "===== DEBUG: bytes hexadecimais do prefixo da primeira linha de erro ====="
+        grep "Error:" /tmp/tf_output.log | head -1 | head -c 30 | xxd || echo "sem linha com Error:"
+        echo ""
+        echo "===== DEBUG: testando diferentes regex ====="
+        echo "Regex 1 (pipe comum '|'):         $(grep -cE '^\| Error:' /tmp/tf_output.log || true)"
+        echo "Regex 2 (box drawing '│'):        $(grep -cE '^│ Error:' /tmp/tf_output.log || true)"
+        echo "Regex 3 (Error: no começo):       $(grep -cE '^Error:' /tmp/tf_output.log || true)"
+        echo "Regex 4 (flexível com espaços):   $(grep -cE '^[[:space:]]*[|│]?[[:space:]]*Error:' /tmp/tf_output.log || true)"
         echo "===== FIM DEBUG ====="
+        echo ""
+        # ============================================================
+        # FIM DO BLOCO DE DEBUG
+        # ============================================================
 
-        # Conta quantos blocos de erro existem
-        TOTAL_ERRORS=$(grep -cE "^│ Error:" /tmp/tf_output.log || true)
+        # Conta quantos blocos de erro do Terraform existem
+        TOTAL_ERRORS=$(grep -cE "^[[:space:]]*[|│]?[[:space:]]*Error:" /tmp/tf_output.log || true)
 
-        # Fallback para formato antigo sem a barra vertical
-        if [ "$TOTAL_ERRORS" -eq 0 ]; then
-          TOTAL_ERRORS=$(grep -cE "^Error:" /tmp/tf_output.log || true)
-        fi
-
-        # Conta quantos erros são de Base Path (ignoráveis)
+        # Conta quantos desses erros são de Base Path (ignoráveis)
         BASE_PATH_ERRORS=$(grep -cE "BasePathConflictException|Base path already exists|CreateBasePathMapping" /tmp/tf_output.log || true)
 
         echo "=========================================="
