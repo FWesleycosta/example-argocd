@@ -1,20 +1,17 @@
-locals {
-  endpoint_type        = var.api_type == "public" ? "REGIONAL" : "PRIVATE"
-  vpc_endpoint_id      = var.api_type == "private" ? var.vpc_endpoint_apigw : null
-  api_key_required     = var.api_type == "public"
-  domain_name_resolved = var.api_type == "public" ? module.domain_name[0].domain_name : local.full_domain_name
+        # Conta quantos erros totais existem no log do terraform
+        TOTAL_ERRORS=$(grep -cE "^(╷|Error:|\| Error:)" /tmp/tf_output.log || true)
 
-  redeployment_trigger_ids = concat(
-    [
-      module.resource_proxy.id,
-      module.method_proxy.id,
-      module.integration_proxy.id,
-    ],
-    var.api_type == "public" ? [
-      module.method_root[0].id,
-      module.integration_root[0].id,
-    ] : [
-      module.rest_api.rest_api_policy_id,
-    ]
-  )
-}
+        # Conta quantos são do tipo "Base Path" (ignoráveis)
+        BASE_PATH_ERRORS=$(grep -cE "BasePathConflictException|Base path already exists|creating API Gateway Base Path Mapping.*ConflictException" /tmp/tf_output.log || true)
+
+        echo "Total de erros: $TOTAL_ERRORS | Erros de Base Path: $BASE_PATH_ERRORS"
+
+        # Só ignora se TODOS os erros forem de Base Path
+        if [ "$TOTAL_ERRORS" -gt 0 ] && [ "$TOTAL_ERRORS" -eq "$BASE_PATH_ERRORS" ]; then
+          echo "##[warning]Apenas erros de Base path já existente. Ignorando..."
+          exit 0
+        fi
+
+        echo "##[error]Erro inesperado no terraform apply!"
+        cat /tmp/tf_output.log
+        exit 1
