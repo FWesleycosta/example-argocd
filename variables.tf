@@ -1,100 +1,105 @@
-variable "pipe_name" {
-  description = "Nome do EventBridge Pipe."
+variable "app_name" {
+    description = "Nome da aplicação (vem do repositório)"
+    type = string
+}
+
+variable "namespace" {
+    description = "Nome do namespace onde a aplicação vai rodar no EKS"
+    type = string
+}
+
+variable "alb_shared_dns" {
+  type    = string
+}
+
+variable "api_gateway_vpc_link" {
+  type    = string
+}
+
+variable "alb_shared_listener" {
+  type    = string
+}
+
+variable "domain_name" {
+  type = string
+}
+
+variable "cluster_name" {
+  type = string
+}
+
+variable "base_path" {
+  type = string
+}
+
+variable "api_type" {
+  description = "public or private"
+  type = string
+  default = "private"
+}
+
+variable "vpc_endpoint_apigw" {
+  type    = string
+}
+
+variable "domain_internal_name" {
+  type = string
+}
+
+variable "domain_name_id" {
+  type = string
+}
+
+variable "environment" {
+  description = "Nome do ambiente (dev, staging, prod)"
   type        = string
+  default     = "dev"
 }
 
-variable "desired_state" {
-  description = "Estado desejado do Pipe. RUNNING ou STOPPED."
-  type        = string
-  default     = "RUNNING"
-
-  validation {
-    condition     = contains(["RUNNING", "STOPPED"], var.desired_state)
-    error_message = "desired_state deve ser RUNNING ou STOPPED."
-  }
+variable "ssm_parameters" {
+  type = string
+  default = "[]"
 }
 
-
-variable "source_arn" {
-  description = "ARN do recurso de origem (SQS, DynamoDB Stream, Kinesis Stream)."
-  type        = string
+variable "dynamodb_tables" {
+  description = "Lista de tabelas DynamoDB a serem criadas"
+  type = list(object({
+    table_name               = string
+    billing_mode             = optional(string, "PAY_PER_REQUEST")
+    hash_key                 = string
+    range_key                = optional(string)
+    attributes               = list(object({ name = string, type = string }))
+    global_secondary_indexes = optional(list(object({
+      name               = string
+      hash_key           = string
+      range_key          = optional(string)
+      projection_type    = optional(string, "ALL")
+      non_key_attributes = optional(list(string))
+      read_capacity      = optional(number)
+      write_capacity     = optional(number)
+    })), [])
+  }))
+  default = []
 }
 
-variable "source_parameters" {
-  description = <<-EOT
-    Parâmetros do source. Preencha apenas o bloco correspondente ao tipo de source.
-    - sqs:      batch_size, maximum_batching_window_in_seconds
-    - dynamodb: starting_position (TRIM_HORIZON | LATEST), batch_size
-    - kinesis:  starting_position (TRIM_HORIZON | LATEST | AT_TIMESTAMP), batch_size
-  EOT
-  type = object({
-    sqs = optional(object({
-      batch_size                         = optional(number, 10)
-      maximum_batching_window_in_seconds = optional(number, 0)
-    }))
-    dynamodb = optional(object({
-      starting_position = string
-      batch_size        = optional(number, 10)
-    }))
-    kinesis = optional(object({
-      starting_position = string
-      batch_size        = optional(number, 10)
-    }))
-  })
-  default = {}
+variable "s3_buckets" {
+  description = "Lista de buckets S3 a serem criados"
+  type = string
+  default = "[]"
 }
 
-variable "target_arn" {
-  description = "ARN do recurso de destino (Step Functions, Lambda, SQS, EventBus)."
-  type        = string
+variable "secrets" {
+  type = list(object({
+    name          = string
+    description   = optional(string, "")
+    keys          = list(string)
+    compartilhado = optional(string, "false")
+  }))
+  default = []
 }
 
-variable "target_parameters" {
-  description = <<-EOT
-    Parâmetros do target. Preencha apenas o bloco correspondente ao tipo de target.
-    - sfn:      invocation_type (FIRE_AND_FORGET | REQUEST_RESPONSE)
-    - lambda:   invocation_type (FIRE_AND_FORGET | REQUEST_RESPONSE)
-    - sqs:      message_group_id (obrigatório para FIFO)
-    - eventbus: detail_type, source
-  EOT
-  type = object({
-    sfn = optional(object({
-      invocation_type = optional(string, "FIRE_AND_FORGET")
-    }))
-    lambda = optional(object({
-      invocation_type = optional(string, "FIRE_AND_FORGET")
-    }))
-    sqs = optional(object({
-      message_group_id = optional(string)
-    }))
-    eventbus = optional(object({
-      detail_type = string
-      source      = string
-    }))
-  })
-  default = {}
-}
-
-
-variable "log_group_arn" {
-  description = "ARN do CloudWatch Log Group para logs do Pipe. Null desativa os logs."
-  type        = string
-  default     = null
-}
-
-variable "log_level" {
-  description = "Nível de log. ERROR, INFO ou TRACE."
-  type        = string
-  default     = "ERROR"
-
-  validation {
-    condition     = contains(["ERROR", "INFO", "TRACE"], var.log_level)
-    error_message = "log_level deve ser ERROR, INFO ou TRACE."
-  }
-}
-
-variable "tags" {
-  description = "Tags aplicadas a todos os recursos."
-  type        = map(string)
-  default     = {}
+variable "cognito" {
+  type = string
+  default = "false"
+  description = "Se true, adiciona permissões do Cognito B2C à policy"
 }
