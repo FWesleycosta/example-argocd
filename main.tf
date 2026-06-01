@@ -1,661 +1,74 @@
-resource "aws_iam_role" "app_name" {
-  name = "eks-pod-identity-${var.app_name}"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "pods.eks.amazonaws.com"
-      }
-      Action = [
-        "sts:AssumeRole",
-        "sts:TagSession"
-      ]
-    }]
-  })
-}
+resource "aws_api_gateway_domain_name" "this" {
+  domain_name     = var.domain_name
+  security_policy = var.security_policy
 
+  endpoint_access_mode = local.needs_endpoint_access_mode ? var.endpoint_access_mode : null
 
-resource "aws_iam_policy" "app_name" {
-  name        = "eks-pod-${var.app_name}"
-  description = "Permite ao pod acesso em todos os serviços/recursos da conta"
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = concat(
-      [
-        {
-          Sid    = "Services"
-          Effect = "Allow"
-          Action = [
-            "s3:GetObject",
-            "s3:PutObject",
-            "s3:ListBucket",
-            "dynamodb:GetItem",
-            "dynamodb:BatchGetItem",
-            "dynamodb:Query",
-            "dynamodb:Scan",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
-            "dynamodb:DeleteItem",
-            "sqs:SendMessage",
-            "sqs:ReceiveMessage",
-            "sqs:DeleteMessage",
-            "sqs:GetQueueAttributes",
-            "sns:Publish",
-            "sns:Subscribe",
-            "secretsmanager:GetSecretValue",
-            "secretsmanager:DescribeSecret",
-            "kms:Decrypt",
-            "kms:GenerateDataKey",
-            "ssm:GetParametersByPath",
-            "ssm:GetParameter",
-            "ssm:GetParameters",
-            "ses:SendEmail",
-            "events:PutEvents",
-            "events:PutRule",
-            "events:PutTargets",
-            "events:DescribeRule",
-            "lambda:InvokeFunction",
-            "lambda:GetFunctionConfiguration",
-            "states:StartExecution",
-            "states:StopExecution",
-            "states:DescribeExecution",
-            "states:GetExecutionHistory",
-            "logs:DescribeLogStreams",
-            "logs:DescribeLogGroups",
-            "logs:CreateLogGroup",
-            "logs:CreateLogStream"
-          ],
-          Condition = {
-            "StringEquals" : {
-              "aws:ResourceTag/Aplicacao" = var.app_name
-            }
-          }
-          Resource = "*"
-        },
-        {
-          Sid    = "SSMByPath"
-          Effect = "Allow"
-          Action = [
-            "ssm:GetParametersByPath",
-            "s3:PutObject",
-            "s3:ListBucket",
-            "s3:GetObject",
-            "ses:SendEmail",
-            "s3:DeleteObject",
-            "sqs:SendMessage",
-            "dynamodb:GetItem",
-            "dynamodb:PutItem",
-            "dynamodb:UpdateItem",
-            "dynamodb:Query",
-            "logs:PutLogEvents",
-            "logs:DescribeLogStreams",
-            "logs:DescribeLogGroups",
-            "logs:CreateLogGroup",
-            "logs:CreateLogStream"
-          ]
-          Resource = "*"
-        }
-      ],
-      var.cognito ? [
-        {
-          Sid    = "CognitoB2C"
-          Effect = "Allow"
-          Action = [
-            "cognito-idp:AdminCreateUser",
-            "cognito-idp:ListGroups",
-            "cognito-idp:ListUsers",
-            "cognito-idp:AdminListGroupsForUser",
-            "cognito-idp:AdminAddUserToGroup",
-            "cognito-idp:AdminRemoveUserFromGroup",
-            "cognito-idp:AdminSetUserPassword"
-          ]
-          Resource = "*"
-          Condition = {
-            "StringEquals" : {
-              "aws:ResourceTag/Aplicacao" = var.app_name
-            }
-          }
-        }
-      ] : []
-    )
-  })
-}
-
-
-resource "aws_iam_role_policy_attachment" "app_name" {
-  role       = aws_iam_role.app_name.name
-  policy_arn = aws_iam_policy.app_name.arn
-}
-
-resource "aws_eks_pod_identity_association" "app_name" {
-  cluster_name    = var.cluster_name
-  namespace       = var.namespace
-  service_account = "default"
-  role_arn        = aws_iam_role.app_name.arn
-}
-
-######################################
-#             API gateway
-#####################################
-
-module "aws_api_gateway_domain_name" {
-  source = "git::https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform//modules/aws_api_gateway_domain_name"
-  count = local.is_public
-
-  domain_name = var.domain_name
-}
-
-#################################
-# CLOUDWATCH LOG GROUP
-#################################
-resource "aws_cloudwatch_log_group" "api_gateway" {
-  name              = "/aws/api-gateway/${var.app_name}"
-  retention_in_days = 1
-}
-
-#################################
-# REST API
-#################################
-#module "rest_api" {
-
-#  source = "git::https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform//modules/aws_api_gateway_rest_api"
-#  name = var.app_name
-#  description = var.app_name
-
-#  endpoint_type = local.endpoint_type
-#  vpc_endpoint_id = local.vpc_endpoint_id
-#  tags = local.tags
-#}
-
-
-resource "aws_api_gateway_rest_api" "app_name" {
-  count = local.is_public
-  name        = var.app_name
-  description = var.app_name
+  regional_certificate_arn = local.is_regional ? local.certificate_arn : null
+  certificate_arn          = local.is_regional ? null : local.certificate_arn
 
   endpoint_configuration {
-    types = ["REGIONAL"]
+    types = [var.endpoint_type]
   }
 
+  # dynamic "mutual_tls_authentication" {
+  #   for_each = var.mutual_tls_truststore_uri != null ? [1] : []
+  #   content {
+  #     truststore_uri     = var.mutual_tls_truststore_uri
+  #     truststore_version = var.mutual_tls_truststore_version
+  #   }
+  # }
 
-  tags = {
-    name = "var.app_name"
-  }
-
-}
-
-#################################
-# RESOURCE /{proxy+}
-#################################
-resource "aws_api_gateway_resource" "proxy" {
-  count       = local.is_public
-  rest_api_id = aws_api_gateway_rest_api.app_name[count.index].id
-  parent_id   = aws_api_gateway_rest_api.app_name[count.index].root_resource_id
-  path_part   = "{proxy+}"
+  tags = var.tags
 }
 
 
-#################################
-# METHOD ANY
-#################################
-resource "aws_api_gateway_method" "proxy" {
-  count            = local.is_public
-  rest_api_id      = aws_api_gateway_rest_api.app_name[count.index].id
-  resource_id      = aws_api_gateway_resource.proxy[count.index].id
-  http_method      = "ANY"
-  authorization    = "NONE"
-  api_key_required = true
+variable "domain_name" {
+  description = "Custom domain name (e.g.: api.example.com)."
+  type        = string
+}
 
-  request_parameters = {
-    "method.request.path.proxy" = true
-  }
+variable "endpoint_type" {
+  description = "Domain endpoint type: REGIONAL (recommended) or EDGE."
+  type        = string
+  default     = "REGIONAL"
 
-  lifecycle {
-    ignore_changes = [ authorization, authorizer_id, api_key_required ]
+  validation {
+    condition     = contains(["REGIONAL", "EDGE"], var.endpoint_type)
+    error_message = "endpoint_type must be 'REGIONAL' or 'EDGE'."
   }
 }
 
-#################################
-# INTEGRATION -> ALB via VPC LINK
-#################################
-resource "aws_api_gateway_integration" "proxy" {
-  count       = local.is_public
-  rest_api_id = aws_api_gateway_rest_api.app_name[count.index].id
-  resource_id = aws_api_gateway_resource.proxy[count.index].id
-  http_method = aws_api_gateway_method.proxy[count.index].http_method
+variable "security_policy" {
+  description = "Minimum TLS security policy for the domain. Use a TLS_1_2 (or newer) policy for production workloads; TLS_1_0 is deprecated and should only be used for legacy clients that cannot be upgraded. Note that the available policies differ by endpoint_type: REGIONAL domains support the SecurityPolicy_TLS13_* / SecurityPolicy_TLS12_* values, while EDGE domains support the *_EDGE values and the legacy TLS_1_0 / TLS_1_2 aliases."
+  type        = string
+  default     = "SecurityPolicy_TLS13_1_3_2025_09"
 
-  type                    = "HTTP_PROXY"
-  integration_http_method = "ANY"
-  uri                     = "http://${var.alb_shared_dns}:80/{proxy}"
-  connection_type         = "VPC_LINK"
-  connection_id           = var.api_gateway_vpc_link
-  integration_target      = var.alb_shared_listener
-
-  request_parameters = {
-    "integration.request.path.proxy" = "method.request.path.proxy"
+  validation {
+    condition     = contains(["TLS_1_0", "TLS_1_2", "SecurityPolicy_TLS13_1_3_2025_09", "SecurityPolicy_TLS13_1_3_FIPS_2025_09", "SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09", "SecurityPolicy_TLS13_1_2_FIPS_PQ_2025_09", "SecurityPolicy_TLS13_1_2_FIPS_PFS_PQ_2025_09", "SecurityPolicy_TLS13_1_2_PQ_2025_09", "SecurityPolicy_TLS13_1_2_2021_06", "SecurityPolicy_TLS13_2025_EDGE", "SecurityPolicy_TLS12_PFS_2025_EDGE", "SecurityPolicy_TLS12_2018_EDGE"], var.security_policy)
+    error_message = "security_policy must be one of the supported values: TLS_1_0, TLS_1_2, SecurityPolicy_TLS13_1_3_2025_09, SecurityPolicy_TLS13_1_3_FIPS_2025_09, SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09, SecurityPolicy_TLS13_1_2_FIPS_PQ_2025_09, SecurityPolicy_TLS13_1_2_FIPS_PFS_PQ_2025_09, SecurityPolicy_TLS13_1_2_PQ_2025_09, SecurityPolicy_TLS13_1_2_2021_06, SecurityPolicy_TLS13_2025_EDGE, SecurityPolicy_TLS12_PFS_2025_EDGE, or SecurityPolicy_TLS12_2018_EDGE."
   }
 }
 
-#################################
-# DEPLOYMENT (OBRIGATÓRIO NO REST)
-#################################
-resource "aws_api_gateway_deployment" "app_name" {
-  count       = local.is_public
-  rest_api_id = aws_api_gateway_rest_api.app_name[count.index].id
+variable "endpoint_access_mode" {
+  description = "Endpoint access mode for the custom domain (BASIC or STRICT). Required by the newer SecurityPolicy_TLS13_*/SecurityPolicy_TLS12_* security policies; ignored for the legacy TLS_1_0/TLS_1_2 policies. BASIC keeps the standard behavior; STRICT enforces stricter TLS handling."
+  type        = string
+  default     = "STRICT"
 
-  triggers = {
-    redeploy = sha1(jsonencode([
-      aws_api_gateway_resource.proxy[count.index].id,
-      aws_api_gateway_method.proxy[count.index].id,
-      aws_api_gateway_integration.proxy[count.index].id,
-      aws_api_gateway_method.root[count.index].id,
-      aws_api_gateway_integration.root[count.index].id
-    ]))
-  }
-
-  lifecycle {
-    create_before_destroy = true
+  validation {
+    condition     = contains(["BASIC", "STRICT"], var.endpoint_access_mode)
+    error_message = "endpoint_access_mode must be 'BASIC' or 'STRICT'."
   }
 }
 
-#################################
-# STAGE + ACCESS LOGS
-#################################
-resource "aws_api_gateway_stage" "default" {
-  count         = local.is_public
-  rest_api_id   = aws_api_gateway_rest_api.app_name[count.index].id
-  deployment_id = aws_api_gateway_deployment.app_name[count.index].id
-  stage_name    = "default"
-
-  variables = {
-    deployed_at = sha1(jsonencode([
-      aws_api_gateway_resource.proxy[count.index].id,
-      aws_api_gateway_method.proxy[count.index].id,
-      aws_api_gateway_integration.proxy[count.index].id,
-      aws_api_gateway_method.root[count.index].id,
-      aws_api_gateway_integration.root[count.index].id
-    ]))
-  }
-
-#  access_log_settings {
-#    destination_arn = aws_cloudwatch_log_group.api_gateway.arn
-#    format = jsonencode({
-#      requestId        = "$context.requestId"
-#      sourceIp         = "$context.identity.sourceIp"
-#      requestTime      = "$context.requestTime"
-#      httpMethod       = "$context.httpMethod"
-#      resourcePath     = "$context.resourcePath"
-#      status           = "$context.status"
-#      responseLength   = "$context.responseLength"
-#      integrationError = "$context.integration.error"
-#    })
-#  }
+variable "certificate_arn" {
+  description = "ARN of an existing ACM certificate to use for the custom domain. Leave null to auto-generate a self-signed certificate (see create_test_certificate). For production, point this to a public ACM certificate that you control."
+  type        = string
+  default     = null
 }
 
-#################################
-# BASE PATH MAPPING
-#################################
-resource "aws_api_gateway_base_path_mapping" "app_name" {
-  count       = local.is_public
-  api_id      = aws_api_gateway_rest_api.app_name[count.index].id
-  stage_name  = aws_api_gateway_stage.default[count.index].stage_name
-  domain_name = module.aws_api_gateway_domain_name[count.index].domain_name
-  #domain_name = data.aws_api_gateway_domain_name.api_bancofibra_com_br[count.index].domain_name
-  base_path   = var.base_path
-}
-
-#################################
-# USAGE PLAN
-#################################
-
-resource "aws_api_gateway_usage_plan" "app_name" {
-  count       = local.is_public
-  name        = var.app_name
-  description = "Usage plan ${var.app_name}"
-  api_stages {
-    api_id = aws_api_gateway_rest_api.app_name[count.index].id
-    stage  = aws_api_gateway_stage.default[count.index].stage_name
-  }
-  tags               = local.tags
-}
-
-#################################
-# API KEY
-#################################
-resource "aws_api_gateway_api_key" "app_name" {
-  count       = local.is_public
-  name        = var.app_name
-  description = "API Key para ${var.app_name}"
-  enabled     = true
-  tags               = local.tags
-
-}
-
-#################################
-# USAGE PLAN ↔ API KEY
-#################################
-resource "aws_api_gateway_usage_plan_key" "app_name" {
-  count         = local.is_public
-  key_id        = aws_api_gateway_api_key.app_name[count.index].id
-  key_type      = "API_KEY"
-  usage_plan_id = aws_api_gateway_usage_plan.app_name[count.index].id
-}
-
-
-resource "aws_api_gateway_method" "root" {
-  count            = local.is_public
-  rest_api_id      = aws_api_gateway_rest_api.app_name[count.index].id
-  resource_id      = aws_api_gateway_rest_api.app_name[count.index].root_resource_id
-  http_method      = "ANY"
-  authorization    = "NONE"
-  api_key_required = true
-}
-
-resource "aws_api_gateway_integration" "root" {
-  count       = local.is_public
-  rest_api_id = aws_api_gateway_rest_api.app_name[count.index].id
-  resource_id = aws_api_gateway_rest_api.app_name[count.index].root_resource_id
-  http_method = aws_api_gateway_method.root[count.index].http_method
-
-  type                    = "HTTP_PROXY"
-  integration_http_method = "ANY"
-  uri                     = "http://${var.alb_shared_dns}:80"
-  connection_type         = "VPC_LINK"
-  connection_id           = var.api_gateway_vpc_link
-  integration_target      = var.alb_shared_listener
-}  
-
-
-
-##############################################
-#
-#       API GATEWAY PRIVATE
-#
-##############################################
-
-resource "aws_api_gateway_base_path_mapping" "this" {
-  count       = local.is_private
-  api_id        = aws_api_gateway_rest_api.this[count.index].id
-  stage_name    = aws_api_gateway_stage.this[count.index].stage_name
-  domain_name   = local.full_domain_name
-  base_path   = var.base_path
-
-  depends_on = [ 
-    aws_api_gateway_rest_api.this,
-    aws_api_gateway_stage.this
-  ]
-}
-
-resource "aws_api_gateway_rest_api" "this" {
-  count = local.is_private
-
-  name        = var.app_name
-  description = var.app_name
-
-  endpoint_configuration {
-    types            = ["PRIVATE"]
-    vpc_endpoint_ids = [var.vpc_endpoint_apigw]
-  }
-
-tags               = local.tags
-}
-
-resource "aws_api_gateway_rest_api_policy" "this" {
-
-  count = local.is_private
-
-  rest_api_id = aws_api_gateway_rest_api.this[count.index].id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = "*"
-        Action   = "execute-api:Invoke"
-        Resource = "${aws_api_gateway_rest_api.this[count.index].execution_arn}/*/*/*"
-        Condition = {
-          StringEquals = {
-            "aws:SourceVpce" = var.vpc_endpoint_apigw
-          }
-        }
-      }
-    ]
-  })
-
-  depends_on = [
-    aws_api_gateway_rest_api.this
-  ]
-}
-
-#################################
-# RESOURCE /{proxy+}
-#################################
-resource "aws_api_gateway_resource" "this" {
-  count       = local.is_private
-
-  depends_on = [
-    aws_api_gateway_rest_api.this
-  ]
-  rest_api_id = aws_api_gateway_rest_api.this[count.index].id
-  parent_id   = aws_api_gateway_rest_api.this[count.index].root_resource_id
-  path_part   = "{proxy+}"
-}
-
-#################################
-# METHOD ANY
-#################################
-resource "aws_api_gateway_method" "this" {
-
-  count         = local.is_private
-  rest_api_id   = aws_api_gateway_rest_api.this[count.index].id
-  resource_id   = aws_api_gateway_resource.this[count.index].id
-  http_method   = "ANY"
-  authorization = "NONE"
-
-  depends_on = [
-    aws_api_gateway_resource.this
-  ]
-
-  request_parameters = {
-    "method.request.path.proxy" = true
-  }
-
-  lifecycle {
-    ignore_changes = [ authorization, authorizer_id, api_key_required, request_parameters ]
-  }
-}
-
-#################################
-# INTEGRATION -> ALB via VPC LINK
-#################################
-resource "aws_api_gateway_integration" "this" {
-  count       = local.is_private
-  rest_api_id = aws_api_gateway_rest_api.this[count.index].id
-  resource_id = aws_api_gateway_resource.this[count.index].id
-  http_method = aws_api_gateway_method.this[count.index].http_method
-
-  type                    = "HTTP_PROXY"
-  integration_http_method = "ANY"
-
-  depends_on = [
-    aws_api_gateway_method.this
-  ]
-  uri                     = "http://${var.alb_shared_dns}:80/{proxy}"
-  connection_type         = "VPC_LINK"
-  connection_id           = var.api_gateway_vpc_link
-  integration_target      = var.alb_shared_listener
-
-  request_parameters = {
-    "integration.request.path.proxy" = "method.request.path.proxy"
-  }
-}
-
-#################################
-# DEPLOYMENT
-#################################
-resource "aws_api_gateway_deployment" "this" {
-  count = local.is_private
-
-  rest_api_id = aws_api_gateway_rest_api.this[count.index].id
-
-  triggers = {
-    redeploy = sha1(jsonencode([
-      aws_api_gateway_resource.this[count.index].id,
-      aws_api_gateway_method.this[count.index].id,
-      aws_api_gateway_integration.this[count.index].id,
-      aws_api_gateway_rest_api_policy.this[count.index].id
-    ]))
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-#################################
-# STAGE + ACCESS LOGS
-#################################
-resource "aws_api_gateway_stage" "this" {
-  count = local.is_private
-  rest_api_id   = aws_api_gateway_rest_api.this[count.index].id
-  deployment_id = aws_api_gateway_deployment.this[count.index].id
-  stage_name    = "default"
-
-  variables = {
-    deployed_at = sha1(jsonencode([
-      aws_api_gateway_resource.this[count.index].id,
-      aws_api_gateway_method.this[count.index].id,
-      aws_api_gateway_integration.this[count.index].id,
-      aws_api_gateway_rest_api_policy.this[count.index].id
-    ]))
-  }
-
-  lifecycle {
-    ignore_changes = [ 
-      deployment_id,
-      variables,
-     ]
-  }
-
-  #access_log_settings {
-  #  destination_arn = aws_cloudwatch_log_group.api_gateway.arn
-  #  format = jsonencode({
-  #    requestId        = "$context.requestId"
-  #    sourceIp         = "$context.identity.sourceIp"
-  #    requestTime      = "$context.requestTime"
-  #    httpMethod       = "$context.httpMethod"
-  #    resourcePath     = "$context.resourcePath"
-  #    status           = "$context.status"
-  #   responseLength   = "$context.responseLength"
-  #    integrationError = "$context.integration.error"
-  #  })
-  #}
-
-  depends_on = [
-    aws_api_gateway_deployment.this
-  ]
-} 
-
-
-resource "aws_ssm_parameter" "this" {
-  for_each = { for param in local.ssm_params : param.name => param }
-
-  name        = each.value.name
-  description = each.value.description
-  type        = each.value.type
-  value       = each.value.value
-  tags        = local.tags
-}
-
-resource "aws_dynamodb_table" "this" {
-    for_each = { for t in var.dynamodb_tables : t.table_name => t }
-
-    name         = each.value.table_name
-    billing_mode = each.value.billing_mode
-    hash_key     = each.value.hash_key
-    range_key    = each.value.range_key
-
-    dynamic "attribute" {
-        for_each = each.value.attributes
-        content {
-          name = attribute.value.name
-          type = attribute.value.type
-        }
-    }
-
-    dynamic "global_secondary_index" {
-        for_each = each.value.global_secondary_indexes
-        content {
-          name               = global_secondary_index.value.name
-          hash_key           = global_secondary_index.value.hash_key
-          range_key          = global_secondary_index.value.range_key
-          projection_type    = global_secondary_index.value.projection_type
-          non_key_attributes = global_secondary_index.value.non_key_attributes
-          read_capacity      = global_secondary_index.value.read_capacity
-          write_capacity     = global_secondary_index.value.write_capacity
-        }
-    }
-
-    tags = local.tags
-}
-
-#################################
-# S3 BUCKETS
-#################################
-resource "aws_s3_bucket" "app_buckets" {
-  for_each = { for b in local.s3_buckets : b.bucket_name => b }
-
-  bucket        = "${each.value.bucket_name}-${var.environment}"
-  force_destroy = lower(tostring(try(each.value.force_destroy, "false"))) == "true"
-
-  tags = local.tags
-}
-
-resource "aws_s3_bucket_public_access_block" "app_buckets" {
-  for_each = aws_s3_bucket.app_buckets
-
-  bucket                  = each.value.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_versioning" "app_buckets" {
-  for_each = { for k, b in local.s3_buckets : b.bucket_name => b if lower(tostring(try(b.versioning, "true"))) == "true" }
-
-  bucket = aws_s3_bucket.app_buckets[each.key].id
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_cors_configuration" "app_buckets" {
-  for_each = { for k, b in local.s3_buckets : b.bucket_name => b if length(try(b.cors_rules, [])) > 0 }
-
-  bucket = aws_s3_bucket.app_buckets[each.key].id
-
-  dynamic "cors_rule" {
-    for_each = each.value.cors_rules
-    content {
-      allowed_headers = try(cors_rule.value.allowed_headers, ["*"])
-      allowed_methods = cors_rule.value.allowed_methods
-      allowed_origins = cors_rule.value.allowed_origins
-      expose_headers  = try(cors_rule.value.expose_headers, [])
-      max_age_seconds = try(cors_rule.value.max_age_seconds, 3600)
-    }
-  }
-}
-
-module "secrets" {
-  source   = "git::https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform//modules/aws_secret_manager"
-  for_each = { for s in var.secrets : s.name => s }
-
-  name                    = each.value.name
-  description             = each.value.description
-  initial_secret_string   = jsonencode({ for key in each.value.keys : key => "PREENCHER"})
-  recovery_window_in_days = 7
-  tags    = local.tags
+variable "certificate_domain" {
+  description = "Domain used to look up an existing ACM certificate when certificate_arn is null and create_test_certificate is false. Defaults to domain_name. Set this to a wildcard (e.g.: *.example.com) when the certificate covers subdomains."
+  type        = string
+  default     = null
 }
