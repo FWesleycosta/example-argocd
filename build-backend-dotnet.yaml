@@ -1,0 +1,37 @@
+jobs:
+- job: Build
+  displayName: Build DotNet10 + Docker
+  pool:
+    name: Azure Pipelines
+
+  steps:
+    - checkout: self
+
+    - task: NuGetAuthenticate@1
+
+    - script: |
+        FOLDER_NAME=$(ls $(Build.SourcesDirectory)/src | head -1)
+        echo "##vso[task.setvariable variable=FolderName]$FOLDER_NAME"
+      displayName: 'Capturar nome do diretório'
+
+    #- template: ../sonarqube/qa-sonar.yaml@pipelines 
+
+    - task: Docker@2
+      displayName: Docker Build
+      inputs:
+        repository: $(Build.Repository.Name)
+        command: build
+        Dockerfile: src/$(FolderName)/Dockerfile
+        buildContext: .
+        tags: |
+          $(Build.BuildId)
+        arguments: '--build-arg FEED_ACCESSTOKEN=$(VSS_NUGET_ACCESSTOKEN) --build-arg NUGET_CERT_REVOCATION_MODE=no --build-arg DOTNET_NUGET_SIGNATURE_VERIFICATION=false'
+
+    - script: |
+        docker image save $(Build.Repository.Name):$(Build.BuildId) \
+          -o $(Build.ArtifactStagingDirectory)/$(Build.Repository.Name).tar
+      displayName: Docker Save Image
+
+    - publish: $(Build.ArtifactStagingDirectory)
+      artifact: docker-image
+ 
