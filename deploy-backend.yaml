@@ -1,0 +1,348 @@
+parameters:
+  environment: ''
+  serviceAccount: ''
+  clusterName: ''
+  awsRegion: ''
+  awsAccID: ''
+  albSharedDns: ''
+  apiGatewayVpcLink: ''
+  albSharedListener: ''
+  pod_min_replicas: ''
+  pod_max_replicas: ''
+  pod_requests_cpu: ''
+  pod_requests_memory: ''
+  base_path: ''
+  deployment_aspnetcore_urls: ''
+  deployment_aspnetcore_environment: ''
+  ingress_path: ''
+  cpu_utilization: ''
+  pod_limits_cpu: ''
+  pod_limits_memory: ''
+  api_visibility: ''
+  vpc_endpoint_apigw: ''
+  domain_internal_name: ''
+  domain_name_id: ''
+  domain_name: ''
+  env_vars: []
+  ssm_parameters: []
+  dynamodb_tables: []
+  s3_buckets: []
+  secrets: []
+  dd_lang: ''
+  dd_lib_version: 'latest'
+  cognito: false
+  certificate_arn: ''
+  sqs: []
+
+steps:
+
+- download: current
+  artifact: docker-image
+  displayName: 'Download Docker Image Artifact'
+
+- bash: |
+    set -euo pipefail
+    docker load -i $(Pipeline.Workspace)/docker-image/$(Build.Repository.Name).tar
+  displayName: Load Docker Image
+
+- task: AmazonWebServices.aws-vsts-tools.ECRPushImage.ECRPushImage@1
+  displayName: 'Push Image to ECR'
+  timeoutInMinutes: 10
+  retryCountOnTaskFailure: 2
+  inputs:
+    awsCredentials: ${{ parameters.serviceAccount }}
+    regionName: ${{ parameters.awsRegion}}
+    sourceImageName: $(Build.Repository.Name)
+    repositoryName: $(Build.Repository.Name)
+    sourceImageTag: $(Build.BuildId)
+    pushTag: $(Build.BuildId)
+    logRequest: false
+    logResponse: false
+    autoCreateRepository: true
+
+- script: |
+    set -euo pipefail
+
+    TEMPLATES_DIR="$(Build.SourcesDirectory)/templates"
+    K8S_TEMPLATES="${TEMPLATES_DIR}/templates/k8s"
+    TF_TEMPLATES="${TEMPLATES_DIR}/templates/terraform"
+
+    K8S_BASE="$(Build.SourcesDirectory)/k8s"
+    TERRAFORM_BASE="$(Build.SourcesDirectory)/terraform"
+
+    if [ ! -d "$K8S_TEMPLATES" ]; then
+      echo "##[error]K8s templates not found: $K8S_TEMPLATES"
+      exit 1
+    fi
+    if [ ! -d "$TF_TEMPLATES" ]; then
+      echo "##[error]Terraform templates not found: $TF_TEMPLATES"
+      exit 1
+    fi
+
+    mkdir -p "$K8S_BASE" "$TERRAFORM_BASE"
+    cp -r "$K8S_TEMPLATES"/. "$K8S_BASE/"
+    cp -r "$TF_TEMPLATES"/. "$TERRAFORM_BASE/"
+
+    echo "##[section]K8s manifests:"
+    ls -la "$K8S_BASE"
+
+    echo "##[section]Terraform manifests:"
+    ls -la "$TERRAFORM_BASE"
+  displayName: "Prepare Terraform and Kubernetes Manifests"
+
+- task: TerraformInstaller@1
+  displayName: 'Install Terraform'
+  continueOnError: true
+  inputs:
+    terraformVersion: 'latest'
+
+- task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+  displayName: Create s3 Backend Bucket
+  inputs:
+    awsCredentials: ${{ parameters.serviceAccount }}
+    regionName: ${{ parameters.awsRegion}}
+    scriptType: inline
+    inlineScript: |
+      set -euo pipefail
+
+      BUCKET_NAME="tfstate-$(Build.Repository.Name)-${{ parameters.environment }}"
+
+      if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+        echo "Bucket '$BUCKET_NAME' already exists, skipping creation."
+      else
+        echo "Creating bucket '$BUCKET_NAME'..."
+        aws s3api create-bucket \
+          --bucket "$BUCKET_NAME" \
+          --region ${{ parameters.awsRegion }} \
+          --create-bucket-configuration LocationConstraint=${{ parameters.awsRegion }}
+
+        aws s3api put-bucket-versioning \
+          --bucket "$BUCKET_NAME" \
+          --versioning-configuration Status=Enabled
+
+        echo "Bucket '$BUCKET_NAME' created with versioning and encryption enabled."
+      fi
+
+- bash: |
+    set -euo pipefail
+    cat > backend.tf <<EOF
+    terraform {
+      backend "s3" {
+        bucket  = "tfstate-$(Build.Repository.Name)-${{ parameters.environment }}"
+        key     = "$(Build.Repository.Name)/terraform.tfstate"
+        region  = "${{ parameters.awsRegion }}"
+        encrypt = true
+      }
+    }
+    EOF
+  workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+  displayName: "$(Build.Repository.Name)-Configure Remote State (S3)"
+
+- task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+  displayName: Apply Terraform manifests
+  inputs:
+    awsCredentials: ${{ parameters.serviceAccount }}
+    regionName: ${{ parameters.awsRegion }}
+    scriptType: inline
+    inlineScript: |
+      set -uo pipefail
+
+      cd $(System.DefaultWorkingDirectory)/terraform
+
+      terraform init -migrate-state
+      terraform validate
+
+      export TF_VAR_ssm_parameters='${{ convertToJson(parameters.ssm_parameters) }}'
+      export TF_VAR_s3_buckets='${{ convertToJson(parameters.s3_buckets) }}'
+      export TF_VAR_secrets='${{ convertToJson(parameters.secrets) }}'
+      export TF_VAR_queue_name='${{ convertToJson(parameters.sqs) }}'
+
+      terraform apply -auto-approve \
+        -var="app_name=$(Build.Repository.Name)" \
+        -var="environment=${{ parameters.environment }}" \
+        -var="namespace=$(Build.Repository.Name)-${{ parameters.environment }}" \
+        -var="domain_name=${{ parameters.domain_name }}" \
+        -var="cluster_name=${{ parameters.clusterName }}" \
+        -var="alb_shared_dns=${{ parameters.albSharedDns }}" \
+        -var="api_gateway_vpc_link=${{ parameters.apiGatewayVpcLink }}" \
+        -var="alb_shared_listener=${{ parameters.albSharedListener }}" \
+        -var="base_path=${{ parameters.base_path }}" \
+        -var="api_type=${{ parameters.api_visibility }}" \
+        -var="vpc_endpoint_apigw=${{ parameters.vpc_endpoint_apigw }}" \
+        -var="domain_internal_name=${{ parameters.domain_internal_name }}" \
+        -var="domain_name_id=${{ parameters.domain_name_id }}" \
+        -var="cognito=${{ parameters.cognito }}" \
+        -var='dynamodb_tables=${{ convertToJson(parameters.dynamodb_tables) }}' \
+        -var="certificate_arn=${{ parameters.certificate_arn }}" \
+        2>&1 | tee /tmp/tf_output.log
+
+      APPLY_EXIT=${PIPESTATUS[0]}
+
+      if [ $APPLY_EXIT -eq 0 ]; then
+        echo "Terraform apply concluído com sucesso."
+        exit 0
+      fi
+
+      TOTAL_ERRORS=$(grep -c "Error:" /tmp/tf_output.log || true)
+
+      BASE_PATH_ERRORS=$(grep -cE "BasePathConflictException|Base path already exists|CreateBasePathMapping" /tmp/tf_output.log || true)
+
+      OTHER_ERRORS=$(grep "Error:" /tmp/tf_output.log | grep -vcE "BasePathConflictException|Base path already exists|CreateBasePathMapping" || true)
+
+      echo "=========================================="
+      echo "Total de linhas com 'Error:':  $TOTAL_ERRORS"
+      echo "Erros de Base Path (ok):       $BASE_PATH_ERRORS"
+      echo "Outros erros:                  $OTHER_ERRORS"
+      echo "=========================================="
+
+
+      if [ "$BASE_PATH_ERRORS" -gt 0 ] && [ "$OTHER_ERRORS" -eq 0 ]; then
+        echo "##[warning]Apenas erros de Base Path já existente. Ignorando..."
+        exit 0
+      fi
+
+      echo "##[error]Erro inesperado no terraform apply!"
+      exit 1
+
+- script: |
+    set -euo pipefail
+
+    export IMAGE="${{ parameters.awsAccID }}.dkr.ecr.${{ parameters.awsRegion }}.amazonaws.com/$(Build.Repository.Name):$(Build.BuildId)"
+
+    declare -A SUBSTITUTIONS=(
+      ["PLACEHOLDER_APP_NAME"]="$(Build.Repository.Name)"
+      ["PLACEHOLDER_ECR_IMAGE"]="$IMAGE"
+      ["PLACEHOLDER_ENVIRONMENT"]="${{ parameters.environment }}"
+      ["PLACEHOLDER_AWS_REGION"]="${{ parameters.awsRegion }}"
+      ["PLACEHOLDER_DEPLOYMENT_ASPNETCORE_URLS"]="${{ parameters.deployment_aspnetcore_urls }}"
+      ["PLACEHOLDER_DEPLOYMENT_ASPNETCORE_ENVIRONMENT"]="${{ parameters.deployment_aspnetcore_environment }}"
+      ["PLACEHOLDER_INGRESS_PATH"]="${{ parameters.ingress_path }}"
+      ["PLACEHOLDER_MIN_REPLICAS"]="${{ parameters.pod_min_replicas }}"
+      ["PLACEHOLDER_MAX_REPLICAS"]="${{ parameters.pod_max_replicas }}"
+      ["PLACEHOLDER_REQUESTS_CPU"]="${{ parameters.pod_requests_cpu }}"
+      ["PLACEHOLDER_REQUESTS_MEMORY"]="${{ parameters.pod_requests_memory }}"
+      ["PLACEHOLDER_LIMITS_CPU"]="${{ parameters.pod_limits_cpu }}"
+      ["PLACEHOLDER_LIMITS_MEMORY"]="${{ parameters.pod_limits_memory }}"
+      ["PLACEHOLDER_CPU_UTILIZATION"]="${{ parameters.cpu_utilization }}"
+      ["PLACEHOLDER_DD_LANG"]="${{ parameters.dd_lang }}"
+      ["PLACEHOLDER_DD_LIB_VERSION"]="${{ parameters.dd_lib_version }}"
+    )
+
+    MANIFESTS=(deployment.yaml service.yaml hpa.yaml configmap.yaml ingress.yaml)
+    K8S_DIR="$(Build.SourcesDirectory)/k8s"
+
+    MISSING=0
+    for manifest in "${MANIFESTS[@]}"; do
+      [ ! -f "$K8S_DIR/$manifest" ] && echo "##[error]Manifest não encontrado: $K8S_DIR/$manifest" && MISSING=1
+    done
+    [ "$MISSING" -eq 1 ] && exit 1
+
+    for key in "${!SUBSTITUTIONS[@]}"; do
+      [ -z "${SUBSTITUTIONS[$key]}" ] && echo "##[error]Variável vazia para: $key" && exit 1
+    done
+
+    for manifest in "${MANIFESTS[@]}"; do
+      FILE="$K8S_DIR/$manifest"
+      for key in "${!SUBSTITUTIONS[@]}"; do
+        sed -i "s|${key}|${SUBSTITUTIONS[$key]}|g" "$FILE"
+      done
+      echo "Processado: $FILE"
+    done
+
+    REMAINING=$(grep -rl "PLACEHOLDER_" "$K8S_DIR"/*.yaml 2>/dev/null || true)
+    if [ -n "$REMAINING" ]; then
+      echo "##[error]Placeholders não substituídos:"
+      grep -rn "PLACEHOLDER_" "$K8S_DIR"/*.yaml
+      exit 1
+    fi
+
+    echo "##[section]Todos os manifests configurados com sucesso"
+  displayName: "Configure All Manifests"
+
+- bash: |
+    set -euo pipefail
+
+    K8S_DIR="$(Build.SourcesDirectory)/k8s"
+    CONFIGMAP_FILE="$K8S_DIR/configmap-app-vars.yaml"
+
+    ENV_VARS_JSON='${{ convertToJson(parameters.env_vars) }}'
+
+    cat > "$CONFIGMAP_FILE" <<EOF
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: $(Build.Repository.Name)-app-vars
+      namespace: $(Build.Repository.Name)-${{ parameters.environment }}
+    data:
+    EOF
+
+    COUNT=$(echo "$ENV_VARS_JSON" | jq 'length')
+
+    if [ "$COUNT" -eq 0 ]; then
+      echo "##[warning]Nenhuma env_var definida. ConfigMap gerado sem entradas."
+    else
+      echo "$ENV_VARS_JSON" | jq -r '.[] | "  \(.name): \"\(.value)\""' >> "$CONFIGMAP_FILE"
+    fi
+
+    echo "ConfigMap gerado:"
+    cat "$CONFIGMAP_FILE"
+  displayName: "Gerar ConfigMap — env_vars"
+
+- task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+  displayName: Update kubeconfig
+  inputs:
+    awsCredentials: ${{ parameters.serviceAccount }}
+    regionName: ${{ parameters.awsRegion}}
+    scriptType: inline
+    inlineScript: |
+      aws eks update-kubeconfig --region ${{ parameters.awsRegion}} --name ${{ parameters.clusterName}}
+
+- task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+  displayName: Create namespace
+  inputs:
+    awsCredentials: ${{ parameters.serviceAccount }}
+    regionName: ${{ parameters.awsRegion}}
+    scriptType: inline
+    inlineScript: |
+      kubectl create namespace $(Build.Repository.Name)-${{ parameters.environment }} --dry-run=client -o yaml | kubectl apply -f -
+
+- task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+  displayName: Apply Kubernetes manifests
+  env:
+    K8S_DIR: $(Build.SourcesDirectory)/k8s
+  inputs:
+    awsCredentials: ${{ parameters.serviceAccount }}
+    regionName: ${{ parameters.awsRegion}}
+    scriptType: inline
+    inlineScript: |
+
+      aws eks update-kubeconfig --region ${{ parameters.awsRegion }} --name ${{ parameters.clusterName }}
+
+      K8S_DIR="$(Build.SourcesDirectory)/k8s"
+
+      echo "K8S_DIR resolvido para: $K8S_DIR"
+      ls -la "$K8S_DIR" || echo "##[error]Diretório não encontrado!"
+
+      kubectl apply -f "$K8S_DIR/" \
+        -n $(Build.Repository.Name)-${{ parameters.environment }}
+
+
+- task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+  displayName: 'Anotar deployment com BuildId (rastreabilidade)'
+  inputs:
+    awsCredentials: ${{ parameters.serviceAccount }}
+    regionName: ${{ parameters.awsRegion }}
+    scriptType: inline
+    inlineScript: |
+      set -uo pipefail
+      APP="$(Build.Repository.Name)"
+      NS="${APP}-${{ parameters.environment }}"
+
+      kubectl patch deployment "$APP" -n "$NS" \
+        --type=merge \
+        -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"deploy.fibra.io/build-id\":\"$(Build.BuildId)\",\"deploy.fibra.io/commit\":\"$(Build.SourceVersion)\",\"deploy.fibra.io/branch\":\"$(Build.SourceBranchName)\",\"deploy.fibra.io/triggered-by\":\"$(Build.RequestedFor)\"}}}}}"
+
+      echo "Annotations aplicadas:"
+      kubectl get deployment "$APP" -n "$NS" \
+        -o jsonpath='{.spec.template.metadata.annotations}' | jq .
+ 
