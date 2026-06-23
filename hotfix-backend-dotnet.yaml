@@ -1,0 +1,270 @@
+parameters:
+- name: deployment_aspnetcore_environment
+  type: string
+  default: ""
+- name: environment
+  type: string
+- name: deployment_aspnetcore_urls
+  type: string
+- name: domain_name
+  type: string
+  default: ''
+- name: ingress_path
+  type: string
+- name: base_path
+  type: string
+- name: api_visibility
+  type: string
+- name: cpu_utilization
+  type: string
+- name: pod_min_replicas
+  type: string
+- name: pod_max_replicas
+  type: string
+- name: pod_requests_cpu
+  type: string
+- name: pod_requests_memory
+  type: string
+- name: pod_limits_cpu
+  type: string
+- name: pod_limits_memory
+  type: string
+- name: ssm_parameters_prd
+  type: object
+  default: '[]'
+- name: env_vars
+  type: object
+  default: []
+- name: dynamodb_tables
+  type: object
+  default: []
+- name: s3_buckets
+  type: object
+  default: []
+- name: ssm_parameters
+  type: object
+  default: []
+- name: secrets
+  type: object
+  default: []
+- name: dd_lang
+  type: string
+  default: dotnet
+- name: dd_lib_version
+  type: string
+  default: 'latest'
+- name: cognito
+  type: string
+  default: false
+- name: sqs
+  type: object
+  default: []
+- name: hotfix_main_pr_require_manual_approval
+  type: boolean
+  default: false
+- name: hotfix_main_pr_reviewers
+  type: string
+  default: ''
+- name: hotfix_main_pr_wait_timeout_minutes
+  type: number
+  default: 360
+
+stages:
+
+- stage: Veracode
+  displayName: Veracode SAST
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - job: SecurityScan
+    displayName: Veracode SAST
+    timeoutInMinutes: 120
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - checkout: self
+      - template: ../scanner-veracode.yaml
+        parameters:
+          appName: $(Build.Repository.Name)
+
+- stage: PRD
+  displayName: Deploy PRD
+  dependsOn: Veracode
+  condition: succeeded()
+  variables:
+    - template: ../variables/global-variables.yaml
+  jobs:
+  - deployment: Deploy_PRD
+    displayName: Deploy PRD
+    environment: prd
+    pool:
+      vmImage: ubuntu-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: templates
+            persistCredentials: true
+            path: s/templates
+
+          - template: ../infra/setup-git-auth.yaml
+
+          - template: ../deploy-backend.yaml
+            parameters:
+              environment: prd
+              deployment_aspnetcore_environment: production
+              serviceAccount: ${{ variables.PrdServiceAccount }}
+              clusterName: ${{ variables.PrdAwsEksClusterName }}
+              awsRegion: ${{ variables.PrdAwsRegion }}
+              awsAccID: ${{ variables.PrdAwsAccId }}
+              deployment_aspnetcore_urls: ${{ parameters.deployment_aspnetcore_urls }}
+              domain_name: ${{ parameters.domain_name }}
+              ingress_path: ${{ parameters.ingress_path }}
+              albSharedDns: ${{ variables.PrdAlbSharedDns }}
+              certificate_arn: ${{ variables.PrdAwsAcmCertificate }}
+              apiGatewayVpcLink: ${{ variables.PrdApiGatewayVpcLink }}
+              albSharedListener: ${{ variables.PrdAlbSharedListener }}
+              base_path: ${{ parameters.base_path }}
+              vpc_endpoint_apigw: ${{ variables.PrdVpcEndpointApiGateway }}
+              domain_internal_name: ${{ variables.PrdDomainInternal }}
+              domain_name_id: ${{ variables.PrdDomainInternalID }}
+              api_visibility: ${{ parameters.api_visibility }}
+              pod_requests_cpu: ${{ parameters.pod_requests_cpu }}
+              pod_requests_memory: ${{ parameters.pod_requests_memory }}
+              pod_limits_cpu: ${{ parameters.pod_limits_cpu }}
+              pod_limits_memory: ${{ parameters.pod_limits_memory }}
+              pod_min_replicas: ${{ parameters.pod_min_replicas }}
+              pod_max_replicas: ${{ parameters.pod_max_replicas }}
+              cpu_utilization: ${{ parameters.cpu_utilization }}
+              ssm_parameters: ${{ parameters.ssm_parameters_prd }}
+              env_vars: ${{ parameters.env_vars }}
+              dynamodb_tables: ${{ parameters.dynamodb_tables }}
+              s3_buckets: ${{ parameters.s3_buckets }}
+              secrets: ${{ parameters.secrets }}
+              dd_lang: ${{ parameters.dd_lang }}
+              dd_lib_version: ${{ parameters.dd_lib_version }}
+              cognito: ${{ parameters.cognito }}
+              sqs: ${{ parameters.sqs }}
+
+- stage: Approve_PR_Main
+  displayName: 'Approve PR hotfix -> main'
+  dependsOn: PRD
+  condition: succeeded()
+  jobs:
+    - deployment: Approve_PR_Main
+      displayName: 'Aguardando aprovacao do PR'
+      environment: prd
+      pool:
+        vmImage: ubuntu-latest
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+             - bash: echo "Aprovação concedida. Liberando PR hotfix -> main"
+
+- stage: PR_PRD
+  displayName: 'PR hotfix -> main'
+  dependsOn: Approve_PR_Main
+  condition: succeeded()
+  jobs:
+  - template: ../utils/create-pullrequest.yaml
+    parameters:
+      sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
+      targetBranch: main
+      requireManualApproval: ${{ parameters.hotfix_main_pr_require_manual_approval }}
+      reviewers: ${{ parameters.hotfix_main_pr_reviewers }}
+      waitTimeoutMinutes: ${{ parameters.hotfix_main_pr_wait_timeout_minutes }}
+
+- stage: PR_HML
+  displayName: 'PR main -> homolog'
+  dependsOn: PR_PRD
+  condition: succeeded()
+  jobs:
+  - template: ../utils/create-pullrequest.yaml
+    parameters:
+      sourceBranch: main
+      targetBranch: homolog
+
+- stage: PR_DEV
+  displayName: 'PR homolog -> develop'
+  dependsOn: PR_HML
+  condition: succeeded()
+  jobs:
+  - template: ../utils/create-pullrequest.yaml
+    parameters:
+      sourceBranch: homolog
+      targetBranch: develop
+
+- stage: Delete_Hotfix_Branch
+  displayName: 'Delete hotfix branch'
+  dependsOn: PR_DEV
+  condition: succeeded()
+  jobs:
+  - job: DeleteBranch
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - bash: |
+        set -euo pipefail
+
+        BRANCH_NAME="$(Build.SourceBranch)"
+        FILTER_PREFIX="${BRANCH_NAME#refs/}"
+        BASE_URL="$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.ID)/refs"
+        ENCODED_FILTER="$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$FILTER_PREFIX")"
+
+        echo "Deleting branch: $BRANCH_NAME (list filter: $FILTER_PREFIX)"
+
+        if [[ "$BRANCH_NAME" =~ refs/heads/(main|master|develop|homolog) ]]; then
+          echo "##[error]Protected branch. Aborting."
+          exit 1
+        fi
+
+        if [[ -z "${SYSTEM_ACCESSTOKEN:-}" ]]; then
+          echo "##[error]SYSTEM_ACCESSTOKEN is empty. Map System.AccessToken via env on this step."
+          exit 1
+        fi
+
+        LIST_URL="${BASE_URL}?filter=${ENCODED_FILTER}&api-version=7.1"
+        RESPONSE=$(curl -sS -u ":${SYSTEM_ACCESSTOKEN}" "$LIST_URL")
+
+        if ! echo "$RESPONSE" | jq -e . >/dev/null 2>&1; then
+          echo "##[error]Unexpected response listing refs (not JSON). First 500 chars:"
+          echo "${RESPONSE:0:500}"
+          exit 1
+        fi
+
+        OBJECT_ID=$(echo "$RESPONSE" | jq -r --arg n "$BRANCH_NAME" '.value[]? | select(.name==$n) | .objectId' | head -n1)
+
+        if [[ "$OBJECT_ID" == "null" || -z "$OBJECT_ID" ]]; then
+          echo "##[error]Branch not found or already deleted. API response:"
+          echo "$RESPONSE" | jq .
+          exit 1
+        fi
+
+        BODY="[
+          {
+            \"name\": \"$BRANCH_NAME\",
+            \"oldObjectId\": \"$OBJECT_ID\",
+            \"newObjectId\": \"0000000000000000000000000000000000000000\"
+          }
+        ]"
+
+        POST_URL="${BASE_URL}?api-version=7.1"
+        HTTP_CODE=$(curl -sS -o /tmp/delete_ref_body.txt -w "%{http_code}" \
+          -X POST \
+          -u ":${SYSTEM_ACCESSTOKEN}" \
+          -H "Content-Type: application/json" \
+          -d "$BODY" \
+          "$POST_URL")
+
+        if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "201" || "$HTTP_CODE" == "204" ]]; then
+          echo "Branch deleted successfully (HTTP $HTTP_CODE)"
+        else
+          echo "##[error]Delete refs failed with HTTP $HTTP_CODE. Response:"
+          cat /tmp/delete_ref_body.txt
+          exit 1
+        fi
+      displayName: 'Delete branch via REST API'
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
