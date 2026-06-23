@@ -1,0 +1,359 @@
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Pipelines
+      ref: refs/heads/main
+
+parameters:
+- name: deployment_aspnetcore_environment
+  type: string
+  default: ""
+- name: deployment_aspnetcore_urls
+  type: string
+- name: ingress_path
+  type: string
+- name: base_path
+  type: string
+- name: pod_min_replicas
+  type: string
+- name: pod_max_replicas
+  type: string
+- name: pod_requests_cpu
+  type: string
+- name: pod_requests_memory
+  type: string
+- name: pod_limits_cpu
+  type: string
+- name: pod_limits_memory
+  type: string
+- name: api_visibility
+  type: string
+- name: cpu_utilization
+  type: string
+- name: env_vars
+  type: object
+  default: []
+- name: ssm_parameters_dev
+  type: object
+  default: '[]'
+- name: ssm_parameters_hml
+  type: object
+  default: '[]'
+- name: ssm_parameters_prd
+  type: object
+  default: '[]'
+- name: dynamodb_tables
+  type: object
+  default: []
+- name: s3_buckets
+  type: object
+  default: []
+- name: secrets
+  type: object
+  default: []
+- name: dd_lang
+  type: string
+  values:
+    - nodejs
+    - python
+    - dotnet
+    - ruby
+    - php
+    - java
+  default: dotnet
+- name: dd_lib_version
+  type: string
+  default: 'latest'
+- name: cognito
+  type: string
+  default: false
+- name: domain_name
+  type: string
+  default: ''
+- name: sqs
+  type: object
+  default: []
+- name: hotfix_main_pr_require_manual_approval
+  type: boolean
+  default: false
+- name: hotfix_main_pr_reviewers
+  type: string
+  default: ''
+- name: hotfix_main_pr_wait_timeout_minutes
+  type: number
+  default: 360
+
+variables:
+  - template: templates/variables/global-variables.yaml
+  - group: git-credentials
+
+stages:
+- stage: SonarQube
+  displayName: SonarQube Scan
+  jobs:
+  - job: SonarQubeScan
+    displayName: 'SonarQube Analysis'
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - checkout: self
+        fetchDepth: 0
+        displayName: 'Checkout do Código'
+      - template: templates/sonarqube/qa-sonar-dotnet.yaml@templates
+
+- stage: Build
+  displayName: Build
+  dependsOn: SonarQube
+  condition: succeeded()
+  jobs:
+  - template: templates/dotnet/build-backend-dotnet.yaml
+
+- ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/') }}:
+
+  - template: templates/hotfix/hotfix-backend-dotnet.yaml
+    parameters:
+      environment: prd
+      deployment_aspnetcore_environment: production
+      deployment_aspnetcore_urls: ${{ parameters.deployment_aspnetcore_urls }}
+      domain_name: ${{ parameters.domain_name }}
+      ingress_path: ${{ parameters.ingress_path }}
+      base_path: ${{ parameters.base_path }}
+      api_visibility: ${{ parameters.api_visibility }}
+      pod_requests_cpu: ${{ parameters.pod_requests_cpu }}
+      pod_requests_memory: ${{ parameters.pod_requests_memory }}
+      pod_limits_cpu: ${{ parameters.pod_limits_cpu }}
+      pod_limits_memory: ${{ parameters.pod_limits_memory }}
+      pod_min_replicas: ${{ parameters.pod_min_replicas }}
+      pod_max_replicas: ${{ parameters.pod_max_replicas }}
+      cpu_utilization: ${{ parameters.cpu_utilization }}
+      ssm_parameters: ${{ parameters.ssm_parameters_prd }}
+      env_vars: ${{ parameters.env_vars }}
+      dynamodb_tables: ${{ parameters.dynamodb_tables }}
+      s3_buckets: ${{ parameters.s3_buckets }}
+      secrets: ${{ parameters.secrets }}
+      dd_lang: ${{ parameters.dd_lang }}
+      dd_lib_version: ${{ parameters.dd_lib_version }}
+      cognito: ${{ parameters.cognito }}
+      sqs: ${{ parameters.sqs }}
+
+
+- ${{ else }}:
+
+  - stage: DEV
+    displayName: DEV
+    dependsOn: Build
+    condition: |
+      and(
+        succeeded('Build'),
+        or(
+          eq(variables['Build.SourceBranch'], 'refs/heads/develop'),
+          eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')
+        )
+      )
+    jobs:
+    - deployment: Deploy_DEV
+      displayName: Deploy DEV
+      environment: dev
+      pool:
+        vmImage: ubuntu-latest
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - checkout: self
+            - checkout: templates
+              persistCredentials: true
+              path: s/templates
+
+            - template: templates/infra/setup-git-auth.yaml
+
+            - template: templates/deploy-backend.yaml
+              parameters:
+                environment: dev
+                deployment_aspnetcore_environment: development
+                serviceAccount: ${{ variables.DevServiceAccount }}
+                clusterName: ${{ variables.DevAwsEksClusterName }}
+                awsRegion: ${{ variables.AwsRegion }}
+                awsAccID: ${{ variables.DevAwsAccID }} 
+                deployment_aspnetcore_urls: ${{ parameters.deployment_aspnetcore_urls }}
+                domain_name: ${{ parameters.domain_name }}
+                ingress_path: ${{ parameters.ingress_path }}
+                certificate_arn: ${{ variables.DevAwsAcmCertificate }}
+                albSharedDns: ${{ variables.DevAlbSharedDns }}
+                apiGatewayVpcLink: ${{ variables.DevApiGatewayVpcLink }}
+                albSharedListener: ${{ variables.DevAlbSharedListener }}
+                api_visibility: ${{ parameters.api_visibility }}
+                base_path: ${{ parameters.base_path }}
+                pod_requests_cpu: ${{ parameters.pod_requests_cpu }}
+                pod_requests_memory: ${{ parameters.pod_requests_memory }}
+                pod_limits_cpu: ${{ parameters.pod_limits_cpu }}
+                pod_limits_memory: ${{ parameters.pod_limits_memory }}
+                pod_min_replicas: ${{ parameters.pod_min_replicas }}
+                pod_max_replicas: ${{ parameters.pod_max_replicas }}
+                vpc_endpoint_apigw: ${{ variables.DevVpcEndpointApiGateway }}
+                domain_internal_name: ${{ variables.DevDomainInternal }}
+                domain_name_id: ${{ variables.DevDomainInternalID }}
+                cpu_utilization: ${{ parameters.cpu_utilization }}
+                env_vars: ${{ parameters.env_vars }}
+                ssm_parameters: ${{ parameters.ssm_parameters_dev }}
+                dynamodb_tables: ${{ parameters.dynamodb_tables }}
+                s3_buckets: ${{ parameters.s3_buckets }}
+                secrets: ${{ parameters.secrets }}
+                dd_lang: ${{ parameters.dd_lang }}
+                dd_lib_version: ${{ parameters.dd_lib_version }}
+                cognito: ${{ parameters.cognito }}
+                sqs: ${{ parameters.sqs }}
+
+  - stage: Veracode
+    displayName: Veracode SAST
+    dependsOn: DEV
+    condition: succeeded()
+    jobs:
+      - job: SecurityScan
+        displayName: Veracode SAST
+        timeoutInMinutes: 120
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - template: templates/scanner-veracode.yaml
+            parameters:
+              appName: ${Build.Repository.Name}   
+
+  - stage: HML
+    displayName: HML
+    dependsOn: Veracode
+    condition: succeeded()
+    jobs:
+      - deployment: Deploy_HML
+        displayName: Deploy HML
+        environment: hml
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:          
+              - checkout: self 
+              - checkout: templates
+                persistCredentials: true
+                path: s/templates
+
+              - template: templates/infra/setup-git-auth.yaml
+
+              - template: templates/deploy-backend.yaml
+                parameters:
+                  environment: hml
+                  deployment_aspnetcore_environment: homolog
+                  serviceAccount: ${{ variables.HmlServiceAccount }}
+                  clusterName: ${{ variables.HmlAwsEksClusterName }}
+                  awsRegion: ${{ variables.AwsRegion }}
+                  awsAccID: ${{ variables.HmlAwsAccID }}
+                  deployment_aspnetcore_urls: ${{ parameters.deployment_aspnetcore_urls }}
+                  domain_name: ${{ parameters.domain_name }}
+                  ingress_path: ${{ parameters.ingress_path }}
+                  albSharedDns: ${{ variables.HmlAlbSharedDns }}
+                  certificate_arn: ${{ variables.HmlAwsAcmCertificate }}
+                  apiGatewayVpcLink: ${{ variables.HmlApiGatewayVpcLink }}
+                  albSharedListener: ${{ variables.HmlAlbSharedListener }}
+                  base_path: ${{ parameters.base_path }}
+                  vpc_endpoint_apigw: ${{ variables.HmlVpcEndpointApiGateway }}
+                  domain_internal_name: ${{ variables.HmlDomainInternal }}
+                  domain_name_id: ${{ variables.HmlDomainInternalID }}
+                  api_visibility: ${{ parameters.api_visibility }}
+                  pod_requests_cpu: ${{ parameters.pod_requests_cpu }}
+                  pod_requests_memory: ${{ parameters.pod_requests_memory }}
+                  pod_limits_cpu: ${{ parameters.pod_limits_cpu }}
+                  pod_limits_memory: ${{ parameters.pod_limits_memory }}
+                  pod_min_replicas: ${{ parameters.pod_min_replicas }}
+                  pod_max_replicas: ${{ parameters.pod_max_replicas }}
+                  cpu_utilization: ${{ parameters.cpu_utilization }}
+                  ssm_parameters: ${{ parameters.ssm_parameters_hml }}
+                  env_vars: ${{ parameters.env_vars }}
+                  dynamodb_tables: ${{ parameters.dynamodb_tables }}
+                  s3_buckets: ${{ parameters.s3_buckets }}
+                  secrets: ${{ parameters.secrets }}
+                  dd_lang: ${{ parameters.dd_lang }}
+                  dd_lib_version: ${{ parameters.dd_lib_version }}
+                  cognito: ${{ parameters.cognito }}
+                  sqs: ${{ parameters.sqs }}
+
+  - stage: PR_HML
+    displayName: PR DEV -> HML
+    dependsOn: HML
+    condition: succeeded()
+    jobs:
+    - template: templates/utils/create-pullrequest.yaml
+      parameters:
+        sourceBranch: 'develop'
+        targetBranch: 'homolog'
+
+
+  - stage: PRD
+    displayName: PRD
+    dependsOn: PR_HML
+    condition: succeeded() 
+    jobs:
+    - deployment: Deploy_PRD
+      displayName: Deploy PRD
+      environment: prd
+      pool:
+        vmImage: ubuntu-latest
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - checkout: self 
+            - checkout: templates
+              persistCredentials: true
+              path: s/templates     
+
+            - template: templates/infra/setup-git-auth.yaml
+
+            - template: templates/deploy-backend.yaml
+              parameters:
+                environment: prd
+                deployment_aspnetcore_environment: production
+                serviceAccount: ${{ variables.PrdServiceAccount }}
+                clusterName: ${{ variables.PrdAwsEksClusterName }}
+                awsRegion: ${{ variables.PrdAwsRegion }}
+                awsAccID: ${{ variables.PrdAwsAccId }}
+                deployment_aspnetcore_urls: ${{ parameters.deployment_aspnetcore_urls }}
+                domain_name: ${{ parameters.domain_name }}
+                ingress_path: ${{ parameters.ingress_path }}
+                albSharedDns: ${{ variables.PrdAlbSharedDns }}
+                certificate_arn: ${{ variables.PrdAwsAcmCertificate }}
+                apiGatewayVpcLink: ${{ variables.PrdApiGatewayVpcLink }}
+                albSharedListener: ${{ variables.PrdAlbSharedListener }}
+                base_path: ${{ parameters.base_path }}
+                vpc_endpoint_apigw: ${{ variables.PrdVpcEndpointApiGateway }}
+                domain_internal_name: ${{ variables.PrdDomainInternal }}
+                domain_name_id: ${{ variables.PrdDomainInternalID }}
+                api_visibility: ${{ parameters.api_visibility }}
+                pod_requests_cpu: ${{ parameters.pod_requests_cpu }}
+                pod_requests_memory: ${{ parameters.pod_requests_memory }}
+                pod_limits_cpu: ${{ parameters.pod_limits_cpu }}
+                pod_limits_memory: ${{ parameters.pod_limits_memory }}
+                pod_min_replicas: ${{ parameters.pod_min_replicas }}
+                pod_max_replicas: ${{ parameters.pod_max_replicas }}
+                cpu_utilization: ${{ parameters.cpu_utilization }}
+                ssm_parameters: ${{ parameters.ssm_parameters_prd }}
+                env_vars: ${{ parameters.env_vars }}
+                dynamodb_tables: ${{ parameters.dynamodb_tables }}
+                s3_buckets: ${{ parameters.s3_buckets }}
+                secrets: ${{ parameters.secrets }}
+                dd_lang: ${{ parameters.dd_lang }}
+                dd_lib_version: ${{ parameters.dd_lib_version }}
+                cognito: ${{ parameters.cognito }}
+                sqs: ${{ parameters.sqs }}
+
+  - stage: PR_PRD
+    displayName: PR HML -> PRD/Main
+    dependsOn: PRD
+    condition: succeeded()
+    jobs:
+    - template: templates/utils/create-pullrequest.yaml
+      parameters:
+        sourceBranch: 'homolog'
+        targetBranch: 'main'
