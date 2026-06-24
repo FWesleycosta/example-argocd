@@ -1,0 +1,30 @@
+steps:
+- task: Bash@3
+  displayName: 'Configure Git Authentication for Terraform Modules'
+  inputs:
+    targetType: 'inline'
+    script: |
+      if [ -z "$GIT_PAT" ]; then
+        echo " GIT_PAT está vazio!"
+        exit 1
+      fi
+      echo "Token presente (${GIT_PAT} caracteres)"
+
+
+      git config --global url."https://pat:${GIT_PAT}@dev.azure.com/bancofibra/".insteadOf "https://dev.azure.com/bancofibra/"
+
+      git config --global core.askPass ""
+      git config --global credential.helper ""
+      export GIT_TERMINAL_PROMPT=0
+
+      echo "Testando acesso ao repositório..."
+      git ls-remote https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform HEAD 2>&1
+      if [ $? -eq 0 ]; then
+        echo "Acesso confirmado"
+      else
+        echo "Falha no acesso"
+        exit 1
+      fi
+  env:
+    GIT_PAT: $(GIT_PAT)
+ 
