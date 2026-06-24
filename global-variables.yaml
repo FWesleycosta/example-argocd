@@ -1,0 +1,417 @@
+variables:
+  # =========================
+  # AWS – REGIÕES
+  # =========================
+  - name: AwsRegion
+    value: 'us-east-2'
+  - name: PrdAwsRegion
+    value: 'sa-east-1'
+  - name: PixAwsRegion
+    value: 'sa-east-1'
+  - name: PixPrdAwsRegion
+    value: 'sa-east-1'
+
+
+  # =========================
+  # AWS – CONTAS
+  # =========================
+  - name: DevAwsAccID
+    value: ''
+  - name: HmlAwsAccID
+    value: ''
+  - name: PrdAwsAccId
+    value: ''
+
+  # =========================
+  # AWS – CONTAS PIX
+  # =========================
+  - name: PixDevAwsAccID
+    value: ''
+  - name: PixHmlAwsAccID
+    value: ''
+  - name: PixPrdAwsAccId
+    value: ''
+
+  # =========================
+  # AWS – CERTIFICADO ACM
+  # =========================
+  - name: DevAwsAcmCertificate
+    value: 'arn:aws:acm'
+  - name: HmlAwsAcmCertificate
+    value: 'arn:aws:ac'
+  - name: PrdAwsAcmCertificate
+    value: 'arn:aws:a'
+
+  # =========================
+  # AWS – SERVICE ACCOUNTS
+  # =========================
+  - name: DevServiceAccountTerraform
+    value: 'AWS-Workloads-Dev-Terraform'
+  - name: HmlServiceAccountTerraform
+    value: 'AWS-Workloads-Hml-Terraform'
+  - name: PrdServiceAccountTerraform
+    value: 'AWS-Workloads-Prd-Terraform'
+
+  - name: DevServiceAccount
+    value: 'AWS-Workloads-Dev'
+  - name: HmlServiceAccount
+    value: 'AWS-Workloads-Hml'
+  - name: PrdServiceAccount
+    value: 'AWS-Workloads-Prd'
+
+    # =========================
+    # PIX
+    # =========================
+  - name: PixDevServiceAccountTerraform
+    value: 'fibra-pix-dev'
+  - name: PixHmlServiceAccountTerraform
+    value: 'fibra-pix-hml'
+  - name: PIxPrdServiceAccountTerraform
+    value: 'fibra-pix-prd'
+
+  - name: PixDevServiceAccount
+    value: 'fibra-pix-dev'
+  - name: PixHmlServiceAccount
+    value: 'fibra-pix-hml'
+  - name: PixPrdServiceAccount
+    value: 'fibra-pix-prd'
+
+  # ==============================
+  # AWS - CLOUDFRONT SAP
+  # =============================
+
+  - name: DevCloudFrontSPA
+    value: 'arn:aws:'
+  - name: HmlCloudFrontSPA
+    value: 'arn:aws:'
+  - name: PrdCloudFrontSPA
+    value: 'arn:aws:'
+
+  # =========================
+  # AWS – BUCKETS (Terraform / Logs)
+  # =========================
+  - name: DevtfstatesBucket
+    value: 'tfstates-'
+  - name: HmltfstatesBucket
+    value: 'tfstates-'
+  - name: PrdtfstatesBucket
+    value: 'tfstates-'
+
+  - name: DevAccessloggingworkloads
+    value: 'access-logging-workloads-dev'
+  - name: HmlAccessloggingworkloads
+    value: 'access-logging-workloads-hml'
+  - name: PrdAccessloggingworkloads
+    value: 'access-logging-workloads-prd'
+
+  # =========================
+  # AWS – EKS
+  # =========================
+  - name: DevAwsEksClusterName
+    value: 'eks-'
+  - name: HmlAwsEksClusterName
+    value: 'eks--'
+  - name: PrdAwsEksClusterName
+    value: 'ek'
+
+  # =========================
+  # AWS – EKS - PIX
+  # =========================
+  - name: PixDevAwsEksClusterName
+    value: '-dev' 
+  - name: PixHmlAwsEksClusterName
+    value: 'eks--hml'
+  - name: PixPrdAwsEksClusterName
+    value: 'eks--prd'
+
+  # =========================
+  # AWS – ALB (Shared)
+  # =========================
+  - name: DevAlbSharedDns
+    value: 'internal'
+  - name: HmlAlbSharedDns
+    value: 'internal-'
+  - name: PrdAlbSharedDns
+    value: 'internal-'
+
+  - name: DevAlbSharedListener
+    value: 'arn:aws'
+  - name: HmlAlbSharedListener
+    value: 'arn:aws:'
+  - name: PrdAlbSharedListener
+    value: 'arn:aws:'
+
+  # ====================================
+  # AWS – API Gateway / VPC / Subnets
+  # ====================================
+  - name: DevApiGatewayVpcLink
+    value: ''
+  - name: HmlApiGatewayVpcLink
+    value: ''
+  - name: PrdApiGatewayVpcLink
+    value: ''
+
+  - name: DevVpcEndpointApiGateway
+    value: 'vpce-'
+  - name: HmlVpcEndpointApiGateway
+    value: 'vpce-'
+  - name: PrdVpcEndpointApiGateway
+    value: 'vpce-'
+
+  - name: DevSubnetsPrivate
+    value: "subnet-,subnet-"
+  - name: HmlSubnetsPrivate
+    value: 'subnet-,subnet-'
+  - name: PrdSubnetsPrivate
+    value: 'subnet-,subnet-'
+  - name: DevVpcID
+    value: 'vpc-'
+  - name: HmlVpcID
+    value: 'vpc-'
+  - name: PrdVpcID
+    value: 'vpc-'
+
+
+  # ==========================================================
+  # PIX - ESPECÍFICAS
+  # ==========================================================
+
+  #======= PIX-DEV =========
+
+  - name: PixDevDomainInternalID
+    value: ''
+
+  - name: PixDevVpcEndpointApiGateway
+    value: 'vpce-'
+
+  - name: PixDevAlbSharedListener
+    value: 'arn:aws'
+
+  - name: PixDevApiGatewayVpcLink
+    value: ''
+
+  - name: PixDevAlbSharedDns
+    value: 'interna'
+
+  #======= PIX-HML =========
+
+  - name: PixHmlDomainInternalID
+    value: ''
+
+  - name: PixHmlVpcEndpointApiGateway
+    value: 'vpce-'
+
+  - name: PixHmlAlbSharedListener
+    value: 'arn:aw'
+
+  - name: PixHmlApiGatewayVpcLink
+    value: ''
+
+  - name: PixHmlAlbSharedDns
+    value: 'internal'
+
+
+  #======= PIX-PRD =========
+
+  - name: PixPrdDomainInternalID
+    value: ''
+
+  - name: PixPrdVpcEndpointApiGateway
+    value: 'vpce-'
+
+  - name: PixPrdAlbSharedListener
+    value: 'arn:aws'
+
+  - name: PixPrdApiGatewayVpcLink
+    value: ''
+
+  - name: PixPrdAlbSharedDns
+    value: 'internal-'
+
+  # ==========================================================
+  # NOVO INTERNET BANKING - ESPECÍFICAS
+  # ==========================================================
+  # DOMÍNIOS – INTERNOS
+  # =========================
+  - name: DevDomainInternal
+    value: 'dev--int..com.br'
+  - name: HmlDomainInternal
+    value: 'hml-api-..com.br'
+  - name: PrdDomainInternal
+    value: 'prd--..com.br'
+
+  - name: DevDomainInternalID
+    value: ''
+  - name: HmlDomainInternalID
+    value: ''
+  - name: PrdDomainInternalID
+    value: ''
+
+  # =========================
+  # DOMÍNIOS – INTERNOS - PIX
+  # =========================
+  - name: PixDevDomainInternal
+    value: 'devr'
+  - name: PixHmlDomainInternal
+    value: 'hr'
+  - name: PixPrdDomainInternal
+    value: 'pr'
+
+  - name: PixDevDomainInternalID
+    value: ''
+  - name: PixHmlDomainInternalID
+    value: ''
+  - name: PixPrdDomainInternalID
+    value: ''
+
+  # =========================
+  # DOMÍNIOS – PÚBLICOS
+  # =========================
+  - name: DevDomainPublic
+    value: 'dev'
+  - name: HmlDomainPublic
+    value: 'hmlr'
+  - name: PrdDomainPublic
+    value: 'prd'
+
+  - name: dev_VITE_CANAIS_FACADE_BASE
+    value: 'htt'
+  - name: hml_VITE_CANAIS_FACADE_BASE
+    value: 'https'
+  - name: prd_VITE_CANAIS_FACADE_BASE
+    value: 'htt'
+
+  # =========================
+  # BASE URLs
+  # =========================
+  - name: URLBase-hml
+    value: 'http'
+  - name: URLBase-prod
+    value: 'ht/'
+
+  - name: URLBaseV3-hml
+    value: 'https://'
+  - name: URLBaseV3-prod
+    value: 'htt'
+
+  # =========================
+  # AUTENTICAÇÃO / B2C
+  # =========================
+  - name: applicationId-hml
+    value: '1f'
+  - name: applicationId-prod
+    value: ''
+
+  - name: clientId-hml
+    value: '527'
+  - name: clientId-prod
+    value: 'e205'
+
+  - name: env-hml
+    value: 'homol'
+  - name: env-prd
+    value: 'production'
+
+  - name: tenantId-hml
+    value: '71'
+  - name: tenantId-prod
+    value: '34b'
+
+  - name: tenantName-hml
+    value: 'banm'
+  - name: tenantName-prod
+    value: 'ba'
+
+  - name: tenantUrl-hml
+    value: 'b'
+  - name: tenantUrl-prod
+    value: 'ban'
+
+  - name: redirectUri-hml
+    value: 'htt'
+  - name: redirectUri-prod
+    value: 'htt'
+
+  # =========================
+  # APIs / TOKENS
+  # =========================
+  - name: fibraApiKey-hml
+    value: 'Lp'
+  - name: fibraApiKey-prod
+    value: 'BUG'
+
+  - name: tokenApi-hml
+    value: 'l'
+  - name: tokenApi-prod
+    value: '-'
+
+  - name: viteAPiKey
+    value: 'f'
+
+  # =========================
+  # FIREBASE – CONFIGURAÇÕES
+  # =========================
+  - name: firebase.apiKey-hml
+    value: 'Ak'
+  - name: firebase.apiKey-prod
+    value: 'AIza'
+
+  - name: firebase.appId-hml
+    value: '1:802'
+  - name: firebase.appId-prod
+    value: '1:8025'
+
+  - name: firebase.authDomain-hml
+    value: 'banco-'
+  - name: firebase.authDomain-prod
+    value: 'banco-'
+
+  - name: firebase.databaseURL-hml
+    value: 'https:/'
+  - name: firebase.databaseURL-prod
+    value: 'https:/'
+
+  - name: firebase.projectId-hml
+    value: 'ba'
+  - name: firebase.projectId-prod
+    value: 'ba'
+
+  - name: firebase.storageBucket-hml
+    value: 'b'
+  - name: firebase.storageBucket-prod
+    value: 'ban'
+
+  - name: firebase.messagingSenderId-hml
+    value: '8'
+  - name: firebase.messagingSenderId-prod
+    value: '8'
+
+  - name: firebase.measurementId-hml
+    value: 'G-'
+  - name: firebase.measurementId-prod
+    value: 'G-'
+
+
+  # =========================
+  # HOTJAR
+  # =========================
+  - name: hotjarId-hml
+    value: '2'
+  - name: hotjarId-prod
+    value: '2'
+
+  # =========================
+  # ZENDESK
+  # =========================
+  - name: zendesk.chatKey-hml
+    value: '1'
+  - name: zendesk.chatKey-prod
+    value: '6'
+
+  # =========================
+  # IDENTIDADES AUXILIARES
+  # =========================
+  - name: objectId-hml
+    value: '82dded92-42e8-4197-b0bd-38bdb3fea580'
+  - name: objectId-prod
+    value: '-'
