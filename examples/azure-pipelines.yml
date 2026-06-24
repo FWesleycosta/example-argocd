@@ -1,0 +1,59 @@
+# examples/azure-pipelines.yml
+# ============================================================================
+# COPIE este arquivo para a RAIZ do repositório da APLICAÇÃO como `azure-pipelines.yml`.
+#
+# Antes: cada app copiava ~375 linhas de esteira (azure-pipeline-dotnet.yaml).
+# Agora: o app só declara DADOS. Toda a esteira vem da plataforma, pinada por tag.
+# ============================================================================
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Pipelines
+      ref: refs/tags/v2.0.0      # PINE numa TAG — nunca refs/heads/main (rollout controlado)
+
+extends:
+  template: templates/stacks/dotnet-backend.yaml@templates
+  parameters:
+    pod:
+      min_replicas: '2'
+      max_replicas: '6'
+      requests_cpu: 250m
+      requests_memory: 256Mi
+      limits_cpu: 500m
+      limits_memory: 512Mi
+      cpu_utilization: '70'
+
+    networking:
+      ingress_path: /pedidos
+      base_path: pedidos
+      api_visibility: private
+      domain_name: ''
+      deployment_aspnetcore_urls: 'http://+:8080'
+      cognito: false
+
+    resources:
+      dynamodb_tables: []
+      s3_buckets: []
+      sqs: []
+      secrets: []
+
+    observability:
+      dd_lang: dotnet
+      dd_lib_version: latest
+
+    config:
+      env_vars:
+        - name: ASPNETCORE_FORWARDEDHEADERS_ENABLED
+          value: 'true'
+      # SSM por ambiente — a esteira seleciona automaticamente o do ambiente certo
+      ssm_parameters:
+        dev: []
+        hml: []
+        prd: []
+
+    # opcional — só relevante para o fluxo de hotfix
+    hotfix:
+      main_pr_require_manual_approval: false
+      main_pr_reviewers: ''
+      main_pr_wait_timeout_minutes: 360

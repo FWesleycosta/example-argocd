@@ -1,0 +1,31 @@
+# templates/stages/veracode.yaml
+# ----------------------------------------------------------------------------
+# Stage de SAST (Veracode) ÚNICO e reutilizável. Antes estava replicado em dois
+# lugares (caminho release/* do stack e fluxo de hotfix). Agora vive aqui uma vez
+# e os dois fluxos consomem via `template:`.
+#
+# Nome do stage gerado: Veracode  (use-o como dependsOn dos stages seguintes).
+# ----------------------------------------------------------------------------
+parameters:
+  - name: dependsOn
+    type: object
+    default: [Build]
+  - name: condition
+    type: string
+    default: succeeded()
+
+stages:
+  - stage: Veracode
+    displayName: Veracode SAST
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    jobs:
+      - job: SecurityScan
+        displayName: Veracode SAST
+        timeoutInMinutes: 120
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - template: ../veracode/scanner-veracode.yaml
+            parameters:
+              appName: $(Build.Repository.Name)
