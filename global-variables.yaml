@@ -1,91 +1,39 @@
-parameters:
-  - name: environment
-    type: string
-  - name: dependsOn
-    type: object
-    default: [Build]
-  - name: condition
-    type: string
-    default: succeeded()
-  - name: pod
-    type: object
-  - name: networking
-    type: object
-  - name: resources
-    type: object
-  - name: observability
-    type: object
-  - name: env_vars
-    type: object
-    default: []
-  - name: ssm_parameters
-    type: object
-    default: []
+variables:
+  - name: deployment_aspnetcore_environment
+    value: development
 
-stages:
-  - stage: Deploy_${{ parameters.environment }}
-    displayName: 'Deploy ${{ parameters.environment }}'
-    dependsOn: ${{ parameters.dependsOn }}
-    condition: ${{ parameters.condition }}
-    jobs:
-      - deployment: deploy
-        displayName: 'Deploy ${{ parameters.environment }}'
-        environment: ${{ parameters.environment }}
-        pool:
-          vmImage: ubuntu-latest
-        variables:
-          - template: ../variables/env/${{ parameters.environment }}.yaml
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - checkout: self
-                - checkout: templates
-                  persistCredentials: true
-                  path: s/templates
+  - name: serviceAccount
+    value: 'AWS-Workloads-Dev'
+  - name: clusterName
+    value: 'eks-'
+  - name: awsRegion
+    value: 'us-east-2'
+  - name: awsAccID
+    value: ''
+  - name: albSharedDns
+    value: 'internal'
+  - name: certificate_arn
+    value: 'arn:aws:acm'
+  - name: apiGatewayVpcLink
+    value: ''
+  - name: albSharedListener
+    value: 'arn:aws'
+  - name: vpc_endpoint_apigw
+    value: 'vpce-'
+  - name: domain_internal_name
+    value: 'dev--int..com.br'
+  - name: domain_name_id
+    value: ''
 
-                - template: ../infra/setup-git-auth.yaml
-
-                - template: ../deploy-backend.yaml
-                  parameters:
-                    environment: ${{ parameters.environment }}
-                    deployment_aspnetcore_environment: ${{ variables.deployment_aspnetcore_environment }}
-                    serviceAccount: ${{ variables.serviceAccount }}
-                    clusterName: ${{ variables.clusterName }}
-                    awsRegion: ${{ variables.awsRegion }}
-                    awsAccID: ${{ variables.awsAccID }}
-                    albSharedDns: ${{ variables.albSharedDns }}
-                    certificate_arn: ${{ variables.certificate_arn }}
-                    apiGatewayVpcLink: ${{ variables.apiGatewayVpcLink }}
-                    albSharedListener: ${{ variables.albSharedListener }}
-                    vpc_endpoint_apigw: ${{ variables.vpc_endpoint_apigw }}
-                    domain_internal_name: ${{ variables.domain_internal_name }}
-                    domain_name_id: ${{ variables.domain_name_id }}
-                    deployment_aspnetcore_urls: ${{ parameters.networking.deployment_aspnetcore_urls }}
-                    domain_name: ${{ parameters.networking.domain_name }}
-                    ingress_path: ${{ parameters.networking.ingress_path }}
-                    base_path: ${{ parameters.networking.base_path }}
-                    api_visibility: ${{ parameters.networking.api_visibility }}
-                    cognito: ${{ parameters.networking.cognito }}
-                    pod_requests_cpu: ${{ parameters.pod.requests_cpu }}
-                    pod_requests_memory: ${{ parameters.pod.requests_memory }}
-                    pod_limits_cpu: ${{ parameters.pod.limits_cpu }}
-                    pod_limits_memory: ${{ parameters.pod.limits_memory }}
-                    pod_min_replicas: ${{ parameters.pod.min_replicas }}
-                    pod_max_replicas: ${{ parameters.pod.max_replicas }}
-                    cpu_utilization: ${{ parameters.pod.cpu_utilization }}
-                    ssm_parameters: ${{ parameters.ssm_parameters }}
-                    env_vars: ${{ parameters.env_vars }}
-                    dynamodb_tables: ${{ parameters.resources.dynamodb_tables }}
-                    s3_buckets: ${{ parameters.resources.s3_buckets }}
-                    secrets: ${{ parameters.resources.secrets }}
-                    sqs: ${{ parameters.resources.sqs }}
-                    dd_lang: ${{ parameters.observability.dd_lang }}
-                    dd_lib_version: ${{ parameters.observability.dd_lib_version }}
-
-#                - template: ../steps/rollout-verify.yaml
-#                  parameters:
-#                    environment: ${{ parameters.environment }}
-#                    serviceAccount: ${{ variables.serviceAccount }}
-#                    awsRegion: ${{ variables.awsRegion }}
-#                    clusterName: ${{ variables.clusterName }}
+  # --- infra adicional do ambiente (Terraform / observabilidade) ---
+  # Não consumida hoje pelo deploy.yaml; mantida aqui por ser dado de ambiente.
+  - name: serviceAccountTerraform
+    value: 'AWS-Workloads-Dev-Terraform'
+  - name: tfstatesBucket
+    value: 'tfstates-'
+  - name: accessLoggingWorkloads
+    value: 'access-logging-workloads-dev'
+  - name: subnetsPrivate
+    value: 'subnet-,subnet-'
+  - name: vpcId
+    value: 'vpc-'
