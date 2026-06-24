@@ -1,0 +1,31 @@
+parameters:
+  - name: appName
+    type: string
+    displayName: 'Nome da aplicação no Veracode'
+
+steps:
+  - checkout: self
+
+  - task: ArchiveFiles@2
+    displayName: 'Empacotar código para Veracode'
+    inputs:
+      rootFolderOrFile: '$(Build.SourcesDirectory)'
+      includeRootFolder: false
+      archiveType: 'zip'
+      archiveFile: '$(Build.ArtifactStagingDirectory)/veracode-upload.zip'
+      replaceExistingArchive: true
+
+  - task: Veracode@3
+    inputs:
+      ConnectionDetailsSelection: 'Service Connection'
+      AnalysisService: 'Veracode' 
+      veracodeAppProfile: '$(Build.Repository.Name)' 
+      version: '$(Build.Repository.Name)-$(Build.SourceBranchName)-$(Build.BuildId)' 
+      filepath: '$(Build.ArtifactStagingDirectory)/veracode-upload.zip'
+      optargs: '-criticality High -createsandbox true -sandboxname $(Build.SourceBranchName) -deleteIncompleteScan 1' 
+      createSandBox: false 
+      createProfile: true 
+      failBuildIfUploadAndScanBuildStepFails: true 
+      importResults: true 
+      failBuildOnPolicyFail: true 
+      maximumWaitTime: '360'
