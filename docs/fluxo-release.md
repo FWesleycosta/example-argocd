@@ -238,7 +238,10 @@ precisar fatiar uma feature ou quando ela já estiver só no develop.
 
 ## 7. Como isso muda os pipelines (implementado)
 
-Implementação em `azure-pipeline-dotnet.yaml`, escolhida a **Opção A (merge)**:
+Implementação na **esteira reutilizável** (paved road), escolhida a **Opção A (merge)**.
+O app tem um pipeline fino que faz `extends` de `templates/stacks/dotnet-backend.yaml`
+(pinado por tag); o stack roteia por branch. Detalhes da arquitetura de templates em
+[`ARQUITETURA-TEMPLATES.md`](./ARQUITETURA-TEMPLATES.md).
 
 1. **Build único por run.** O caminho da release roda num **único run do pipeline**:
    `Build → HML → PRD`. A imagem é buildada uma vez (stage `Build`, artefato
@@ -257,7 +260,14 @@ Implementação em `azure-pipeline-dotnet.yaml`, escolhida a **Opção A (merge)
      o run até a aprovação. Sobe a **mesma imagem** homologada;
    - **PR `release → main`** (registro de produção) e **back-merge `main → develop`**,
      reaproveitando `templates/utils/create-pullrequest.yaml`.
-4. **`hotfix/*`** → fluxo existente inalterado (deploy direto em PRD).
+4. **`hotfix/*`** → `SonarQube → Build → Veracode (SAST bloqueante) → PRD → PRs em
+   cascata`. **Refatorado** para reusar os mesmos stages do fluxo normal
+   (`templates/stages/veracode.yaml` + `templates/stages/deploy.yaml` com
+   `environment: prd`) em vez de replicar o bloco de deploy de PRD. Com isso o hotfix
+   herda o **gate de GMUD** no Environment `prd` e a **verificação de rollout**
+   (`rollout-verify`, com `rollout undo` automático) — antes ausentes no caminho de
+   emergência. Após o PRD, abre os PRs de volta em cascata
+   (`hotfix → main → homolog → develop`) e apaga a branch de hotfix.
 5. **Papel das branches mudou:** o HOMOLOG passa a ser alimentado pela `release`
    (não mais pela promoção de `develop`); `main` é o espelho de produção; `homolog`
    deixa de existir como branch de promoção.
