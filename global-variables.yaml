@@ -2,41 +2,60 @@ trigger:
   branches:
     include:
       - develop
+      - release/*
       - hotfix/*
 
 resources:
   repositories:
-  - repository: pipelines
-    type: git
-    name: Fibra.DevOps/Fibra.DevOps.Pipelines
-    ref: refs/heads/main
+    - repository: templates
+      type: git
+      name: Fibra.DevOps/fibra-devops-pipelines
+      ref: refs/tags/v1.0.0
 
-  - repository: terraform-modules
-    type: git
-    name: Fibra.DevOps/Fibra.DevOps.Terraform
-    ref: refs/heads/main
+    - repository: terraform-modules
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Terraform
+      ref: refs/heads/main
 
 extends:
-  template: templates/test/azure-pipelines-dotnet.yaml@pipelines
+  template: templates/stacks/dotnet-backend.yaml@templates
   parameters:
-    api_visibility: public
-    deployment_aspnetcore_urls: http://0.0.0.0:8080
-    pod_min_replicas: 1
-    domain_name: dev-api-teste.bancofibra.com.br
-    pod_max_replicas: 1
-    pod_requests_cpu: 100m
-    pod_requests_memory: 256Mi
-    pod_limits_cpu: 250m
-    pod_limits_memory: 512Mi
-    ingress_path: /corporativo-dadosmercado
-    base_path: corporativo
-    cpu_utilization: 70
-    sqs:
-      - queue_name: "aws_sqs_teste_fibra_corporativo"
-        fifo_queue: false
-      - queue_name: "aws_sqs_teste_fibra_corporativo_2"
-        fifo_queue: true
-    env_vars:
-      - name: DATA
-        value: teste
- 
+    pod:
+      min_replicas: '1'
+      max_replicas: '1'
+      requests_cpu: 100m
+      requests_memory: 256Mi
+      limits_cpu: 250m
+      limits_memory: 512Mi
+      cpu_utilization: '70'
+
+    networking:
+      ingress_path: /corporativo-dadosmercado
+      base_path: corporativo
+      api_visibility: public
+      domain_name: dev-api-teste.bancofibra.com.br
+      deployment_aspnetcore_urls: http://0.0.0.0:8080
+      cognito: false
+
+    resources:
+      dynamodb_tables: []
+      s3_buckets: []
+      secrets: []
+      sqs:
+        - queue_name: "aws_sqs_teste_fibra_corporativo"
+          fifo_queue: false
+        - queue_name: "aws_sqs_teste_fibra_corporativo_2"
+          fifo_queue: true
+
+    observability:
+      dd_lang: dotnet
+      dd_lib_version: latest
+
+    config:
+      env_vars:
+        - name: DATA
+          value: teste
+      ssm_parameters:
+        dev: []
+        hml: []
+        prd: []
