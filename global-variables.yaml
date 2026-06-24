@@ -1,29 +1,73 @@
 steps:
-  - task: Bash@3
-    displayName: 'Configure Git Authentication for Terraform Modules'
+  - task: SonarSource.sonarqube.15B84CA1-B62F-4A2A-A403-89B77A063157.SonarQubePrepare@7
+    displayName: 'Configuration SonarQube (.NET)'
     inputs:
-      targetType: 'inline'
-      script: |
-        if [ -z "$GIT_PAT" ]; then
-          echo " GIT_PAT está vazio!"
-          exit 1
-        fi
-        echo "Token presente (${GIT_PAT} caracteres)"
-        
-        
-        git config --global url."https://pat:${GIT_PAT}@dev.azure.com/bancofibra/".insteadOf "https://dev.azure.com/bancofibra/"
-        
-        git config --global core.askPass ""
-        git config --global credential.helper ""
-        export GIT_TERMINAL_PROMPT=0
-        
-        echo "Testando acesso ao repositório..."
-        git ls-remote https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform HEAD 2>&1
-        if [ $? -eq 0 ]; then
-          echo "Acesso confirmado"
-        else
-          echo "Falha no acesso"
-          exit 1
-        fi
+      SonarQube: SonarQube
+      scannerMode: 'dotnet'
+      projectKey: '$(Build.Repository.Name)-key'
+      projectName: '$(Build.Repository.Name)'
+      extraProperties: |
+        sonar.scm.disabled=true
+        sonar.branch.name=develop
+        # Apontamos para uma pasta temporária fora da raiz do projeto
+        sonar.cs.vscoveragexml.reportsPaths=$(Agent.TempDirectory)/coverage.xml
+        # Cobertura: excluir código gerado, DTOs e caminhos sem valor de métrica
+        sonar.coverage.exclusions=**/obj/**,**/*.generated.cs,**/Program.cs,**/DTOs/**,**/Domain/**,**/Configuration/**,**/HealthController.cs,**/Services/Rest/**/Contracts/**,**/Services/Rest/**/Configuration/**
+        # Análise: excluir testes, gerados e terceiros
+        sonar.exclusions=**/obj/**,**/*.generated.cs,test/**,**/HealthController.cs
+        # CPD: excluir duplicações em DTOs, domain e contratos REST
+        sonar.cpd.exclusions=**/DTOs/**,**/Domain/**,**/Services/Rest/**/Contracts/**
+    continueOnError: true
+
+  - task: UseDotNet@2
+    displayName: 'Use .NET Core sdk 10.x'
+    inputs:
+      version: 10.x
+      includePreviewVersions: true
+
+  - script: dotnet tool install --global dotnet-coverage
+    displayName: 'Install dotnet-coverage'
+
+  - task: DotNetCoreCLI@2
+    displayName: Restore
+    inputs:
+      command: restore
+      projects: '**/*.slnx'
+      vstsFeed: 'fe426c42-a2f6-4500-bfe3-a01db2340d0b'
+    # TEMPORÁRIO: contorna NU3012 (ex.: assinatura/revogação de certificado em pacotes NuGet, ex. Refit).
+    # Remover quando os pacotes estiverem republicados com assinatura válida.
     env:
-      GIT_PAT: $(GIT_PAT)
+      NUGET_CERT_REVOCATION_MODE: no
+      DOTNET_NUGET_SIGNATURE_VERIFICATION: false
+
+  - script: |
+      # Localiza a solução de forma segura no Linux
+      SOLUTION=$(find . -maxdepth 2 -name "*.slnx" | head -n 1)
+      
+      echo "Building: $SOLUTION"
+      dotnet build "$SOLUTION" --configuration Release --no-incremental
+      
+      echo "Generating coverage at $(Agent.TempDirectory)/coverage.xml"
+      # Geramos o arquivo na pasta TEMP do Agente, longe dos fontes
+      dotnet-coverage collect "dotnet test --configuration Release --no-build" -f xml -o "$(Agent.TempDirectory)/coverage.xml"
+    displayName: 'Build and Collect Coverage'
+    env:
+      PATH: $(PATH):$(HOME)/.dotnet/tools
+      NUGET_CERT_REVOCATION_MODE: no
+      DOTNET_NUGET_SIGNATURE_VERIFICATION: false
+
+  - task: SonarSource.sonarqube.6D01813A-9589-4B15-8491-8164AEB38055.SonarQubeAnalyze@7
+    displayName: 'Code Analysis'
+    inputs:
+      jdkversion: 'JAVA_HOME'
+    continueOnError: true
+
+  - task: SonarSource.sonarqube.291ed61f-1ee4-45d3-b1b0-bf822d9095ef.SonarQubePublish@7
+    displayName: 'Publish Quality Gate Result'
+    continueOnError: true
+
+  - task: SimondeLang.sonar-buildbreaker.sonar-buildbreaker.sonar-buildbreaker@8
+    displayName: 'Break build on quality gate failure'
+    inputs:
+      SonarQube: SonarQube
+    continueOnError: true
