@@ -1,161 +1,169 @@
 parameters:
-  - name: pod
-    type: object
-  - name: networking
-    type: object
-  - name: resources
-    type: object
-  - name: observability
-    type: object
-  - name: config
-    type: object
-    default:
-      env_vars: []
-      ssm_parameters:
-        dev: []
-        hml: []
-        prd: []
-  - name: hotfix
-    type: object
-    default:
-      main_pr_require_manual_approval: false
-      main_pr_reviewers: ''
-      main_pr_wait_timeout_minutes: 360
+  - name: sourceBranch
+    type: string
+  - name: targetBranch
+    type: string
+  - name: bypassPolicy
+    type: boolean
+    default: true
+  - name: requireManualApproval
+    type: boolean
+    default: false
+  - name: reviewers
+    type: string
+    default: ''
+  - name: waitTimeoutMinutes
+    type: number
+    default: 360
 
-stages:
-  - template: ../stages/veracode.yaml
-    parameters:
-      dependsOn: [Build]
+jobs:
+  - job: CreateAndCompletePR
+    displayName: 'Criar e concluir PR via Azure CLI'
+    ${{ if eq(parameters.requireManualApproval, true) }}:
+      timeoutInMinutes: ${{ parameters.waitTimeoutMinutes }}
+    steps:
+      - script: |
+          set -euo pipefail
 
-  - template: ../stages/deploy.yaml
-    parameters:
-      environment: prd
-      dependsOn: [Veracode]
-      pod: ${{ parameters.pod }}
-      networking: ${{ parameters.networking }}
-      resources: ${{ parameters.resources }}
-      observability: ${{ parameters.observability }}
-      env_vars: ${{ parameters.config.env_vars }}
-      ssm_parameters: ${{ parameters.config.ssm_parameters.prd }}
+          SOURCE="${{ parameters.sourceBranch }}"
+          TARGET="${{ parameters.targetBranch }}"
+          # ADO emite booleanos como True/False; lower() em boolean pode falhar — normalizar no bash.
+          BYPASS=$(printf '%s' '${{ parameters.bypassPolicy }}' | tr '[:upper:]' '[:lower:]')
+          REQUIRE_MANUAL=$(printf '%s' '${{ parameters.requireManualApproval }}' | tr '[:upper:]' '[:lower:]')
+          WAIT_MINUTES="${{ parameters.waitTimeoutMinutes }}"
 
-  - stage: Approve_PR_Main
-    displayName: 'Approve PR hotfix -> main'
-    dependsOn: Deploy_prd
-    condition: succeeded()
-    jobs:
-      - deployment: Approve_PR_Main
-        displayName: 'Aguardando aprovacao do PR'
-        environment: prd
-        pool:
-          vmImage: ubuntu-latest
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - bash: echo "Aprovação concedida. Liberando PR hotfix -> main"
+          fail() {
+            echo "##[error]=================================================="
+            echo "##[error]  FALHA: $1"
+            echo "##[error]=================================================="
+            echo "##vso[task.logissue type=error]$1"
+            exit 1
+          }
 
-  - stage: PR_PRD
-    displayName: 'PR hotfix -> main'
-    dependsOn: Approve_PR_Main
-    condition: succeeded()
-    jobs:
-      - template: ../utils/create-pullrequest.yaml
-        parameters:
-          sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
-          targetBranch: main
-          requireManualApproval: ${{ parameters.hotfix.main_pr_require_manual_approval }}
-          reviewers: ${{ parameters.hotfix.main_pr_reviewers }}
-          waitTimeoutMinutes: ${{ parameters.hotfix.main_pr_wait_timeout_minutes }}
+          echo "##[section]PR de promoção: $SOURCE -> $TARGET  (bypass-policy=$BYPASS, require-manual-approval=$REQUIRE_MANUAL)"
 
-  - stage: PR_HML
-    displayName: 'PR main -> homolog'
-    dependsOn: PR_PRD
-    condition: succeeded()
-    jobs:
-      - template: ../utils/create-pullrequest.yaml
-        parameters:
-          sourceBranch: main
-          targetBranch: homolog
+          echo "##[section]Etapa 1/4 — Localizando ou criando o PR"
+          PR_ID=$(az repos pr list \
+            --source-branch "$SOURCE" \
+            --target-branch "$TARGET" \
+            --status active \
+            --query "[0].pullRequestId" -o tsv)
 
-  - stage: PR_DEV
-    displayName: 'PR homolog -> develop'
-    dependsOn: PR_HML
-    condition: succeeded()
-    jobs:
-      - template: ../utils/create-pullrequest.yaml
-        parameters:
-          sourceBranch: homolog
-          targetBranch: develop
+          if [ -z "$PR_ID" ]; then
+            echo "Nenhum PR ativo. Criando novo $SOURCE -> $TARGET..."
+            PR_ID=$(az repos pr create \
+              --source-branch "$SOURCE" \
+              --target-branch "$TARGET" \
+              --title "Promote $SOURCE -> $TARGET" \
+              --query "pullRequestId" -o tsv)
+            echo "PR criado: #$PR_ID"
+          else
+            echo "PR existente encontrado: #$PR_ID"
+          fi
 
-  - stage: Delete_Hotfix_Branch
-    displayName: 'Delete hotfix branch'
-    dependsOn: PR_DEV
-    condition: succeeded()
-    jobs:
-      - job: DeleteBranch
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - bash: |
-              set -euo pipefail
+          [ -n "$PR_ID" ] || fail "Nao foi possivel obter ou criar um PR ($SOURCE -> $TARGET)."
 
-              BRANCH_NAME="$(Build.SourceBranch)"
-              FILTER_PREFIX="${BRANCH_NAME#refs/}"
-              BASE_URL="$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.ID)/refs"
-              ENCODED_FILTER="$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$FILTER_PREFIX")"
+          echo "##[section]Etapa 2/4 — Verificando conflitos (mergeStatus) do PR #$PR_ID"
+          echo "##[group]Aguardando avaliacao do mergeStatus (clique para expandir)"
+          MERGE_STATUS=""
+          for i in $(seq 1 12); do
+            MERGE_STATUS=$(az repos pr show --id "$PR_ID" --query "mergeStatus" -o tsv)
+            echo "tentativa $i: mergeStatus=$MERGE_STATUS"
+            case "$MERGE_STATUS" in
+              queued|notSet) sleep 5 ;;
+              *) break ;;
+            esac
+          done
+          echo "##[endgroup]"
 
-              echo "Deleting branch: $BRANCH_NAME (list filter: $FILTER_PREFIX)"
+          case "$MERGE_STATUS" in
+            succeeded)
+              echo "Sem conflitos. PR #$PR_ID apto para merge."
+              ;;
+            conflicts)
+              fail "PR #$PR_ID tem CONFLITOS de merge ($SOURCE -> $TARGET). Merge NAO realizado. Resolva manualmente."
+              ;;
+            queued|notSet)
+              fail "mergeStatus do PR #$PR_ID nao foi avaliado a tempo (status: $MERGE_STATUS)."
+              ;;
+            *)
+              fail "PR #$PR_ID nao esta apto para merge (status: $MERGE_STATUS)."
+              ;;
+          esac
 
-              if [[ "$BRANCH_NAME" =~ refs/heads/(main|master|develop|homolog) ]]; then
-                echo "##[error]Protected branch. Aborting."
-                exit 1
+          if [ "$REQUIRE_MANUAL" = "true" ]; then
+            echo "##[section]Etapa 3/4 — Revisores (opcional)"
+            if [ -n "${REVIEWERS_RAW:-}" ]; then
+              for r in $(echo "$REVIEWERS_RAW" | tr ',' ' '); do
+                r=$(echo "$r" | xargs)
+                [ -z "$r" ] && continue
+                echo "Adicionando revisor: $r"
+                az repos pr reviewer add --id "$PR_ID" --reviewers "$r"
+              done
+            else
+              echo "Nenhum revisor extra informado (use politicas de branch no destino para exigir aprovacao)."
+            fi
+
+            PR_URL="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}${SYSTEM_TEAMPROJECT}/_git/${BUILD_REPOSITORY_NAME}/pullrequest/${PR_ID}"
+            echo "##[section]Etapa 4/4 — Aguardando aprovacao e merge manual do PR #$PR_ID"
+            echo "Abra o PR no Azure DevOps: $PR_URL"
+            echo "##vso[task.logissue type=warning]PR #$PR_ID aguardando merge manual (ate ${WAIT_MINUTES} min)."
+
+            START_TS=$(date +%s)
+            END_TS=$((START_TS + WAIT_MINUTES * 60))
+            FINAL_STATUS=""
+            while [ "$(date +%s)" -lt "$END_TS" ]; do
+              FINAL_STATUS=$(az repos pr show --id "$PR_ID" --query "status" -o tsv)
+              CUR_MERGE=$(az repos pr show --id "$PR_ID" --query "mergeStatus" -o tsv)
+              echo "$(date -Is) status=$FINAL_STATUS mergeStatus=$CUR_MERGE"
+
+              if [ "$FINAL_STATUS" = "completed" ]; then
+                echo "##[section]✔ PR #$PR_ID concluido com sucesso ($SOURCE -> $TARGET)"
+                exit 0
               fi
-
-              if [[ -z "${SYSTEM_ACCESSTOKEN:-}" ]]; then
-                echo "##[error]SYSTEM_ACCESSTOKEN is empty. Map System.AccessToken via env on this step."
-                exit 1
+              if [ "$FINAL_STATUS" = "abandoned" ] || [ "$CUR_MERGE" = "conflicts" ] || [ "$CUR_MERGE" = "failure" ]; then
+                fail "PR #$PR_ID nao pode ser concluido (status=$FINAL_STATUS, mergeStatus=$CUR_MERGE)."
               fi
+              sleep 30
+            done
+            fail "Timeout aguardando merge do PR #$PR_ID apos ${WAIT_MINUTES} min."
+          fi
 
-              LIST_URL="${BASE_URL}?filter=${ENCODED_FILTER}&api-version=7.1"
-              RESPONSE=$(curl -sS -u ":${SYSTEM_ACCESSTOKEN}" "$LIST_URL")
+          echo "##[section]Etapa 3/4 — Concluindo o PR #$PR_ID"
+          az repos pr update \
+            --id "$PR_ID" \
+            --status completed \
+            --bypass-policy "$BYPASS" \
+            --bypass-policy-reason "Promocao automatica via Pipeline" \
+            --delete-source-branch false
 
-              if ! echo "$RESPONSE" | jq -e . >/dev/null 2>&1; then
-                echo "##[error]Unexpected response listing refs (not JSON). First 500 chars:"
-                echo "${RESPONSE:0:500}"
-                exit 1
-              fi
 
-              OBJECT_ID=$(echo "$RESPONSE" | jq -r --arg n "$BRANCH_NAME" '.value[]? | select(.name==$n) | .objectId' | head -n1)
+          echo "##[section]Etapa 4/4 — Confirmando a conclusao do PR #$PR_ID"
+          echo "##[group]Aguardando status final (clique para expandir)"
+          FINAL_STATUS=""
+          for i in $(seq 1 12); do
+            FINAL_STATUS=$(az repos pr show --id "$PR_ID" --query "status" -o tsv)
+            CUR_MERGE=$(az repos pr show --id "$PR_ID" --query "mergeStatus" -o tsv)
+            echo "tentativa $i: status=$FINAL_STATUS mergeStatus=$CUR_MERGE"
 
-              if [[ "$OBJECT_ID" == "null" || -z "$OBJECT_ID" ]]; then
-                echo "##[error]Branch not found or already deleted. API response:"
-                echo "$RESPONSE" | jq .
-                exit 1
-              fi
+            if [ "$FINAL_STATUS" = "completed" ]; then
+              break
+            fi
+            if [ "$FINAL_STATUS" = "abandoned" ] || [ "$CUR_MERGE" = "conflicts" ] || [ "$CUR_MERGE" = "failure" ]; then
+              echo "##[endgroup]"
+              fail "Conclusao do PR #$PR_ID falhou (status=$FINAL_STATUS, mergeStatus=$CUR_MERGE)."
+            fi
+            sleep 5
+          done
+          echo "##[endgroup]"
 
-              BODY="[
-                {
-                  \"name\": \"$BRANCH_NAME\",
-                  \"oldObjectId\": \"$OBJECT_ID\",
-                  \"newObjectId\": \"0000000000000000000000000000000000000000\"
-                }
-              ]"
+          [ "$FINAL_STATUS" = "completed" ] || fail "PR #$PR_ID nao atingiu o status 'completed' a tempo (status=$FINAL_STATUS)."
 
-              POST_URL="${BASE_URL}?api-version=7.1"
-              HTTP_CODE=$(curl -sS -o /tmp/delete_ref_body.txt -w "%{http_code}" \
-                -X POST \
-                -u ":${SYSTEM_ACCESSTOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "$BODY" \
-                "$POST_URL")
-
-              if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "201" || "$HTTP_CODE" == "204" ]]; then
-                echo "Branch deleted successfully (HTTP $HTTP_CODE)"
-              else
-                echo "##[error]Delete refs failed with HTTP $HTTP_CODE. Response:"
-                cat /tmp/delete_ref_body.txt
-                exit 1
-              fi
-            displayName: 'Delete branch via REST API'
-            env:
-              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+          echo "##[section]✔ PR #$PR_ID concluido com sucesso ($SOURCE -> $TARGET)"
+        env:
+          AZURE_DEVOPS_EXT_PAT: $(System.AccessToken)
+          REVIEWERS_RAW: ${{ parameters.reviewers }}
+          SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $(System.TeamFoundationCollectionUri)
+          SYSTEM_TEAMPROJECT: $(System.TeamProject)
+          BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
+        displayName: 'Executar PR via Azure CLI'
