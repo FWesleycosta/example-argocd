@@ -1,0 +1,43 @@
+# templates/variables/env/prd.yaml
+# Variáveis ESPECÍFICAS do ambiente PRD (backend .NET / EKS).
+# Mesmos NOMES de dev.yaml/hml.yaml; só os VALORES mudam. Ver cabeçalho de dev.yaml.
+# Obs.: PRD roda em região própria (sa-east-1).
+variables:
+  - name: deployment_aspnetcore_environment
+    value: production
+
+  # --- consumidas por stages/deploy.yaml + steps/rollout-verify.yaml ---
+  - name: serviceAccount
+    value: 'AWS-Workloads-Prd'
+  - name: clusterName
+    value: 'ek'
+  - name: awsRegion
+    value: 'sa-east-1'
+  - name: awsAccID
+    value: ''
+  - name: albSharedDns
+    value: 'internal-'
+  - name: certificate_arn
+    value: 'arn:aws:a'
+  - name: apiGatewayVpcLink
+    value: ''
+  - name: albSharedListener
+    value: 'arn:aws:'
+  - name: vpc_endpoint_apigw
+    value: 'vpce-'
+  - name: domain_internal_name
+    value: 'prd--..com.br'
+  - name: domain_name_id
+    value: ''
+
+  # --- infra adicional do ambiente (Terraform / observabilidade) ---
+  - name: serviceAccountTerraform
+    value: 'AWS-Workloads-Prd-Terraform'
+  - name: tfstatesBucket
+    value: 'tfstates-'
+  - name: accessLoggingWorkloads
+    value: 'access-logging-workloads-prd'
+  - name: subnetsPrivate
+    value: 'subnet-,subnet-'
+  - name: vpcId
+    value: 'vpc-'

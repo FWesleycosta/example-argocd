@@ -1,0 +1,25 @@
+# templates/variables/pix/hml.yaml
+# Variáveis ESPECÍFICAS do domínio PIX — ambiente HOMOLOG. Mesmos NOMES de dev/prd.
+variables:
+  - name: awsRegion
+    value: 'sa-east-1'
+  - name: awsAccID
+    value: ''
+  - name: serviceAccount
+    value: 'fibra-pix-hml'
+  - name: serviceAccountTerraform
+    value: 'fibra-pix-hml'
+  - name: clusterName
+    value: 'eks--hml'
+  - name: albSharedDns
+    value: 'internal'
+  - name: albSharedListener
+    value: 'arn:aw'
+  - name: apiGatewayVpcLink
+    value: ''
+  - name: vpcEndpointApiGateway
+    value: 'vpce-'
+  - name: domainInternal
+    value: 'hr'
+  - name: domainInternalID
+    value: ''

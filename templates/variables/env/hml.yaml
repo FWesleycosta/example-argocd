@@ -1,0 +1,42 @@
+# templates/variables/env/hml.yaml
+# Variáveis ESPECÍFICAS do ambiente HOMOLOG (backend .NET / EKS).
+# Mesmos NOMES de dev.yaml/prd.yaml; só os VALORES mudam. Ver cabeçalho de dev.yaml.
+variables:
+  - name: deployment_aspnetcore_environment
+    value: homolog
+
+  # --- consumidas por stages/deploy.yaml + steps/rollout-verify.yaml ---
+  - name: serviceAccount
+    value: 'AWS-Workloads-Hml'
+  - name: clusterName
+    value: 'eks--'
+  - name: awsRegion
+    value: 'us-east-2'
+  - name: awsAccID
+    value: ''
+  - name: albSharedDns
+    value: 'internal-'
+  - name: certificate_arn
+    value: 'arn:aws:ac'
+  - name: apiGatewayVpcLink
+    value: ''
+  - name: albSharedListener
+    value: 'arn:aws:'
+  - name: vpc_endpoint_apigw
+    value: 'vpce-'
+  - name: domain_internal_name
+    value: 'hml-api-..com.br'
+  - name: domain_name_id
+    value: ''
+
+  # --- infra adicional do ambiente (Terraform / observabilidade) ---
+  - name: serviceAccountTerraform
+    value: 'AWS-Workloads-Hml-Terraform'
+  - name: tfstatesBucket
+    value: 'tfstates-'
+  - name: accessLoggingWorkloads
+    value: 'access-logging-workloads-hml'
+  - name: subnetsPrivate
+    value: 'subnet-,subnet-'
+  - name: vpcId
+    value: 'vpc-'

@@ -1,0 +1,65 @@
+# templates/variables/frontend/prd.yaml
+# Variáveis do FRONTEND / SPA — ambiente PRD. Mesmos NOMES de dev/hml.
+# ⚠️ Contém config sensível em YAML (sem variable group). Ver cabeçalho de frontend/dev.yaml.
+variables:
+  # --- domínios / URLs ---
+  - name: domainPublic
+    value: 'prd'
+  - name: cloudFrontSPA
+    value: 'arn:aws:'
+  - name: viteCanaisFacadeBase
+    value: 'htt'
+  - name: urlBase
+    value: 'ht/'
+  - name: urlBaseV3
+    value: 'htt'
+
+  # --- autenticação / B2C (sensível) ---
+  - name: applicationId
+    value: ''
+  - name: clientId
+    value: 'e205'
+  - name: b2cEnv
+    value: 'production'
+  - name: tenantId
+    value: '34b'
+  - name: tenantName
+    value: 'ba'
+  - name: tenantUrl
+    value: 'ban'
+  - name: redirectUri
+    value: 'htt'
+
+  # --- APIs / tokens (sensível) ---
+  - name: fibraApiKey
+    value: 'BUG'
+  - name: tokenApi
+    value: '-'
+  - name: viteApiKey
+    value: 'f'
+
+  # --- Firebase (sensível) ---
+  - name: firebase.apiKey
+    value: 'AIza'
+  - name: firebase.appId
+    value: '1:8025'
+  - name: firebase.authDomain
+    value: 'banco-'
+  - name: firebase.databaseURL
+    value: 'https:/'
+  - name: firebase.projectId
+    value: 'ba'
+  - name: firebase.storageBucket
+    value: 'ban'
+  - name: firebase.messagingSenderId
+    value: '8'
+  - name: firebase.measurementId
+    value: 'G-'
+
+  # --- terceiros / observabilidade de produto ---
+  - name: hotjarId
+    value: '2'
+  - name: zendesk.chatKey
+    value: '6'
+  - name: objectId
+    value: '-'

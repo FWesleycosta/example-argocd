@@ -1,0 +1,65 @@
+# templates/variables/frontend/hml.yaml
+# Variáveis do FRONTEND / SPA — ambiente HOMOLOG. Mesmos NOMES de dev/prd.
+# ⚠️ Contém config sensível em YAML (sem variable group). Ver cabeçalho de frontend/dev.yaml.
+variables:
+  # --- domínios / URLs ---
+  - name: domainPublic
+    value: 'hmlr'
+  - name: cloudFrontSPA
+    value: 'arn:aws:'
+  - name: viteCanaisFacadeBase
+    value: 'https'
+  - name: urlBase
+    value: 'http'
+  - name: urlBaseV3
+    value: 'https://'
+
+  # --- autenticação / B2C (sensível) ---
+  - name: applicationId
+    value: '1f'
+  - name: clientId
+    value: '527'
+  - name: b2cEnv
+    value: 'homol'
+  - name: tenantId
+    value: '71'
+  - name: tenantName
+    value: 'banm'
+  - name: tenantUrl
+    value: 'b'
+  - name: redirectUri
+    value: 'htt'
+
+  # --- APIs / tokens (sensível) ---
+  - name: fibraApiKey
+    value: 'Lp'
+  - name: tokenApi
+    value: 'l'
+  - name: viteApiKey
+    value: 'f'
+
+  # --- Firebase (sensível) ---
+  - name: firebase.apiKey
+    value: 'Ak'
+  - name: firebase.appId
+    value: '1:802'
+  - name: firebase.authDomain
+    value: 'banco-'
+  - name: firebase.databaseURL
+    value: 'https:/'
+  - name: firebase.projectId
+    value: 'ba'
+  - name: firebase.storageBucket
+    value: 'b'
+  - name: firebase.messagingSenderId
+    value: '8'
+  - name: firebase.measurementId
+    value: 'G-'
+
+  # --- terceiros / observabilidade de produto ---
+  - name: hotjarId
+    value: '2'
+  - name: zendesk.chatKey
+    value: '1'
+  - name: objectId
+    value: '82dded92-42e8-4197-b0bd-38bdb3fea580'
