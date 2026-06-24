@@ -1,73 +1,125 @@
-steps:
-  - task: SonarSource.sonarqube.15B84CA1-B62F-4A2A-A403-89B77A063157.SonarQubePrepare@7
-    displayName: 'Configuration SonarQube (.NET)'
-    inputs:
-      SonarQube: SonarQube
-      scannerMode: 'dotnet'
-      projectKey: '$(Build.Repository.Name)-key'
-      projectName: '$(Build.Repository.Name)'
-      extraProperties: |
-        sonar.scm.disabled=true
-        sonar.branch.name=develop
-        # Apontamos para uma pasta temporária fora da raiz do projeto
-        sonar.cs.vscoveragexml.reportsPaths=$(Agent.TempDirectory)/coverage.xml
-        # Cobertura: excluir código gerado, DTOs e caminhos sem valor de métrica
-        sonar.coverage.exclusions=**/obj/**,**/*.generated.cs,**/Program.cs,**/DTOs/**,**/Domain/**,**/Configuration/**,**/HealthController.cs,**/Services/Rest/**/Contracts/**,**/Services/Rest/**/Configuration/**
-        # Análise: excluir testes, gerados e terceiros
-        sonar.exclusions=**/obj/**,**/*.generated.cs,test/**,**/HealthController.cs
-        # CPD: excluir duplicações em DTOs, domain e contratos REST
-        sonar.cpd.exclusions=**/DTOs/**,**/Domain/**,**/Services/Rest/**/Contracts/**
-    continueOnError: true
+parameters:
+  - name: pod
+    type: object
+  - name: networking
+    type: object
+  - name: resources
+    type: object
+    default:
+      dynamodb_tables: []
+      s3_buckets: []
+      sqs: []
+      secrets: []
+  - name: observability
+    type: object
+    default:
+      dd_lang: dotnet
+      dd_lib_version: latest
+  - name: config
+    type: object
+    default:
+      env_vars: []
+      ssm_parameters:
+        dev: []
+        hml: []
+        prd: []
+  - name: hotfix
+    type: object
+    default:
+      main_pr_require_manual_approval: false
+      main_pr_reviewers: ''
+      main_pr_wait_timeout_minutes: 360
 
-  - task: UseDotNet@2
-    displayName: 'Use .NET Core sdk 10.x'
-    inputs:
-      version: 10.x
-      includePreviewVersions: true
+variables:
+  - group: git-credentials
 
-  - script: dotnet tool install --global dotnet-coverage
-    displayName: 'Install dotnet-coverage'
+stages:
+  - stage: SonarQube
+    displayName: SonarQube Scan
+    jobs:
+      - job: SonarQubeScan
+        displayName: 'SonarQube Analysis'
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+            fetchDepth: 0
+            displayName: 'Checkout do Código'
+          - template: ../sonarqube/qa-sonar-dotnet.yaml
 
-  - task: DotNetCoreCLI@2
-    displayName: Restore
-    inputs:
-      command: restore
-      projects: '**/*.slnx'
-      vstsFeed: 'fe426c42-a2f6-4500-bfe3-a01db2340d0b'
-    # TEMPORÁRIO: contorna NU3012 (ex.: assinatura/revogação de certificado em pacotes NuGet, ex. Refit).
-    # Remover quando os pacotes estiverem republicados com assinatura válida.
-    env:
-      NUGET_CERT_REVOCATION_MODE: no
-      DOTNET_NUGET_SIGNATURE_VERIFICATION: false
+  - stage: Build
+    displayName: Build
+    dependsOn: SonarQube
+    condition: succeeded()
+    jobs:
+      - template: ../dotnet/build-backend-dotnet.yaml
 
-  - script: |
-      # Localiza a solução de forma segura no Linux
-      SOLUTION=$(find . -maxdepth 2 -name "*.slnx" | head -n 1)
-      
-      echo "Building: $SOLUTION"
-      dotnet build "$SOLUTION" --configuration Release --no-incremental
-      
-      echo "Generating coverage at $(Agent.TempDirectory)/coverage.xml"
-      # Geramos o arquivo na pasta TEMP do Agente, longe dos fontes
-      dotnet-coverage collect "dotnet test --configuration Release --no-build" -f xml -o "$(Agent.TempDirectory)/coverage.xml"
-    displayName: 'Build and Collect Coverage'
-    env:
-      PATH: $(PATH):$(HOME)/.dotnet/tools
-      NUGET_CERT_REVOCATION_MODE: no
-      DOTNET_NUGET_SIGNATURE_VERIFICATION: false
+  - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/') }}:
+      - template: ../hotfix/hotfix-backend-dotnet.yaml
+        parameters:
+          pod: ${{ parameters.pod }}
+          networking: ${{ parameters.networking }}
+          resources: ${{ parameters.resources }}
+          observability: ${{ parameters.observability }}
+          config: ${{ parameters.config }}
+          hotfix: ${{ parameters.hotfix }}
 
-  - task: SonarSource.sonarqube.6D01813A-9589-4B15-8491-8164AEB38055.SonarQubeAnalyze@7
-    displayName: 'Code Analysis'
-    inputs:
-      jdkversion: 'JAVA_HOME'
-    continueOnError: true
+  - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+      - template: ../stages/deploy.yaml
+        parameters:
+          environment: hml
+          dependsOn: [Build]
+          pod: ${{ parameters.pod }}
+          networking: ${{ parameters.networking }}
+          resources: ${{ parameters.resources }}
+          observability: ${{ parameters.observability }}
+          env_vars: ${{ parameters.config.env_vars }}
+          ssm_parameters: ${{ parameters.config.ssm_parameters.hml }}
 
-  - task: SonarSource.sonarqube.291ed61f-1ee4-45d3-b1b0-bf822d9095ef.SonarQubePublish@7
-    displayName: 'Publish Quality Gate Result'
-    continueOnError: true
+      - template: ../stages/veracode.yaml
+        parameters:
+          dependsOn: [Build]
 
-  - task: SimondeLang.sonar-buildbreaker.sonar-buildbreaker.sonar-buildbreaker@8
-    displayName: 'Break build on quality gate failure'
-    inputs:
-      SonarQube: SonarQube
-    continueOnError: true
+      - template: ../stages/deploy.yaml
+        parameters:
+          environment: prd
+          dependsOn: [Deploy_hml, Veracode]
+          pod: ${{ parameters.pod }}
+          networking: ${{ parameters.networking }}
+          resources: ${{ parameters.resources }}
+          observability: ${{ parameters.observability }}
+          env_vars: ${{ parameters.config.env_vars }}
+          ssm_parameters: ${{ parameters.config.ssm_parameters.prd }}
+
+      - stage: PR_Main
+        displayName: 'PR release -> main'
+        dependsOn: Deploy_prd
+        condition: succeeded()
+        jobs:
+          - template: ../utils/create-pullrequest.yaml
+            parameters:
+              sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
+              targetBranch: main
+
+      - stage: BackMerge_Develop
+        displayName: 'Back-merge main -> develop'
+        dependsOn: PR_Main
+        condition: succeeded()
+        jobs:
+          - template: ../utils/create-pullrequest.yaml
+            parameters:
+              sourceBranch: main
+              targetBranch: develop
+
+  - ${{ else }}:
+      - template: ../stages/deploy.yaml
+        parameters:
+          environment: dev
+          dependsOn: [Build]
+          condition: and(succeeded('Build'), or(eq(variables['Build.SourceBranch'], 'refs/heads/develop'), eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')))
+          pod: ${{ parameters.pod }}
+          networking: ${{ parameters.networking }}
+          resources: ${{ parameters.resources }}
+          observability: ${{ parameters.observability }}
+          env_vars: ${{ parameters.config.env_vars }}
+          ssm_parameters: ${{ parameters.config.ssm_parameters.dev }}
