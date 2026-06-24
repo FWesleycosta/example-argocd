@@ -1,39 +1,29 @@
-variables:
-  - name: deployment_aspnetcore_environment
-    value: development
-
-  - name: serviceAccount
-    value: 'AWS-Workloads-Dev'
-  - name: clusterName
-    value: 'eks-'
-  - name: awsRegion
-    value: 'us-east-2'
-  - name: awsAccID
-    value: ''
-  - name: albSharedDns
-    value: 'internal'
-  - name: certificate_arn
-    value: 'arn:aws:acm'
-  - name: apiGatewayVpcLink
-    value: ''
-  - name: albSharedListener
-    value: 'arn:aws'
-  - name: vpc_endpoint_apigw
-    value: 'vpce-'
-  - name: domain_internal_name
-    value: 'dev--int..com.br'
-  - name: domain_name_id
-    value: ''
-
-  # --- infra adicional do ambiente (Terraform / observabilidade) ---
-  # Não consumida hoje pelo deploy.yaml; mantida aqui por ser dado de ambiente.
-  - name: serviceAccountTerraform
-    value: 'AWS-Workloads-Dev-Terraform'
-  - name: tfstatesBucket
-    value: 'tfstates-'
-  - name: accessLoggingWorkloads
-    value: 'access-logging-workloads-dev'
-  - name: subnetsPrivate
-    value: 'subnet-,subnet-'
-  - name: vpcId
-    value: 'vpc-'
+steps:
+  - task: Bash@3
+    displayName: 'Configure Git Authentication for Terraform Modules'
+    inputs:
+      targetType: 'inline'
+      script: |
+        if [ -z "$GIT_PAT" ]; then
+          echo " GIT_PAT está vazio!"
+          exit 1
+        fi
+        echo "Token presente (${GIT_PAT} caracteres)"
+        
+        
+        git config --global url."https://pat:${GIT_PAT}@dev.azure.com/bancofibra/".insteadOf "https://dev.azure.com/bancofibra/"
+        
+        git config --global core.askPass ""
+        git config --global credential.helper ""
+        export GIT_TERMINAL_PROMPT=0
+        
+        echo "Testando acesso ao repositório..."
+        git ls-remote https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform HEAD 2>&1
+        if [ $? -eq 0 ]; then
+          echo "Acesso confirmado"
+        else
+          echo "Falha no acesso"
+          exit 1
+        fi
+    env:
+      GIT_PAT: $(GIT_PAT)
