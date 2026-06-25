@@ -1,0 +1,56 @@
+parameters:
+  viteBaseUrl: ''
+  viteMicrofrontendCessaoCreditoUrl: ''
+  viteHostUrl: ''
+  env_vars: []
+
+steps:
+- checkout: self
+
+- task: NodeTool@0
+  displayName: Use Node 20.x
+  inputs:
+    versionSpec: 20.x
+
+- script: rm -rf dist
+  displayName: 'Clean dist'
+  workingDirectory: $(Pipeline.Workspace)/s/$(Build.Repository.Name)
+
+- script: npm install
+  displayName: 'NPM Install dependencies'
+  workingDirectory: $(Pipeline.Workspace)/s/$(Build.Repository.Name)
+
+- bash: |
+    set -euo pipefail
+
+    ENV_VARS_JSON='${{ convertToJson(parameters.env_vars) }}'
+    COUNT=$(echo "$ENV_VARS_JSON" | jq 'length')
+
+    echo "##[section]Variáveis recebidas: $COUNT"
+
+    # Monta o arquivo .env dinamicamente
+    ENV_FILE="$(Pipeline.Workspace)/s/$(Build.Repository.Name)/.env"
+
+    # Limpa o .env anterior se existir
+    > "$ENV_FILE"
+
+    # Sempre injeta o viteBaseUrl
+    echo "VITE_BASE_URL=${{ parameters.viteBaseUrl }}" >> "$ENV_FILE"
+    echo "VITE_MICROFRONTEND_CESSAO_CREDITO_URL=${{ parameters.viteMicrofrontendCessaoCreditoUrl }}" >> "$ENV_FILE"
+    echo "VITE_HOST_URL=${{ parameters.viteHostUrl }}" >> "$ENV_FILE"
+
+
+    # Injeta as env_vars passadas pelo dev
+    if [ "$COUNT" -gt 0 ]; then
+      echo "$ENV_VARS_JSON" | jq -r '.[] | "\(.name)=\(.value)"' >> "$ENV_FILE"
+    else
+      echo "##[warning]Nenhuma env_var adicional definida"
+    fi
+
+    echo "##[section]Conteúdo do .env gerado:"
+    cat "$ENV_FILE"
+
+    # Executa o build com o .env gerado
+    npm run build
+  displayName: 'Build application'
+  workingDirectory: $(Pipeline.Workspace)/s/$(Build.Repository.Name)
