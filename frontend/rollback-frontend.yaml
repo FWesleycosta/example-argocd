@@ -1,0 +1,74 @@
+parameters:
+  - name: environment
+    type: string
+    default: prd
+  - name: rollbackVersion
+    type: string                 # ex.: 48180 (prefixo em releases/)
+  - name: cloudfront
+    type: boolean
+    default: true
+  - name: cloudfrontDistributionId
+    type: string                
+    default: ''
+
+stages:
+  - stage: Rollback_${{ parameters.environment }}
+    displayName: 'Rollback frontend ${{ parameters.environment }} -> ${{ parameters.rollbackVersion }}'
+    jobs:
+      - deployment: rollback
+        displayName: 'Rollback frontend ${{ parameters.environment }} -> ${{ parameters.rollbackVersion }}'
+        environment: ${{ parameters.environment }}   # registro + gate do Environment
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          - template: ../variables/frontend/${{ parameters.environment }}.yaml
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - bash: |
+                    set -euo pipefail
+                    echo "##vso[build.updatebuildnumber]$(Build.Repository.Name)-rollback-${{ parameters.rollbackVersion }}"
+                    echo "##vso[build.addbuildtag]rollback"
+                    echo "##vso[build.addbuildtag]${{ parameters.environment }}"
+                    echo "##vso[build.addbuildtag]version-${{ parameters.rollbackVersion }}"
+                  displayName: 'Carimbar rollback (run name + tags)'
+
+                - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+                  displayName: 'Rollback: restaurar release + invalidar CloudFront'
+                  inputs:
+                    awsCredentials: ${{ variables.serviceAccount }}
+                    regionName: ${{ variables.awsRegion }}
+                    scriptType: inline
+                    inlineScript: |
+                      set -euo pipefail
+                      BUCKET="$(Build.Repository.Name)-${{ parameters.environment }}"
+                      VERSION="${{ parameters.rollbackVersion }}"
+                      SRC="s3://${BUCKET}/releases/${VERSION}/"
+
+                      # Garante que a versão existe antes de restaurar.
+                      if ! aws s3 ls "$SRC" >/dev/null 2>&1; then
+                        echo "##[error]Versão não encontrada: $SRC (a release foi arquivada/retida?)"
+                        exit 1
+                      fi
+
+                      echo "##[section]Restaurando $SRC -> s3://${BUCKET}/ (live)"
+                      # sem --delete para não remover o próprio prefixo releases/
+                      aws s3 sync "$SRC" "s3://${BUCKET}/" --exclude "releases/*"
+
+                      DIST_ID="${{ parameters.cloudfrontDistributionId }}"
+                      if [ "${{ parameters.cloudfront }}" = "True" ] || [ "${{ parameters.cloudfront }}" = "true" ]; then
+                        if [ -z "$DIST_ID" ]; then
+                          echo "Descobrindo a distribuição CloudFront do bucket $BUCKET..."
+                          DIST_ID=$(aws cloudfront list-distributions \
+                            --query "DistributionList.Items[].{Id:Id,Origins:Origins.Items[].DomainName}" --output json \
+                            | jq -r --arg b "$BUCKET" '.[] | select(any(.Origins[]; startswith($b))) | .Id' | head -n1)
+                        fi
+                        if [ -n "$DIST_ID" ]; then
+                          echo "Invalidando CloudFront $DIST_ID..."
+                          aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
+                        else
+                          echo "##[warning]Distribuição CloudFront não encontrada — pulei a invalidação."
+                        fi
+                      fi
+                      echo "##[section]✔ Rollback do frontend concluído (versão $VERSION)."
