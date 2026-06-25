@@ -1,0 +1,34 @@
+parameters:
+  - name: projectKeySuffix
+    type: string
+    default: '-key'
+
+steps:
+  - task: SonarSource.sonarqube.15B84CA1-B62F-4A2A-A403-89B77A063157.SonarQubePrepare@7
+    displayName: 'Configuration SonarQube (frontend/CLI)'
+    inputs:
+      SonarQube: SonarQube
+      scannerMode: 'CLI'
+      configMode: 'manual'
+      cliProjectKey: '$(Build.Repository.Name)${{ parameters.projectKeySuffix }}'
+      cliProjectName: '$(Build.Repository.Name)'
+      cliSources: '.'
+      extraProperties: |
+        sonar.scm.disabled=true
+        sonar.exclusions=**/node_modules/**,**/dist/**,**/build/**,**/*.spec.ts,**/*.test.ts
+        sonar.cpd.exclusions=**/*.spec.ts,**/*.test.ts
+    continueOnError: true
+
+  - task: SonarSource.sonarqube.6D01813A-9589-4B15-8491-8164AEB38055.SonarQubeAnalyze@7
+    displayName: 'Code Analysis'
+    continueOnError: true
+
+  - task: SonarSource.sonarqube.291ed61f-1ee4-45d3-b1b0-bf822d9095ef.SonarQubePublish@7
+    displayName: 'Publish Quality Gate Result'
+    continueOnError: true
+
+  - task: SimondeLang.sonar-buildbreaker.sonar-buildbreaker.sonar-buildbreaker@8
+    displayName: 'Break build on quality gate failure'
+    inputs:
+      SonarQube: SonarQube
+    continueOnError: true
