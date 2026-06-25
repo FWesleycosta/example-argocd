@@ -5,6 +5,14 @@ trigger:
       - release/*
       - hotfix/*
 
+# Rollback: rode esta pipeline MANUALMENTE ("Run pipeline") preenchendo a tag a
+# restaurar. Em push/CI normal o valor fica vazio → fluxo normal de build/deploy.
+parameters:
+  - name: rollbackImageTag
+    type: string
+    default: ''
+    displayName: 'Rollback PRD: tag/versão a restaurar (vazio = deploy normal)'
+
 resources:
   repositories:
     - repository: templates
@@ -20,6 +28,7 @@ resources:
 extends:
   template: templates/stacks/dotnet-backend.yaml@templates
   parameters:
+    rollbackImageTag: ${{ parameters.rollbackImageTag }}
     pod:
       # Sizing de PRD. Em DEV/HML a esteira força 1 pod (min=max=1) automaticamente.
       min_replicas: '2'

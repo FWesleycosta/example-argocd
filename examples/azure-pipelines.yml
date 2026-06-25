@@ -5,6 +5,15 @@
 # Antes: cada app copiava ~375 linhas de esteira (azure-pipeline-dotnet.yaml).
 # Agora: o app só declara DADOS. Toda a esteira vem da plataforma, pinada por tag.
 # ============================================================================
+
+# Rollback: rode MANUALMENTE ("Run pipeline") preenchendo a tag a restaurar em PRD.
+# Em push/CI normal o valor fica vazio → fluxo normal de build/deploy.
+parameters:
+  - name: rollbackImageTag
+    type: string
+    default: ''
+    displayName: 'Rollback PRD: tag/versão a restaurar (vazio = deploy normal)'
+
 resources:
   repositories:
     - repository: templates
@@ -15,6 +24,7 @@ resources:
 extends:
   template: templates/stacks/dotnet-backend.yaml@templates
   parameters:
+    rollbackImageTag: ${{ parameters.rollbackImageTag }}
     pod:
       min_replicas: '2'
       max_replicas: '6'

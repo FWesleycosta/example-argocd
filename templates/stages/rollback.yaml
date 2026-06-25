@@ -1,0 +1,83 @@
+# templates/stages/rollback.yaml
+# ----------------------------------------------------------------------------
+# Rollback RASTREADO de um ambiente. Re-aponta o Deployment para uma imagem JÁ
+# EXISTENTE no ECR (uma versão anterior) — SEM rebuild — passando pelo Environment
+# do Azure DevOps.
+#
+# Por que assim (e não `kubectl rollout undo` solto): o undo reverte no cluster
+# mas o Azure DevOps não fica sabendo → o Environment continua mostrando o deploy
+# que falhou e você perde o controle visual. Aqui o rollback É um deployment:
+#   - registra no histórico do Environment (Pipelines → Environments → <env>);
+#   - passa pelo MESMO gate (ex.: GMUD no Environment prd);
+#   - carimba o run (build number + tags) com a versão restaurada;
+#   - anota o Deployment no cluster (deploy.fibra.io/*).
+#
+# NÃO faz undo automático: se a versão escolhida também não subir, falha alto
+# (não queremos voltar para a imagem ruim mais nova).
+# ----------------------------------------------------------------------------
+parameters:
+  - name: environment
+    type: string
+    default: prd
+  - name: imageTag
+    type: string                 # tag/versão existente no ECR a restaurar
+  - name: containerName
+    type: string                 # nome do container no Deployment (default = nome do app)
+    default: '$(Build.Repository.Name)'
+  - name: rolloutTimeoutSeconds
+    type: string
+    default: '300'
+
+stages:
+  - stage: Rollback_${{ parameters.environment }}
+    displayName: 'Rollback ${{ parameters.environment }} -> ${{ parameters.imageTag }}'
+    jobs:
+      - deployment: rollback
+        displayName: 'Rollback ${{ parameters.environment }} -> ${{ parameters.imageTag }}'
+        environment: ${{ parameters.environment }}   # registro + gate do Environment
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          - template: ../variables/env/${{ parameters.environment }}.yaml
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - bash: |
+                    set -euo pipefail
+                    echo "##vso[build.updatebuildnumber]$(Build.Repository.Name)-rollback-${{ parameters.imageTag }}"
+                    echo "##vso[build.addbuildtag]rollback"
+                    echo "##vso[build.addbuildtag]${{ parameters.environment }}"
+                    echo "##vso[build.addbuildtag]image-${{ parameters.imageTag }}"
+                  displayName: 'Carimbar rollback (run name + tags)'
+
+                - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+                  displayName: 'Rollback: set image + rollout status'
+                  inputs:
+                    awsCredentials: ${{ variables.serviceAccount }}
+                    regionName: ${{ variables.awsRegion }}
+                    scriptType: inline
+                    inlineScript: |
+                      set -euo pipefail
+                      APP="$(Build.Repository.Name)"
+                      NS="${APP}-${{ parameters.environment }}"
+                      IMAGE="${{ variables.awsAccID }}.dkr.ecr.${{ variables.awsRegion }}.amazonaws.com/${APP}:${{ parameters.imageTag }}"
+
+                      aws eks update-kubeconfig --region "${{ variables.awsRegion }}" --name "${{ variables.clusterName }}"
+
+                      echo "##[section]Rollback de '$APP' em '$NS' para a imagem: $IMAGE"
+                      kubectl set image deployment/"$APP" "${{ parameters.containerName }}=$IMAGE" -n "$NS"
+
+                      kubectl annotate deployment/"$APP" -n "$NS" --overwrite \
+                        deploy.fibra.io/image-tag="${{ parameters.imageTag }}" \
+                        deploy.fibra.io/rollback="true" \
+                        deploy.fibra.io/triggered-by="$(Build.RequestedFor)"
+
+                      echo "##[section]Aguardando rollout (timeout ${{ parameters.rolloutTimeoutSeconds }}s)..."
+                      if ! kubectl rollout status deployment/"$APP" -n "$NS" --timeout=${{ parameters.rolloutTimeoutSeconds }}s; then
+                        echo "##[error]A versão de rollback ($IMAGE) NÃO ficou saudável. Sem undo automático — confira a tag escolhida."
+                        kubectl get pods -n "$NS" -o wide || true
+                        kubectl describe deployment/"$APP" -n "$NS" | tail -n 40 || true
+                        exit 1
+                      fi
+                      echo "##[section]✔ Rollback concluído. '$NS' rodando $IMAGE."
