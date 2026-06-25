@@ -1,0 +1,45 @@
+parameters:
+  - name: envVars
+    type: object                
+    default: []
+  - name: commonEnvVars
+    type: object                 
+    default: []
+  - name: nodeVersion
+    type: string
+    default: '20.x'
+
+steps:
+  - task: NodeTool@0
+    displayName: 'Use Node ${{ parameters.nodeVersion }}'
+    inputs:
+      versionSpec: ${{ parameters.nodeVersion }}
+
+  - script: rm -rf dist
+    displayName: 'Clean dist'
+    workingDirectory: $(Pipeline.Workspace)/s/$(Build.Repository.Name)
+
+  - script: npm install
+    displayName: 'NPM Install dependencies'
+    workingDirectory: $(Pipeline.Workspace)/s/$(Build.Repository.Name)
+
+  - bash: |
+      set -euo pipefail
+      ENV_FILE="$(Pipeline.Workspace)/s/$(Build.Repository.Name)/.env"
+      COMMON='${{ convertToJson(parameters.commonEnvVars) }}'
+      ENVV='${{ convertToJson(parameters.envVars) }}'
+
+      # common primeiro, env do ambiente por último (override). Aceita lista vazia.
+      jq -rn --argjson c "$COMMON" --argjson e "$ENVV" \
+        '(($c // []) + ($e // []))[] | "\(.name)=\(.value)"' > "$ENV_FILE" || true
+
+      if [ ! -s "$ENV_FILE" ]; then
+        echo "##[warning]Nenhuma variável de build declarada (.env vazio)."
+      fi
+
+      echo "##[section]Conteúdo do .env gerado:"
+      cat "$ENV_FILE"
+
+      npm run build
+    displayName: 'Build application (npm run build)'
+    workingDirectory: $(Pipeline.Workspace)/s/$(Build.Repository.Name)
