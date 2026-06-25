@@ -1,132 +1,135 @@
 parameters:
-  environment: ''
-  serviceAccount: ''
-  clusterName: ''
-  awsRegion: ''
-  awsAccID: ''
-  albSharedDns: ''
-  apiGatewayVpcLink: ''
-  albSharedListener: ''
-  pod_min_replicas: ''
-  pod_max_replicas: ''
-  pod_requests_cpu: ''
-  pod_requests_memory: ''
-  base_path: ''
-  deployment_aspnetcore_urls: ''
-  deployment_aspnetcore_environment: ''
-  ingress_path: ''
-  cpu_utilization: ''
-  pod_limits_cpu: ''
-  pod_limits_memory: ''
-  api_visibility: ''
-  vpc_endpoint_apigw: ''
-  domain_internal_name: ''
-  domain_name_id: ''
-  domain_name: ''
-  env_vars: []
-  ssm_parameters: []
-  dynamodb_tables: []
-  s3_buckets: []
-  secrets: []
-  dd_lang: ''
-  dd_lib_version: 'latest'
-  cognito: false
-  certificate_arn: ''
-  sqs: []
+  - name: pod
+    type: object
+  - name: networking
+    type: object
+  - name: resources
+    type: object
+    default:
+      dynamodb_tables: []
+      s3_buckets: []
+      sqs: []
+      secrets: []
+  - name: observability
+    type: object
+    default:
+      dd_lang: dotnet
+      dd_lib_version: latest
+  - name: config
+    type: object
+    default:
+      env_vars: []
+      ssm_parameters:
+        dev: []
+        hml: []
+        prd: []
+  - name: hotfix
+    type: object
+    default:
+      main_pr_require_manual_approval: false
+      main_pr_reviewers: ''
+      main_pr_wait_timeout_minutes: 360
+  - name: rollbackImageTag
+    type: string
+    default: ''
 
-steps:
+variables:
+  - group: git-credentials
 
-  - template: steps/image-promote.yaml
-    parameters:
-      serviceAccount: ${{ parameters.serviceAccount }}
-      awsRegion: ${{ parameters.awsRegion }}
+stages:
+  - ${{ if ne(parameters.rollbackImageTag, '') }}:
+      - template: ../stages/rollback.yaml
+        parameters:
+          environment: prd
+          imageTag: ${{ parameters.rollbackImageTag }}
 
-  - script: |
-      set -euo pipefail
+  - ${{ else }}:
+      - stage: SonarQube
+        displayName: SonarQube Scan
+        jobs:
+          - job: SonarQubeScan
+            displayName: 'SonarQube Analysis'
+            pool:
+              vmImage: ubuntu-latest
+            steps:
+              - checkout: self
+                fetchDepth: 0
+                displayName: 'Checkout do Código'
+              - template: ../sonarqube/qa-sonar-dotnet.yaml
 
-      REPO_DIR="$(Build.SourcesDirectory)/templates"
-      TF_TEMPLATES="${REPO_DIR}/manifests/terraform"
-      TERRAFORM_BASE="$(Build.SourcesDirectory)/terraform"
+      - stage: Build
+        displayName: Build
+        dependsOn: SonarQube
+        condition: succeeded()
+        jobs:
+          - template: ../dotnet/build-backend-dotnet.yaml
 
-      if [ ! -d "$TF_TEMPLATES" ]; then
-        echo "##[error]Terraform templates not found: $TF_TEMPLATES"
-        exit 1
-      fi
+      - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/') }}:
+          - template: ../hotfix/hotfix-backend-dotnet.yaml
+            parameters:
+              pod: ${{ parameters.pod }}
+              networking: ${{ parameters.networking }}
+              resources: ${{ parameters.resources }}
+              observability: ${{ parameters.observability }}
+              config: ${{ parameters.config }}
+              hotfix: ${{ parameters.hotfix }}
 
-      mkdir -p "$TERRAFORM_BASE"
-      cp -r "$TF_TEMPLATES"/. "$TERRAFORM_BASE/"
+      - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+          - template: ../stages/deploy.yaml
+            parameters:
+              environment: hml
+              dependsOn: [Build]
+              pod: ${{ parameters.pod }}
+              networking: ${{ parameters.networking }}
+              resources: ${{ parameters.resources }}
+              observability: ${{ parameters.observability }}
+              env_vars: ${{ parameters.config.env_vars }}
+              ssm_parameters: ${{ parameters.config.ssm_parameters.hml }}
 
-      echo "##[section]Terraform manifests:"
-      ls -la "$TERRAFORM_BASE"
-    displayName: "Prepare Terraform Manifests"
+          - template: ../stages/veracode.yaml
+            parameters:
+              dependsOn: [Build]
 
-  - bash: |
-      set -euo pipefail
-      APP="$(Build.Repository.Name)"
-      jq -n --arg app "$APP" --arg ns "$APP-${{ parameters.environment }}" \
-        '{app_name: $app, namespace: $ns}' > _app.auto.tfvars.json
-      echo "_app.auto.tfvars.json:"; cat _app.auto.tfvars.json
-    workingDirectory: $(System.DefaultWorkingDirectory)/terraform
-    displayName: 'TF vars de runtime (app_name/namespace)'
+          - template: ../stages/deploy.yaml
+            parameters:
+              environment: prd
+              dependsOn: [Deploy_hml, Veracode]
+              pod: ${{ parameters.pod }}
+              networking: ${{ parameters.networking }}
+              resources: ${{ parameters.resources }}
+              observability: ${{ parameters.observability }}
+              env_vars: ${{ parameters.config.env_vars }}
+              ssm_parameters: ${{ parameters.config.ssm_parameters.prd }}
 
-  - template: steps/terraform-apply.yaml
-    parameters:
-      serviceAccount: ${{ parameters.serviceAccount }}
-      awsRegion: ${{ parameters.awsRegion }}
-      workingDirectory: $(System.DefaultWorkingDirectory)/terraform
-      backendBucket: 'tfstate-$(Build.Repository.Name)-${{ parameters.environment }}'
-      backendKey: '$(Build.Repository.Name)/terraform.tfstate'
-      tolerableErrorPatterns: 'BasePathConflictException|Base path already exists|CreateBasePathMapping'
-      tfVars:
-        environment: ${{ parameters.environment }}
-        domain_name: ${{ parameters.domain_name }}
-        cluster_name: ${{ parameters.clusterName }}
-        alb_shared_dns: ${{ parameters.albSharedDns }}
-        api_gateway_vpc_link: ${{ parameters.apiGatewayVpcLink }}
-        alb_shared_listener: ${{ parameters.albSharedListener }}
-        base_path: ${{ parameters.base_path }}
-        api_type: ${{ parameters.api_visibility }}
-        vpc_endpoint_apigw: ${{ parameters.vpc_endpoint_apigw }}
-        domain_internal_name: ${{ parameters.domain_internal_name }}
-        domain_name_id: ${{ parameters.domain_name_id }}
-        cognito: ${{ parameters.cognito }}
-        certificate_arn: ${{ parameters.certificate_arn }}
-        ssm_parameters: ${{ parameters.ssm_parameters }}
-        s3_buckets: ${{ parameters.s3_buckets }}
-        secrets: ${{ parameters.secrets }}
-        queue_name: ${{ parameters.sqs }}
-        dynamodb_tables: ${{ parameters.dynamodb_tables }}
+          - stage: PR_Main
+            displayName: 'PR release -> main'
+            dependsOn: Deploy_prd
+            condition: succeeded()
+            jobs:
+              - template: ../utils/create-pullrequest.yaml
+                parameters:
+                  sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
+                  targetBranch: main
 
-  - template: steps/k8s-render.yaml
-    parameters:
-      sourceDir: '$(Build.SourcesDirectory)/templates/manifests/k8s'
-      outputDir: '$(Build.SourcesDirectory)/k8s'
-      namespace: '$(Build.Repository.Name)-${{ parameters.environment }}'
-      configMapName: '$(Build.Repository.Name)-app-vars'
-      envVars: ${{ parameters.env_vars }}
-      substitutions:
-        PLACEHOLDER_APP_NAME: '$(Build.Repository.Name)'
-        PLACEHOLDER_ECR_IMAGE: '${{ parameters.awsAccID }}.dkr.ecr.${{ parameters.awsRegion }}.amazonaws.com/$(Build.Repository.Name):$(Build.BuildId)'
-        PLACEHOLDER_ENVIRONMENT: ${{ parameters.environment }}
-        PLACEHOLDER_AWS_REGION: ${{ parameters.awsRegion }}
-        PLACEHOLDER_DEPLOYMENT_ASPNETCORE_URLS: '${{ parameters.deployment_aspnetcore_urls }}'
-        PLACEHOLDER_DEPLOYMENT_ASPNETCORE_ENVIRONMENT: ${{ parameters.deployment_aspnetcore_environment }}
-        PLACEHOLDER_INGRESS_PATH: ${{ parameters.ingress_path }}
-        PLACEHOLDER_MIN_REPLICAS: ${{ parameters.pod_min_replicas }}
-        PLACEHOLDER_MAX_REPLICAS: ${{ parameters.pod_max_replicas }}
-        PLACEHOLDER_REQUESTS_CPU: ${{ parameters.pod_requests_cpu }}
-        PLACEHOLDER_REQUESTS_MEMORY: ${{ parameters.pod_requests_memory }}
-        PLACEHOLDER_LIMITS_CPU: ${{ parameters.pod_limits_cpu }}
-        PLACEHOLDER_LIMITS_MEMORY: ${{ parameters.pod_limits_memory }}
-        PLACEHOLDER_CPU_UTILIZATION: ${{ parameters.cpu_utilization }}
-        PLACEHOLDER_DD_LANG: ${{ parameters.dd_lang }}
-        PLACEHOLDER_DD_LIB_VERSION: ${{ parameters.dd_lib_version }}
+          - stage: BackMerge_Develop
+            displayName: 'Back-merge main -> develop'
+            dependsOn: PR_Main
+            condition: succeeded()
+            jobs:
+              - template: ../utils/create-pullrequest.yaml
+                parameters:
+                  sourceBranch: main
+                  targetBranch: develop
 
-  - template: steps/k8s-deploy.yaml
-    parameters:
-      serviceAccount: ${{ parameters.serviceAccount }}
-      awsRegion: ${{ parameters.awsRegion }}
-      clusterName: ${{ parameters.clusterName }}
-      namespace: '$(Build.Repository.Name)-${{ parameters.environment }}'
-      manifestsDir: '$(Build.SourcesDirectory)/k8s'
-      workloadName: '$(Build.Repository.Name)'
+      - ${{ else }}:
+          - template: ../stages/deploy.yaml
+            parameters:
+              environment: dev
+              dependsOn: [Build]
+              condition: and(succeeded('Build'), or(eq(variables['Build.SourceBranch'], 'refs/heads/develop'), eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')))
+              pod: ${{ parameters.pod }}
+              networking: ${{ parameters.networking }}
+              resources: ${{ parameters.resources }}
+              observability: ${{ parameters.observability }}
+              env_vars: ${{ parameters.config.env_vars }}
+              ssm_parameters: ${{ parameters.config.ssm_parameters.dev }}
