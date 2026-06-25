@@ -1,0 +1,68 @@
+parameters:
+  serviceAccount: ''
+  awsRegion: ''
+  tfstatesBucket: ''
+  keyBucketPath: ''
+  workDir: ''
+  folder: ''
+  enabled: true
+  tfvars: ''
+
+steps:
+- bash: |
+    cat > backend.tf <<EOF
+    terraform {
+      backend "s3" {
+        bucket  = "${{ parameters.tfstatesBucket }}"
+        key     = "tfstate-$(Build.Repository.Name)-${{ parameters.environment}}/${{ parameters.folder }}"
+        region  = "${{ parameters.awsRegion }}"
+        encrypt = true
+      }
+    }
+    EOF
+  workingDirectory: ${{ parameters.workDir }}
+  displayName: "${{ parameters.folder }}-Configure Remote State (S3)"
+  condition: eq('${{parameters.enabled}}', 'true')
+
+- task: TerraformInstaller@1
+  condition: eq('${{parameters.enabled}}', 'true')
+  displayName: ${{ parameters.folder }}-Install Terraform
+  continueOnError: true
+  inputs:
+    terraformVersion: 'latest'
+
+- task: TerraformTask@5
+  condition: eq('${{parameters.enabled}}', 'true')
+  displayName: ${{ parameters.folder }}-Terraform Init
+  continueOnError: true
+  inputs:
+    provider: 'aws'
+    command: 'init'
+    backendServiceAWS: ${{ parameters.serviceAccount }}
+    backendAWSBucketName: ${{ parameters.tfstatesBucket }}
+    backendAWSKey: tfstate-$(Build.Repository.Name)-${{ parameters.environment}}/${{ parameters.folder }}
+    workingDirectory: ${{ parameters.workDir }}
+
+- task: TerraformTask@5
+  name: terraformPlan_${{ replace(parameters.folder, '/', '_') }}
+  displayName: 'Terraform Plan - ${{ parameters.folder }}'
+  condition: eq('${{ parameters.enabled }}', 'true')
+  inputs:
+    provider: 'aws'
+    command: 'plan'
+    commandOptions: '${{ parameters.tfVars }} -out=tfplan'
+    backendServiceAWS: ${{ parameters.serviceAccount }}
+    backendAWSBucketName: ${{ parameters.tfstatesBucket }}
+    backendAWSKey: tfstate-$(Build.Repository.Name)-${{ parameters.environment}}/${{ parameters.folder }}"
+    environmentServiceNameAWS: ${{ parameters.serviceAccount }}
+    workingDirectory: ${{ parameters.workDir }}
+
+- task: TerraformTask@5
+  displayName: 'Terraform Apply - ${{ parameters.folder }}'
+  condition: and(eq('${{parameters.enabled}}', 'true'),eq(variables['terraformPlan_${{ replace(parameters.folder, '/', '_') }}.changesPresent'], 'true'))
+  inputs:
+    provider: 'aws'
+    command: 'apply'
+    commandOptions: '-auto-approve tfplan'
+    environmentServiceNameAWS: ${{ parameters.serviceAccount }}
+    workingDirectory: ${{ parameters.workDir }}
