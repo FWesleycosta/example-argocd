@@ -1,0 +1,92 @@
+parameters:
+  environment: ''
+  serviceAccount: ''
+  awsRegion: ''
+  tfstatesBucket: ''
+  keyBucketPath: ''
+  s3: ''
+  apigateway: ''
+  cloudfront: ''
+  dns_name: ''
+  access_logging: ''
+
+steps:
+- script: | 
+    SEARCH_PATH=$(find $(Pipeline.Workspace) -type d -path "*/terraform-front/s3" -print -quit)
+
+    if [ -n "$SEARCH_PATH" ]; then
+      echo "Sucesso: terraform-front/s3 encontrado em: $SEARCH_PATH"
+      echo "##vso[task.setvariable variable=RUN_TERRAFORM_FRONT_S3]true"
+    else
+      echo "Erro: terraform-front/s3 NÃO foi localizado em subdiretórios de $(Pipeline.Workspace)"
+      exit 1
+    fi
+  displayName: Check terraform-front/s3 folder
+
+- script: | 
+    # Busca recursiva por 'terraform-front/cloudfront' a partir da raiz do workspace
+    # O redirecionamento 2>/dev/null evita avisos de permissão negada
+    SEARCH_PATH=$(find $(Pipeline.Workspace) -type d -path "*/terraform-front/cloudfront" -print -quit)
+
+    if [ -n "$SEARCH_PATH" ]; then
+      echo "Sucesso: terraform-front/cloudfront encontrado em: $SEARCH_PATH"
+      echo "##vso[task.setvariable variable=RUN_TERRAFORM_FRONT_S3]true"
+    else
+      echo "Erro: terraform-front/cloudfront NÃO foi localizado em subdiretórios de $(Pipeline.Workspace)"
+      exit 1
+    fi
+  displayName: Check terraform-front/cloudfront folder
+
+- template: terraform.yaml
+  parameters:
+    enabled: ${{ parameters.s3 }}
+    folder: 's3'
+    environment: ${{ parameters.environment }}
+    serviceAccount: ${{ parameters.serviceAccount }}
+    awsRegion: ${{ parameters.awsRegion }}
+    tfstatesBucket: ${{ parameters.tfstatesBucket }}
+    workDir: templates/terraform-front/s3
+    keyBucketPath: tfstate-$(Build.Repository.Name)-${{ parameters.environment}}/s3
+    tfVars: >-
+      -var="NAME_BUCKET_FRONT=$(Build.Repository.Name)-${{ parameters.environment }}"
+      -var="AWS_REGION=${{ parameters.awsRegion }}"
+      -var=Access_logging_workloads=${{ parameters.access_logging }}
+
+- template: terraform.yaml
+  parameters:
+    enabled: ${{ parameters.cloudfront }}
+    folder: 'cloudfront'
+    serviceAccount: ${{ parameters.serviceAccount }}
+    awsRegion: ${{ parameters.awsRegion }}
+    tfstatesBucket: ${{ parameters.tfstatesBucket }}
+    workDir: templates/terraform-front/cloudfront
+    keyBucketPath: tfstate-$(Build.Repository.Name)-${{ parameters.environment}}/cloudfront
+    tfVars: >-
+      -var="NAME_BUCKET_FRONT=$(Build.Repository.Name)-${{ parameters.environment }}"
+      -var="AWS_REGION=${{ parameters.awsRegion }}"
+      -var="ENVIRONMENT=${{ parameters.environment }}"
+      -var="APP_NAME=${{ parameters.dns_name }}"
+
+- task: TerraformInstaller@1
+  displayName: 'Install Terraform'
+  inputs:
+    terraformVersion: 'latest'
+  condition: eq(variables['RUN_TERRAFORM_FRONT_CLOUDFRONT'], 'true')
+
+- script: |
+    cd templates/terraform-front/cloudfront
+
+    if terraform output -json > /dev/null 2>&1; then
+      for key in $(terraform output -json | jq -r 'keys[]'); do
+        value=$(terraform output -raw $key 2>/dev/null || echo "")
+        if [ -n "$value" ]; then
+          echo "##vso[task.setvariable variable=${key};isOutput=true]${value}"
+          echo "Exported: $key = $value"
+        fi
+      done
+    else
+      echo "Nenhum output disponível"
+    fi
+  displayName: 'Export Terraform Outputs'
+  name: tfOutputs
+ 
