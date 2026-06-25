@@ -6,15 +6,132 @@ parameters:
   - name: workingDirectory
     type: string
     default: '$(System.DefaultWorkingDirectory)/terraform'
+  - name: terraformVersion
+    type: string
+    default: '1.9.8'
+
+  # ---- Backend (S3) ----
+  - name: backendBucket
+    type: string
+  - name: backendKey
+    type: string
+  - name: ensureBackend
+    type: boolean
+    default: true
+
+  # ---- Variáveis e comportamento ----
+  - name: tfVars
+    type: object
+    default: {}
+  - name: planOnly
+    type: boolean
+    default: false
+  - name: lockTimeout
+    type: string
+    default: '5m'
+  - name: tolerableErrorPatterns
+    type: string
+    default: ''
 
 steps:
-  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'TF: validate'
+  - task: TerraformInstaller@1
+    displayName: 'Install Terraform ${{ parameters.terraformVersion }}'
     inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion }}
-      scriptType: inline
-      inlineScript: |
-        set -euo pipefail
-        cd "${{ parameters.workingDirectory }}"
-        terraform validate
+      terraformVersion: ${{ parameters.terraformVersion }}
+
+  - ${{ if eq(parameters.ensureBackend, true) }}:
+      - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+        displayName: 'TF: provisionar state backend (S3 endurecido)'
+        inputs:
+          awsCredentials: ${{ parameters.serviceAccount }}
+          regionName: ${{ parameters.awsRegion }}
+          scriptType: inline
+          inlineScript: |
+            set -euo pipefail
+
+            REGION="${{ parameters.awsRegion }}"
+            BUCKET="${{ parameters.backendBucket }}"
+
+            # ---- Bucket de state (idempotente) ----
+            if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+              echo "Bucket '$BUCKET' já existe."
+            else
+              echo "Criando bucket '$BUCKET'..."
+              if [ "$REGION" = "us-east-1" ]; then
+                aws s3api create-bucket --bucket "$BUCKET" --region "$REGION"
+              else
+                aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
+                  --create-bucket-configuration LocationConstraint="$REGION"
+              fi
+            fi
+
+            # Hardening idempotente (aplica sempre — protege buckets antigos também).
+            aws s3api put-bucket-versioning --bucket "$BUCKET" \
+              --versioning-configuration Status=Enabled
+            aws s3api put-bucket-encryption --bucket "$BUCKET" \
+              --server-side-encryption-configuration \
+              '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"},"BucketKeyEnabled":true}]}'
+            aws s3api put-public-access-block --bucket "$BUCKET" \
+              --public-access-block-configuration \
+              BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+
+            POLICY='{"Version":"2012-10-17","Statement":[{"Sid":"DenyHTTPRequests","Effect":"Deny","Principal":"*","Action":"s3:*","Resource":["arn:aws:s3:::'"$BUCKET"'","arn:aws:s3:::'"$BUCKET"'/*"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}'
+            aws s3api put-bucket-policy --bucket "$BUCKET" --policy "$POLICY"
+
+            echo "Bucket '$BUCKET': versioning + SSE(AES256) + public-access-block + deny-insecure-transport OK."
+
+  - bash: |
+      set -euo pipefail
+      # TODO (melhoria futura): state locking — adicionar `dynamodb_table` ou `use_lockfile`.
+      cat > backend.tf <<EOF
+      terraform {
+        backend "s3" {
+          bucket  = "${{ parameters.backendBucket }}"
+          key     = "${{ parameters.backendKey }}"
+          region  = "${{ parameters.awsRegion }}"
+          encrypt = true
+        }
+      }
+      EOF
+      echo "backend.tf gerado:"; cat backend.tf
+    workingDirectory: ${{ parameters.workingDirectory }}
+    displayName: 'TF: configurar remote state (S3)'
+
+  - bash: |
+      set -euo pipefail
+      echo '${{ convertToJson(parameters.tfVars) }}' > _pipeline.auto.tfvars.json
+      echo "Variáveis de pipeline (sensíveis mascaradas):"
+      jq 'with_entries(if (.key|test("secret|password|token|key";"i")) then .value="***" else . end)' _pipeline.auto.tfvars.json
+      echo "Outros *.auto.tfvars.json no diretório (do chamador) também serão carregados:"
+      ls -1 *.auto.tfvars.json
+    workingDirectory: ${{ parameters.workingDirectory }}
+    displayName: 'TF: gerar _pipeline.auto.tfvars.json'
+
+  - template: terraform/init.yaml
+    parameters:
+      serviceAccount: ${{ parameters.serviceAccount }}
+      awsRegion: ${{ parameters.awsRegion }}
+      workingDirectory: ${{ parameters.workingDirectory }}
+      lockTimeout: ${{ parameters.lockTimeout }}
+
+  - template: terraform/validate.yaml
+    parameters:
+      serviceAccount: ${{ parameters.serviceAccount }}
+      awsRegion: ${{ parameters.awsRegion }}
+      workingDirectory: ${{ parameters.workingDirectory }}
+
+  - template: terraform/plan.yaml
+    parameters:
+      serviceAccount: ${{ parameters.serviceAccount }}
+      awsRegion: ${{ parameters.awsRegion }}
+      workingDirectory: ${{ parameters.workingDirectory }}
+      lockTimeout: ${{ parameters.lockTimeout }}
+
+  - ${{ if eq(parameters.planOnly, false) }}:
+      - template: terraform/apply.yaml
+        parameters:
+          serviceAccount: ${{ parameters.serviceAccount }}
+          awsRegion: ${{ parameters.awsRegion }}
+          workingDirectory: ${{ parameters.workingDirectory }}
+          lockTimeout: ${{ parameters.lockTimeout }}
+          tolerableErrorPatterns: ${{ parameters.tolerableErrorPatterns }}
