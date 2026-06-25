@@ -1,0 +1,62 @@
+trigger:
+  branches:
+    include:
+      - develop
+      - release/*
+      - hotfix/*
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Fibra.DevOps/fibra-devops-pipelines
+      ref: refs/tags/v1.0.0
+
+    - repository: terraform-modules
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Terraform
+      ref: refs/heads/main
+
+extends:
+  template: templates/stacks/dotnet-backend.yaml@templates
+  parameters:
+    pod:
+      # Sizing de PRD. Em DEV/HML a esteira força 1 pod (min=max=1) automaticamente.
+      min_replicas: '2'
+      max_replicas: '6'
+      requests_cpu: 100m
+      requests_memory: 256Mi
+      limits_cpu: 250m
+      limits_memory: 512Mi
+      cpu_utilization: '70'
+
+    networking:
+      ingress_path: /corporativo-dadosmercado
+      base_path: corporativo
+      api_visibility: public
+      domain_name: dev-api-teste.bancofibra.com.br
+      deployment_aspnetcore_urls: http://0.0.0.0:8080
+      cognito: false
+
+    resources:
+      dynamodb_tables: []
+      s3_buckets: []
+      secrets: []
+      sqs:
+        - queue_name: "aws_sqs_teste_fibra_corporativo"
+          fifo_queue: false
+        - queue_name: "aws_sqs_teste_fibra_corporativo_2"
+          fifo_queue: true
+
+    observability:
+      dd_lang: dotnet
+      dd_lib_version: latest
+
+    config:
+      env_vars:
+        - name: DATA
+          value: teste
+      ssm_parameters:
+        dev: []
+        hml: []
+        prd: []
