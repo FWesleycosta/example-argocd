@@ -60,119 +60,42 @@ steps:
       ls -la "$TERRAFORM_BASE"
     displayName: "Prepare Terraform Manifests"
 
-  - task: TerraformInstaller@1
-    displayName: 'Install Terraform'
-    continueOnError: true
-    inputs:
-      terraformVersion: 'latest'
-
-  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: Create s3 Backend Bucket
-    inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion}}
-      scriptType: inline
-      inlineScript: |
-        set -euo pipefail
-        
-        BUCKET_NAME="tfstate-$(Build.Repository.Name)-${{ parameters.environment }}"
-        
-        if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
-          echo "Bucket '$BUCKET_NAME' already exists, skipping creation."
-        else
-          echo "Creating bucket '$BUCKET_NAME'..."
-          aws s3api create-bucket \
-            --bucket "$BUCKET_NAME" \
-            --region ${{ parameters.awsRegion }} \
-            --create-bucket-configuration LocationConstraint=${{ parameters.awsRegion }}
-        
-          aws s3api put-bucket-versioning \
-            --bucket "$BUCKET_NAME" \
-            --versioning-configuration Status=Enabled
-        
-          echo "Bucket '$BUCKET_NAME' created with versioning and encryption enabled."
-        fi
-
   - bash: |
       set -euo pipefail
-      cat > backend.tf <<EOF
-      terraform {
-        backend "s3" {
-          bucket  = "tfstate-$(Build.Repository.Name)-${{ parameters.environment }}"
-          key     = "$(Build.Repository.Name)/terraform.tfstate"
-          region  = "${{ parameters.awsRegion }}"
-          encrypt = true
-        }
-      }
-      EOF
+      APP="$(Build.Repository.Name)"
+      jq -n --arg app "$APP" --arg ns "$APP-${{ parameters.environment }}" \
+        '{app_name: $app, namespace: $ns}' > _app.auto.tfvars.json
+      echo "_app.auto.tfvars.json:"; cat _app.auto.tfvars.json
     workingDirectory: $(System.DefaultWorkingDirectory)/terraform
-    displayName: "$(Build.Repository.Name)-Configure Remote State (S3)"
+    displayName: 'TF vars de runtime (app_name/namespace)'
 
-  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: Apply Terraform manifests
-    inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion }}
-      scriptType: inline
-      inlineScript: |
-        set -uo pipefail
-        
-        cd $(System.DefaultWorkingDirectory)/terraform
-        
-        terraform init -migrate-state
-        terraform validate
-        
-        export TF_VAR_ssm_parameters='${{ convertToJson(parameters.ssm_parameters) }}'
-        export TF_VAR_s3_buckets='${{ convertToJson(parameters.s3_buckets) }}'
-        export TF_VAR_secrets='${{ convertToJson(parameters.secrets) }}'
-        export TF_VAR_queue_name='${{ convertToJson(parameters.sqs) }}'
-        
-        terraform apply -auto-approve \
-          -var="app_name=$(Build.Repository.Name)" \
-          -var="environment=${{ parameters.environment }}" \
-          -var="namespace=$(Build.Repository.Name)-${{ parameters.environment }}" \
-          -var="domain_name=${{ parameters.domain_name }}" \
-          -var="cluster_name=${{ parameters.clusterName }}" \
-          -var="alb_shared_dns=${{ parameters.albSharedDns }}" \
-          -var="api_gateway_vpc_link=${{ parameters.apiGatewayVpcLink }}" \
-          -var="alb_shared_listener=${{ parameters.albSharedListener }}" \
-          -var="base_path=${{ parameters.base_path }}" \
-          -var="api_type=${{ parameters.api_visibility }}" \
-          -var="vpc_endpoint_apigw=${{ parameters.vpc_endpoint_apigw }}" \
-          -var="domain_internal_name=${{ parameters.domain_internal_name }}" \
-          -var="domain_name_id=${{ parameters.domain_name_id }}" \
-          -var="cognito=${{ parameters.cognito }}" \
-          -var='dynamodb_tables=${{ convertToJson(parameters.dynamodb_tables) }}' \
-          -var="certificate_arn=${{ parameters.certificate_arn }}" \
-          2>&1 | tee /tmp/tf_output.log
-        
-        APPLY_EXIT=${PIPESTATUS[0]}
-        
-        if [ $APPLY_EXIT -eq 0 ]; then
-          echo "Terraform apply concluído com sucesso."
-          exit 0
-        fi
-        
-        TOTAL_ERRORS=$(grep -c "Error:" /tmp/tf_output.log || true)
-        
-        BASE_PATH_ERRORS=$(grep -cE "BasePathConflictException|Base path already exists|CreateBasePathMapping" /tmp/tf_output.log || true)
-        
-        OTHER_ERRORS=$(grep "Error:" /tmp/tf_output.log | grep -vcE "BasePathConflictException|Base path already exists|CreateBasePathMapping" || true)
-        
-        echo "=========================================="
-        echo "Total de linhas com 'Error:':  $TOTAL_ERRORS"
-        echo "Erros de Base Path (ok):       $BASE_PATH_ERRORS"
-        echo "Outros erros:                  $OTHER_ERRORS"
-        echo "=========================================="
-        
-        
-        if [ "$BASE_PATH_ERRORS" -gt 0 ] && [ "$OTHER_ERRORS" -eq 0 ]; then
-          echo "##[warning]Apenas erros de Base Path já existente. Ignorando..."
-          exit 0
-        fi
-        
-        echo "##[error]Erro inesperado no terraform apply!"
-        exit 1
+  - template: steps/terraform-apply.yaml
+    parameters:
+      serviceAccount: ${{ parameters.serviceAccount }}
+      awsRegion: ${{ parameters.awsRegion }}
+      workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+      backendBucket: 'tfstate-$(Build.Repository.Name)-${{ parameters.environment }}'
+      backendKey: '$(Build.Repository.Name)/terraform.tfstate'
+      tolerableErrorPatterns: 'BasePathConflictException|Base path already exists|CreateBasePathMapping'
+      tfVars:
+        environment: ${{ parameters.environment }}
+        domain_name: ${{ parameters.domain_name }}
+        cluster_name: ${{ parameters.clusterName }}
+        alb_shared_dns: ${{ parameters.albSharedDns }}
+        api_gateway_vpc_link: ${{ parameters.apiGatewayVpcLink }}
+        alb_shared_listener: ${{ parameters.albSharedListener }}
+        base_path: ${{ parameters.base_path }}
+        api_type: ${{ parameters.api_visibility }}
+        vpc_endpoint_apigw: ${{ parameters.vpc_endpoint_apigw }}
+        domain_internal_name: ${{ parameters.domain_internal_name }}
+        domain_name_id: ${{ parameters.domain_name_id }}
+        cognito: ${{ parameters.cognito }}
+        certificate_arn: ${{ parameters.certificate_arn }}
+        ssm_parameters: ${{ parameters.ssm_parameters }}
+        s3_buckets: ${{ parameters.s3_buckets }}
+        secrets: ${{ parameters.secrets }}
+        queue_name: ${{ parameters.sqs }}
+        dynamodb_tables: ${{ parameters.dynamodb_tables }}
 
   - template: steps/k8s-render.yaml
     parameters:

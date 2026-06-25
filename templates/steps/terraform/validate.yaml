@@ -1,0 +1,20 @@
+parameters:
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: workingDirectory
+    type: string
+    default: '$(System.DefaultWorkingDirectory)/terraform'
+
+steps:
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'TF: validate'
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        cd "${{ parameters.workingDirectory }}"
+        terraform validate
