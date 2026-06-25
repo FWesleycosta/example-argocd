@@ -6,22 +6,10 @@ parameters:
   - name: workingDirectory
     type: string
     default: '$(System.DefaultWorkingDirectory)/terraform'
-  - name: lockTimeout
-    type: string
-    default: '5m'
-  - name: planFile
-    type: string
-    default: 'tfplan'
-  - name: hasChangesVariable
-    type: string                 
-    default: 'tfHasChanges'
-  - name: extraArgs
-    type: string         
-    default: ''
 
 steps:
   - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'TF: plan'
+    displayName: 'TF: validate'
     inputs:
       awsCredentials: ${{ parameters.serviceAccount }}
       regionName: ${{ parameters.awsRegion }}
@@ -29,15 +17,4 @@ steps:
       inlineScript: |
         set -euo pipefail
         cd "${{ parameters.workingDirectory }}"
-        LOCK="${{ parameters.lockTimeout }}"
-
-        # -detailed-exitcode: 0 = sem mudanças, 1 = erro, 2 = há mudanças.
-        set +e
-        terraform plan -input=false -lock-timeout="$LOCK" -out="${{ parameters.planFile }}" -detailed-exitcode ${{ parameters.extraArgs }}
-        PLAN_RC=$?
-        set -e
-        case "$PLAN_RC" in
-          0) echo "##[section]Sem mudanças de infra."; echo "##vso[task.setvariable variable=${{ parameters.hasChangesVariable }}]false" ;;
-          2) echo "##[section]Mudanças planejadas.";   echo "##vso[task.setvariable variable=${{ parameters.hasChangesVariable }}]true"  ;;
-          *) echo "##[error]terraform plan falhou (rc=$PLAN_RC)."; exit 1 ;;
-        esac
+        terraform validate
