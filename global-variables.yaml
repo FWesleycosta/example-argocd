@@ -1,4 +1,3 @@
-
 parameters:
   - name: serviceAccount
     type: string
@@ -10,20 +9,10 @@ parameters:
   - name: lockTimeout
     type: string
     default: '5m'
-  - name: planFile
-    type: string
-    default: 'tfplan'
-  - name: hasChangesVariable
-    type: string
-    default: 'tfHasChanges'
-  - name: tolerableErrorPatterns
-    type: string
-    default: ''
 
 steps:
   - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'TF: apply'
-    condition: and(succeeded(), ne(variables['${{ parameters.hasChangesVariable }}'], 'false'))
+    displayName: 'TF: init'
     inputs:
       awsCredentials: ${{ parameters.serviceAccount }}
       regionName: ${{ parameters.awsRegion }}
@@ -31,28 +20,4 @@ steps:
       inlineScript: |
         set -euo pipefail
         cd "${{ parameters.workingDirectory }}"
-        LOCK="${{ parameters.lockTimeout }}"
-        PLAN="${{ parameters.planFile }}"
-        PATTERNS="${{ parameters.tolerableErrorPatterns }}"
-
-        if [ -z "$PATTERNS" ]; then
-          terraform apply -input=false -lock-timeout="$LOCK" "$PLAN"
-          echo "##[section]✔ terraform apply concluído."
-          exit 0
-        fi
-
-        set +e
-        terraform apply -input=false -lock-timeout="$LOCK" "$PLAN" 2>&1 | tee /tmp/tf_apply.log
-        APPLY_RC=${PIPESTATUS[0]}
-        set -e
-        [ "$APPLY_RC" -eq 0 ] && { echo "##[section]✔ terraform apply concluído."; exit 0; }
-
-        TOLERABLE=$(grep -cE "$PATTERNS" /tmp/tf_apply.log || true)
-        OTHER=$(grep "Error:" /tmp/tf_apply.log | grep -vcE "$PATTERNS" || true)
-        echo "Erros toleráveis: $TOLERABLE | Outros: $OTHER"
-        if [ "$TOLERABLE" -gt 0 ] && [ "$OTHER" -eq 0 ]; then
-          echo "##[warning]Apenas erros toleráveis ($PATTERNS) — ignorando. (Corrija a idempotência no módulo.)"
-          exit 0
-        fi
-        echo "##[error]terraform apply falhou com erro inesperado."
-        exit 1
+        terraform init -input=false -reconfigure -lock-timeout="${{ parameters.lockTimeout }}"
