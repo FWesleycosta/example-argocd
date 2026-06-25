@@ -36,59 +36,29 @@ parameters:
 
 steps:
 
-  - download: current
-    artifact: docker-image
-    displayName: 'Download Docker Image Artifact'
-
-  - bash: |
-      set -euo pipefail
-      docker load -i $(Pipeline.Workspace)/docker-image/$(Build.Repository.Name).tar
-    displayName: Load Docker Image
-
-  - task: AmazonWebServices.aws-vsts-tools.ECRPushImage.ECRPushImage@1
-    displayName: 'Push Image to ECR'
-    timeoutInMinutes: 10
-    retryCountOnTaskFailure: 2
-    inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion}}
-      sourceImageName: $(Build.Repository.Name)
-      repositoryName: $(Build.Repository.Name)
-      sourceImageTag: $(Build.BuildId)
-      pushTag: $(Build.BuildId)
-      logRequest: false
-      logResponse: false
-      autoCreateRepository: true
+  - template: steps/image-promote.yaml
+    parameters:
+      serviceAccount: ${{ parameters.serviceAccount }}
+      awsRegion: ${{ parameters.awsRegion }}
 
   - script: |
       set -euo pipefail
-      
-      TEMPLATES_DIR="$(Build.SourcesDirectory)/templates"
-      K8S_TEMPLATES="${TEMPLATES_DIR}/templates/k8s"
-      TF_TEMPLATES="${TEMPLATES_DIR}/templates/terraform"
-      
-      K8S_BASE="$(Build.SourcesDirectory)/k8s"
+
+      REPO_DIR="$(Build.SourcesDirectory)/templates"
+      TF_TEMPLATES="${REPO_DIR}/manifests/terraform"
       TERRAFORM_BASE="$(Build.SourcesDirectory)/terraform"
-      
-      if [ ! -d "$K8S_TEMPLATES" ]; then
-        echo "##[error]K8s templates not found: $K8S_TEMPLATES"
-        exit 1
-      fi
+
       if [ ! -d "$TF_TEMPLATES" ]; then
         echo "##[error]Terraform templates not found: $TF_TEMPLATES"
         exit 1
       fi
-      
-      mkdir -p "$K8S_BASE" "$TERRAFORM_BASE"
-      cp -r "$K8S_TEMPLATES"/. "$K8S_BASE/"
+
+      mkdir -p "$TERRAFORM_BASE"
       cp -r "$TF_TEMPLATES"/. "$TERRAFORM_BASE/"
-      
-      echo "##[section]K8s manifests:"
-      ls -la "$K8S_BASE"
-      
+
       echo "##[section]Terraform manifests:"
       ls -la "$TERRAFORM_BASE"
-    displayName: "Prepare Terraform and Kubernetes Manifests"
+    displayName: "Prepare Terraform Manifests"
 
   - task: TerraformInstaller@1
     displayName: 'Install Terraform'
@@ -204,144 +174,36 @@ steps:
         echo "##[error]Erro inesperado no terraform apply!"
         exit 1
 
-  - script: |
-      set -euo pipefail
-      
-      export IMAGE="${{ parameters.awsAccID }}.dkr.ecr.${{ parameters.awsRegion }}.amazonaws.com/$(Build.Repository.Name):$(Build.BuildId)"
-      
-      declare -A SUBSTITUTIONS=(
-        ["PLACEHOLDER_APP_NAME"]="$(Build.Repository.Name)"
-        ["PLACEHOLDER_ECR_IMAGE"]="$IMAGE"
-        ["PLACEHOLDER_ENVIRONMENT"]="${{ parameters.environment }}"
-        ["PLACEHOLDER_AWS_REGION"]="${{ parameters.awsRegion }}"
-        ["PLACEHOLDER_DEPLOYMENT_ASPNETCORE_URLS"]="${{ parameters.deployment_aspnetcore_urls }}"
-        ["PLACEHOLDER_DEPLOYMENT_ASPNETCORE_ENVIRONMENT"]="${{ parameters.deployment_aspnetcore_environment }}"
-        ["PLACEHOLDER_INGRESS_PATH"]="${{ parameters.ingress_path }}"
-        ["PLACEHOLDER_MIN_REPLICAS"]="${{ parameters.pod_min_replicas }}"
-        ["PLACEHOLDER_MAX_REPLICAS"]="${{ parameters.pod_max_replicas }}"
-        ["PLACEHOLDER_REQUESTS_CPU"]="${{ parameters.pod_requests_cpu }}"
-        ["PLACEHOLDER_REQUESTS_MEMORY"]="${{ parameters.pod_requests_memory }}"
-        ["PLACEHOLDER_LIMITS_CPU"]="${{ parameters.pod_limits_cpu }}"
-        ["PLACEHOLDER_LIMITS_MEMORY"]="${{ parameters.pod_limits_memory }}"
-        ["PLACEHOLDER_CPU_UTILIZATION"]="${{ parameters.cpu_utilization }}"
-        ["PLACEHOLDER_DD_LANG"]="${{ parameters.dd_lang }}"
-        ["PLACEHOLDER_DD_LIB_VERSION"]="${{ parameters.dd_lib_version }}"
-      )
-      
-      MANIFESTS=(deployment.yaml service.yaml hpa.yaml configmap.yaml ingress.yaml)
-      K8S_DIR="$(Build.SourcesDirectory)/k8s"
-      
-      MISSING=0
-      for manifest in "${MANIFESTS[@]}"; do
-        [ ! -f "$K8S_DIR/$manifest" ] && echo "##[error]Manifest não encontrado: $K8S_DIR/$manifest" && MISSING=1
-      done
-      [ "$MISSING" -eq 1 ] && exit 1
-      
-      for key in "${!SUBSTITUTIONS[@]}"; do
-        [ -z "${SUBSTITUTIONS[$key]}" ] && echo "##[error]Variável vazia para: $key" && exit 1
-      done
-      
-      for manifest in "${MANIFESTS[@]}"; do
-        FILE="$K8S_DIR/$manifest"
-        for key in "${!SUBSTITUTIONS[@]}"; do
-          sed -i "s|${key}|${SUBSTITUTIONS[$key]}|g" "$FILE"
-        done
-        echo "Processado: $FILE"
-      done
-      
-      REMAINING=$(grep -rl "PLACEHOLDER_" "$K8S_DIR"/*.yaml 2>/dev/null || true)
-      if [ -n "$REMAINING" ]; then
-        echo "##[error]Placeholders não substituídos:"
-        grep -rn "PLACEHOLDER_" "$K8S_DIR"/*.yaml
-        exit 1
-      fi
-      
-      echo "##[section]Todos os manifests configurados com sucesso"
-    displayName: "Configure All Manifests"
+  - template: steps/k8s-render.yaml
+    parameters:
+      sourceDir: '$(Build.SourcesDirectory)/templates/manifests/k8s'
+      outputDir: '$(Build.SourcesDirectory)/k8s'
+      namespace: '$(Build.Repository.Name)-${{ parameters.environment }}'
+      configMapName: '$(Build.Repository.Name)-app-vars'
+      envVars: ${{ parameters.env_vars }}
+      substitutions:
+        PLACEHOLDER_APP_NAME: '$(Build.Repository.Name)'
+        PLACEHOLDER_ECR_IMAGE: '${{ parameters.awsAccID }}.dkr.ecr.${{ parameters.awsRegion }}.amazonaws.com/$(Build.Repository.Name):$(Build.BuildId)'
+        PLACEHOLDER_ENVIRONMENT: ${{ parameters.environment }}
+        PLACEHOLDER_AWS_REGION: ${{ parameters.awsRegion }}
+        PLACEHOLDER_DEPLOYMENT_ASPNETCORE_URLS: '${{ parameters.deployment_aspnetcore_urls }}'
+        PLACEHOLDER_DEPLOYMENT_ASPNETCORE_ENVIRONMENT: ${{ parameters.deployment_aspnetcore_environment }}
+        PLACEHOLDER_INGRESS_PATH: ${{ parameters.ingress_path }}
+        PLACEHOLDER_MIN_REPLICAS: ${{ parameters.pod_min_replicas }}
+        PLACEHOLDER_MAX_REPLICAS: ${{ parameters.pod_max_replicas }}
+        PLACEHOLDER_REQUESTS_CPU: ${{ parameters.pod_requests_cpu }}
+        PLACEHOLDER_REQUESTS_MEMORY: ${{ parameters.pod_requests_memory }}
+        PLACEHOLDER_LIMITS_CPU: ${{ parameters.pod_limits_cpu }}
+        PLACEHOLDER_LIMITS_MEMORY: ${{ parameters.pod_limits_memory }}
+        PLACEHOLDER_CPU_UTILIZATION: ${{ parameters.cpu_utilization }}
+        PLACEHOLDER_DD_LANG: ${{ parameters.dd_lang }}
+        PLACEHOLDER_DD_LIB_VERSION: ${{ parameters.dd_lib_version }}
 
-  - bash: |
-      set -euo pipefail
-      
-      K8S_DIR="$(Build.SourcesDirectory)/k8s"
-      CONFIGMAP_FILE="$K8S_DIR/configmap-app-vars.yaml"
-      
-      ENV_VARS_JSON='${{ convertToJson(parameters.env_vars) }}'
-      
-      cat > "$CONFIGMAP_FILE" <<EOF
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: $(Build.Repository.Name)-app-vars
-        namespace: $(Build.Repository.Name)-${{ parameters.environment }}
-      data:
-      EOF
-      
-      COUNT=$(echo "$ENV_VARS_JSON" | jq 'length')
-      
-      if [ "$COUNT" -eq 0 ]; then
-        echo "##[warning]Nenhuma env_var definida. ConfigMap gerado sem entradas."
-      else
-        echo "$ENV_VARS_JSON" | jq -r '.[] | "  \(.name): \"\(.value)\""' >> "$CONFIGMAP_FILE"
-      fi
-      
-      echo "ConfigMap gerado:"
-      cat "$CONFIGMAP_FILE"
-    displayName: "Gerar ConfigMap — env_vars"
-
-  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: Update kubeconfig
-    inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion}}
-      scriptType: inline
-      inlineScript: |
-        aws eks update-kubeconfig --region ${{ parameters.awsRegion}} --name ${{ parameters.clusterName}}
-
-  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: Create namespace
-    inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion}}
-      scriptType: inline
-      inlineScript: |
-        kubectl create namespace $(Build.Repository.Name)-${{ parameters.environment }} --dry-run=client -o yaml | kubectl apply -f -
-
-  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: Apply Kubernetes manifests
-    env:
-      K8S_DIR: $(Build.SourcesDirectory)/k8s
-    inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion}}
-      scriptType: inline
-      inlineScript: |
-        
-        aws eks update-kubeconfig --region ${{ parameters.awsRegion }} --name ${{ parameters.clusterName }}
-        
-        K8S_DIR="$(Build.SourcesDirectory)/k8s"
-        
-        echo "K8S_DIR resolvido para: $K8S_DIR"
-        ls -la "$K8S_DIR" || echo "##[error]Diretório não encontrado!"
-        
-        kubectl apply -f "$K8S_DIR/" \
-          -n $(Build.Repository.Name)-${{ parameters.environment }}
-
-
-  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'Anotar deployment com BuildId (rastreabilidade)'
-    inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion }}
-      scriptType: inline
-      inlineScript: |
-        set -uo pipefail
-        APP="$(Build.Repository.Name)"
-        NS="${APP}-${{ parameters.environment }}"
-        
-        kubectl patch deployment "$APP" -n "$NS" \
-          --type=merge \
-          -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"deploy.fibra.io/build-id\":\"$(Build.BuildId)\",\"deploy.fibra.io/commit\":\"$(Build.SourceVersion)\",\"deploy.fibra.io/branch\":\"$(Build.SourceBranchName)\",\"deploy.fibra.io/triggered-by\":\"$(Build.RequestedFor)\"}}}}}"
-        
-        echo "Annotations aplicadas:"
-        kubectl get deployment "$APP" -n "$NS" \
-          -o jsonpath='{.spec.template.metadata.annotations}' | jq .
+  - template: steps/k8s-deploy.yaml
+    parameters:
+      serviceAccount: ${{ parameters.serviceAccount }}
+      awsRegion: ${{ parameters.awsRegion }}
+      clusterName: ${{ parameters.clusterName }}
+      namespace: '$(Build.Repository.Name)-${{ parameters.environment }}'
+      manifestsDir: '$(Build.SourcesDirectory)/k8s'
+      workloadName: '$(Build.Repository.Name)'
