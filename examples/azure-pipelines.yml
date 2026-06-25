@@ -6,8 +6,21 @@
 # Agora: o app só declara DADOS. Toda a esteira vem da plataforma, pinada por tag.
 # ============================================================================
 
-# Rollback: rode MANUALMENTE ("Run pipeline") preenchendo a tag a restaurar em PRD.
-# Em push/CI normal o valor fica vazio → fluxo normal de build/deploy.
+# ----------------------------------------------------------------------------
+# ROLLBACK (mesmo arquivo, sem segundo pipeline):
+#   - Push/CI normal  -> rollbackImageTag fica vazio -> fluxo normal de build/deploy.
+#   - Rollback de PRD -> no Azure DevOps clique "Run pipeline" e preencha o campo
+#                        "Rollback PRD: tag/versão a restaurar".
+#
+#   EXEMPLO: a última versão boa em PRD é a imagem de tag 48180 (no ECR).
+#     1) Run pipeline  ->  Rollback PRD: tag/versão a restaurar = 48180
+#     2) Aprove o gate de GMUD do Environment prd
+#     3) A esteira PULA Sonar/Build e roda só o stage Rollback_prd:
+#          kubectl set image deployment/<app> <app>=<ecr>/<app>:48180
+#        O run aparece como "<app>-rollback-48180" (tags: rollback, image-48180)
+#        e fica registrado em Pipelines -> Environments -> prd.
+#   (a imagem 48180 precisa ainda existir no ECR — ver lifecycle policy)
+# ----------------------------------------------------------------------------
 parameters:
   - name: rollbackImageTag
     type: string
