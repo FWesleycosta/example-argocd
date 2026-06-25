@@ -1,0 +1,75 @@
+parameters:
+  serviceAccount: ''
+  awsRegion: ''
+  awsAccID: ''
+  cloufront: ''
+  cloudfrontDistributionId: ''
+  environment: ''
+  FIBRA_REACT_APP_URL: ''
+  FIBRA_REACT_APP_URL_HML: ''
+  FIBRA_REACT_APP_URL_PRD: ''
+  SHELL_URL_BASE: ''
+  SHELL_URL_BASE_V3: ''
+  SHELL_FIBRA_API_KEY: ''
+  SHELL_FIREBASE_API_KEY: ''
+  SHELL_FIREBASE_AUTH_DOMAIN: ''
+  SHELL_FIREBASE_DATABASE_URL: ''
+  SHELL_FIREBASE_PROJECT_ID: ''
+  SHELL_FIREBASE_STORAGE_BUCKET: ''
+  SHELL_FIREBASE_MESSAGING_SENDER: ''
+  SHELL_FIREBASE_APP_ID: ''
+  SHELL_FIREBASE_MEASUREMENT_ID: ''
+
+
+steps:
+# NOVO PASSO: Criação do arquivo de configuração de runtime
+- script: | 
+    # Define qual URL usar baseada no ambiente
+    if [ "${{ parameters.environment }}" == "prd" ]; then
+      URL="${{ parameters.FIBRA_REACT_APP_URL_PRD }}"
+    elif [ "${{ parameters.environment }}" == "hml" ]; then
+      URL="${{ parameters.FIBRA_REACT_APP_URL_HML }}"
+    else
+      URL="${{ parameters.FIBRA_REACT_APP_URL }}"
+    fi
+
+    SHELL_URL="${{ parameters.SHELL_URL_BASE }}"
+    SHELL_URL_BASE_V3="${{ parameters.SHELL_URL_BASE_V3 }}"
+    SHELL_FIBRA_API_KEY="${{ parameters.SHELL_FIBRA_API_KEY }}"
+    SHELL_FIREBASE_API_KEY="${{ parameters.SHELL_FIREBASE_API_KEY }}"
+    SHELL_FIREBASE_AUTH_DOMAIN="${{ parameters.SHELL_FIREBASE_AUTH_DOMAIN }}"
+    SHELL_FIREBASE_DATABASE_URL="${{ parameters.SHELL_FIREBASE_DATABASE_URL }}"
+    SHELL_FIREBASE_PROJECT_ID="${{ parameters.SHELL_FIREBASE_PROJECT_ID }}"
+    SHELL_FIREBASE_STORAGE_BUCKET="${{ parameters.SHELL_FIREBASE_STORAGE_BUCKET }}"
+    SHELL_FIREBASE_MESSAGING_SENDER="${{ parameters.SHELL_FIREBASE_MESSAGING_SENDER }}"
+    SHELL_FIREBASE_APP_ID="${{ parameters.SHELL_FIREBASE_APP_ID }}"
+    SHELL_FIREBASE_MEASUREMENT_ID="${{ parameters.SHELL_FIREBASE_MEASUREMENT_ID }}"
+
+
+    echo "window.env = { FIBRA_REACT_APP_URL: '$URL', SHELL_URL_BASE: '$SHELL_URL', SHELL_URL_BASE_V3: '$SHELL_URL_BASE_V3', SHELL_FIBRA_API_KEY: '$SHELL_FIBRA_API_KEY', SHELL_FIREBASE_API_KEY: '$SHELL_FIREBASE_API_KEY', SHELL_FIREBASE_AUTH_DOMAIN: '$SHELL_FIREBASE_AUTH_DOMAIN', SHELL_FIREBASE_DATABASE_URL: '$SHELL_FIREBASE_DATABASE_URL', SHELL_FIREBASE_PROJECT_ID: '$SHELL_FIREBASE_PROJECT_ID', SHELL_FIREBASE_STORAGE_BUCKET: '$SHELL_FIREBASE_STORAGE_BUCKET', SHELL_FIREBASE_MESSAGING_SENDER: '$SHELL_FIREBASE_MESSAGING_SENDER',  SHELL_FIREBASE_APP_ID: '$SHELL_FIREBASE_APP_ID',  SHELL_FIREBASE_MEASUREMENT_ID: '$SHELL_FIREBASE_MEASUREMENT_ID' };" > env-config.js
+
+    # Move para a pasta dist para ser enviado ao S3
+    cp env-config.js $(Build.SourcesDirectory)/$(Build.Repository.Name)/dist/
+
+    echo "===============Conteúdo do env-config.js =========================="
+    cat $(Build.SourcesDirectory)/$(Build.Repository.Name)/dist/env-config.js
+    echo "=================================================================="
+  displayName: 'Inject Runtime Config (Fibra)'
+
+- task: AmazonWebServices.aws-vsts-tools.S3Upload.S3Upload@1
+  displayName: Upload to S3
+  inputs:
+    awsCredentials: ${{ parameters.serviceAccount }}
+    regionName: ${{ parameters.awsRegion }}
+    bucketName: $(Build.Repository.Name)-${{ parameters.environment }}
+    sourceFolder: '$(Build.SourcesDirectory)/$(Build.Repository.Name)/dist'
+
+- task: AmazonWebServices.aws-vsts-tools.AWSCLI.AWSCLI@1
+  displayName: CloudFront Invalidation
+  inputs:
+    awsCredentials: ${{ parameters.serviceAccount }}
+    regionName: ${{ parameters.awsRegion }}
+    awsCommand: cloudfront
+    awsSubCommand: create-invalidation
+    awsArguments: '--distribution-id ${{ parameters.cloudfrontDistributionId }} --paths "/*"'
+    failOnStandardError: false
