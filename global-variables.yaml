@@ -1,135 +1,66 @@
 parameters:
-  - name: pod
-    type: object
-  - name: networking
-    type: object
-  - name: resources
-    type: object
-    default:
-      dynamodb_tables: []
-      s3_buckets: []
-      sqs: []
-      secrets: []
-  - name: observability
-    type: object
-    default:
-      dd_lang: dotnet
-      dd_lib_version: latest
-  - name: config
-    type: object
-    default:
-      env_vars: []
-      ssm_parameters:
-        dev: []
-        hml: []
-        prd: []
-  - name: hotfix
-    type: object
-    default:
-      main_pr_require_manual_approval: false
-      main_pr_reviewers: ''
-      main_pr_wait_timeout_minutes: 360
-  - name: rollbackImageTag
+  - name: environment
     type: string
-    default: ''
-
-variables:
-  - group: git-credentials
+    default: prd
+  - name: imageTag
+    type: string
+  - name: containerName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: rolloutTimeoutSeconds
+    type: string
+    default: '300'
 
 stages:
-  - ${{ if ne(parameters.rollbackImageTag, '') }}:
-      - template: ../stages/rollback.yaml
-        parameters:
-          environment: prd
-          imageTag: ${{ parameters.rollbackImageTag }}
+  - stage: Rollback_${{ parameters.environment }}
+    displayName: 'Rollback ${{ parameters.environment }} -> ${{ parameters.imageTag }}'
+    jobs:
+      - deployment: rollback
+        displayName: 'Rollback ${{ parameters.environment }} -> ${{ parameters.imageTag }}'
+        environment: ${{ parameters.environment }}
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          - template: ../variables/env/${{ parameters.environment }}.yaml
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - bash: |
+                    set -euo pipefail
+                    echo "##vso[build.updatebuildnumber]$(Build.Repository.Name)-rollback-${{ parameters.imageTag }}"
+                    echo "##vso[build.addbuildtag]rollback"
+                    echo "##vso[build.addbuildtag]${{ parameters.environment }}"
+                    echo "##vso[build.addbuildtag]image-${{ parameters.imageTag }}"
+                  displayName: 'Carimbar rollback (run name + tags)'
 
-  - ${{ else }}:
-      - stage: SonarQube
-        displayName: SonarQube Scan
-        jobs:
-          - job: SonarQubeScan
-            displayName: 'SonarQube Analysis'
-            pool:
-              vmImage: ubuntu-latest
-            steps:
-              - checkout: self
-                fetchDepth: 0
-                displayName: 'Checkout do Código'
-              - template: ../sonarqube/qa-sonar-dotnet.yaml
+                - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+                  displayName: 'Rollback: set image + rollout status'
+                  inputs:
+                    awsCredentials: ${{ variables.serviceAccount }}
+                    regionName: ${{ variables.awsRegion }}
+                    scriptType: inline
+                    inlineScript: |
+                      set -euo pipefail
+                      APP="$(Build.Repository.Name)"
+                      NS="${APP}-${{ parameters.environment }}"
+                      IMAGE="${{ variables.awsAccID }}.dkr.ecr.${{ variables.awsRegion }}.amazonaws.com/${APP}:${{ parameters.imageTag }}"
 
-      - stage: Build
-        displayName: Build
-        dependsOn: SonarQube
-        condition: succeeded()
-        jobs:
-          - template: ../dotnet/build-backend-dotnet.yaml
+                      aws eks update-kubeconfig --region "${{ variables.awsRegion }}" --name "${{ variables.clusterName }}"
 
-      - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/') }}:
-          - template: ../hotfix/hotfix-backend-dotnet.yaml
-            parameters:
-              pod: ${{ parameters.pod }}
-              networking: ${{ parameters.networking }}
-              resources: ${{ parameters.resources }}
-              observability: ${{ parameters.observability }}
-              config: ${{ parameters.config }}
-              hotfix: ${{ parameters.hotfix }}
+                      echo "##[section]Rollback de '$APP' em '$NS' para a imagem: $IMAGE"
+                      kubectl set image deployment/"$APP" "${{ parameters.containerName }}=$IMAGE" -n "$NS"
 
-      - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
-          - template: ../stages/deploy.yaml
-            parameters:
-              environment: hml
-              dependsOn: [Build]
-              pod: ${{ parameters.pod }}
-              networking: ${{ parameters.networking }}
-              resources: ${{ parameters.resources }}
-              observability: ${{ parameters.observability }}
-              env_vars: ${{ parameters.config.env_vars }}
-              ssm_parameters: ${{ parameters.config.ssm_parameters.hml }}
+                      kubectl annotate deployment/"$APP" -n "$NS" --overwrite \
+                        deploy.fibra.io/image-tag="${{ parameters.imageTag }}" \
+                        deploy.fibra.io/rollback="true" \
+                        deploy.fibra.io/triggered-by="$(Build.RequestedFor)"
 
-          - template: ../stages/veracode.yaml
-            parameters:
-              dependsOn: [Build]
-
-          - template: ../stages/deploy.yaml
-            parameters:
-              environment: prd
-              dependsOn: [Deploy_hml, Veracode]
-              pod: ${{ parameters.pod }}
-              networking: ${{ parameters.networking }}
-              resources: ${{ parameters.resources }}
-              observability: ${{ parameters.observability }}
-              env_vars: ${{ parameters.config.env_vars }}
-              ssm_parameters: ${{ parameters.config.ssm_parameters.prd }}
-
-          - stage: PR_Main
-            displayName: 'PR release -> main'
-            dependsOn: Deploy_prd
-            condition: succeeded()
-            jobs:
-              - template: ../utils/create-pullrequest.yaml
-                parameters:
-                  sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
-                  targetBranch: main
-
-          - stage: BackMerge_Develop
-            displayName: 'Back-merge main -> develop'
-            dependsOn: PR_Main
-            condition: succeeded()
-            jobs:
-              - template: ../utils/create-pullrequest.yaml
-                parameters:
-                  sourceBranch: main
-                  targetBranch: develop
-
-      - ${{ else }}:
-          - template: ../stages/deploy.yaml
-            parameters:
-              environment: dev
-              dependsOn: [Build]
-              condition: and(succeeded('Build'), or(eq(variables['Build.SourceBranch'], 'refs/heads/develop'), eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')))
-              pod: ${{ parameters.pod }}
-              networking: ${{ parameters.networking }}
-              resources: ${{ parameters.resources }}
-              observability: ${{ parameters.observability }}
-              env_vars: ${{ parameters.config.env_vars }}
-              ssm_parameters: ${{ parameters.config.ssm_parameters.dev }}
+                      echo "##[section]Aguardando rollout (timeout ${{ parameters.rolloutTimeoutSeconds }}s)..."
+                      if ! kubectl rollout status deployment/"$APP" -n "$NS" --timeout=${{ parameters.rolloutTimeoutSeconds }}s; then
+                        echo "##[error]A versão de rollback ($IMAGE) NÃO ficou saudável. Sem undo automático — confira a tag escolhida."
+                        kubectl get pods -n "$NS" -o wide || true
+                        kubectl describe deployment/"$APP" -n "$NS" | tail -n 40 || true
+                        exit 1
+                      fi
+                      echo "##[section]✔ Rollback concluído. '$NS' rodando $IMAGE."
