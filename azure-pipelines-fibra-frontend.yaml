@@ -1,0 +1,246 @@
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Pipelines
+      ref: refs/heads/main
+
+parameters:
+- name: s3
+  type: boolean
+  default: true
+- name: cloudfront
+  type: boolean
+  default: true
+- name: viteBaseUrl
+  type: string
+- name: viteBaseUrlPrd
+  type: string
+- name: viteBaseUrlHML
+  type: string
+- name: viteMicrofrontendCessaoCreditoUrl
+  type: string
+  default: ''
+- name: viteMicrofrontendCessaoCreditoUrlHml
+  type: string
+  default: ''
+- name: viteMicrofrontendCessaoCreditoUrlPrd
+  type: string
+  default: ''
+- name: viteHostUrl
+  type: string
+  default: ''
+- name: viteHostUrlHml
+  type: string
+  default: ''
+- name: viteHostUrlPrd
+  type: string
+  default: ''
+- name: dns_name
+  type: string
+- name: env_vars
+  type: object
+  default: []
+
+variables:
+- template: templates/variables/global-variables.yaml
+- template: templates/variables/novo-internet-banking.yaml
+
+stages:
+- stage: DEV
+  displayName: DEV
+  jobs:
+  - deployment: FrontendDev
+    displayName: Build & Deploy DEV
+    environment: dev
+    pool:
+      vmImage: ubuntu-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: templates
+            persistCredentials: true
+            path: s
+
+          - template: templates/terraform-for-front.yaml
+            parameters:
+              environment: dev
+              s3: ${{ parameters.s3 }}
+              cloudfront: ${{ parameters.cloudfront }}
+              serviceAccount: ${{ variables.DevServiceAccountTerraform }}
+              awsRegion: ${{ variables.AwsRegion }}
+              tfstatesBucket: ${{ variables.DevtfstatesBucket}}
+              keyBucketPath: $(Build.Repository.Name)
+              dns_name: ${{ parameters.dns_name }}
+              access_logging: ${{ variables.DevAccessloggingworkloads }}
+
+          - template: templates/build-frontend-fibra.yaml
+            parameters: 
+              viteBaseUrl: ${{ parameters.viteBaseUrl }}
+              viteMicrofrontendCessaoCreditoUrl: ${{ parameters.viteMicrofrontendCessaoCreditoUrl }}
+              viteHostUrl: ${{ parameters.viteHostUrl }}
+              env_vars: ${{ parameters.env_vars }}
+
+          - template: templates/deploy-frontend.yaml
+            parameters:
+              environment: dev
+              cloudfront: ${{ parameters.cloudfront }}
+              serviceAccount: ${{ variables.DevServiceAccount }}
+              awsRegion: ${{ variables.AwsRegion }}
+              awsAccID: ${{ variables.DevAwsAccID }}
+              cloudfrontDistributionId: $(tfOutputs.CLOUDFRONT_DISTRIBUTION_ID)
+
+- stage: Veracode
+  displayName: Veracode SAST
+  dependsOn: DEV
+  condition: succeeded()
+  jobs:
+    - job: SecurityScan
+      displayName: Veracode SAST
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - checkout: self
+        - template: templates/scanner-veracode.yaml
+          parameters:
+            appName: ${Build.Repository.Name}   
+
+- stage: HML
+  displayName: HML
+  dependsOn: Veracode
+  condition: succeeded()
+  jobs:  
+  - deployment: FrontendHml
+    displayName: Build & Deploy HML
+    environment: hml
+    pool:
+      vmImage: ubuntu-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: templates
+            persistCredentials: true
+            path: s          
+          - template: templates/terraform-for-front.yaml
+            parameters:
+              environment: hml
+              s3: ${{ parameters.s3 }}
+              cloudfront: ${{ parameters.cloudfront }}
+              serviceAccount: ${{ variables.HmlServiceAccountTerraform }}
+              awsRegion: ${{ variables.AwsRegion }}
+              tfstatesBucket: ${{ variables.HmltfstatesBucket }}
+              keyBucketPath: $(Build.Repository.Name)
+              dns_name: ${{ parameters.dns_name }}
+              access_logging: ${{ variables.HmlAccessloggingworkloads }}
+
+          - template: templates/build-frontend-fibra.yaml
+            parameters: 
+              viteBaseUrl: ${{ parameters.viteBaseUrlHML }}
+              viteMicrofrontendCessaoCreditoUrl: ${{ parameters.viteMicrofrontendCessaoCreditoUrlHML }}
+              viteHostUrl: ${{ parameters.viteHostUrlHml }}
+              env_vars: ${{ parameters.env_vars }}
+
+          - template: templates/deploy-frontend.yaml
+            parameters:
+              environment: hml
+              cloudfront: ${{ parameters.cloudfront }}
+              serviceAccount: ${{ variables.HmlServiceAccount }}
+              awsRegion: ${{ variables.AwsRegion }}
+              awsAccID: ${{ variables.HmlAwsAccID }}
+              cloudfrontDistributionId: $(tfOutputs.CLOUDFRONT_DISTRIBUTION_ID)
+
+- stage: PR_HML
+  displayName: PR DEV -> HML
+  dependsOn: HML
+  condition: succeeded()
+  jobs:
+  - template: templates/utils/create-pullrequest.yaml
+    parameters:
+      sourceBranch: 'develop'
+      targetBranch: 'homolog'
+#  jobs:
+#  - job: CreatePRDevHml
+#    steps:
+#    - checkout: self
+#      persistCredentials: true
+#    - script: |
+#        az repos pr create \
+#          --source-branch develop \
+#          --target-branch homolog \
+#          --title "Promote DEV -> HML" \
+#          --auto-complete true
+#      env:
+#        AZURE_DEVOPS_EXT_PAT: $(System.AccessToken)
+
+- stage: PRD
+  displayName: PRD
+  dependsOn: PR_HML
+  condition: succeeded()
+  jobs:
+  - deployment: FrontendPrd
+    displayName: Build & Deploy PRD
+    environment: prd
+    pool:
+      vmImage: ubuntu-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - checkout: templates
+            persistCredentials: true
+            path: s          
+          - template: templates/terraform-for-front.yaml
+            parameters:
+              environment: prd
+              s3: ${{ parameters.s3 }}
+              cloudfront: ${{ parameters.cloudfront }}
+              serviceAccount: ${{ variables.PrdServiceAccountTerraform }}
+              awsRegion: ${{ variables.PrdAwsRegion }}
+              tfstatesBucket: ${{ variables.PrdtfstatesBucket}}
+              keyBucketPath: $(Build.Repository.Name)
+              dns_name: ${{ parameters.dns_name }}
+              access_logging: ${{ variables.PrdAccessloggingworkloads }}
+
+          - template: templates/build-frontend-fibra.yaml
+            parameters: 
+              viteBaseUrl: ${{ parameters.viteBaseUrlPrd }}
+              viteMicrofrontendCessaoCreditoUrl: ${{ parameters.viteMicrofrontendCessaoCreditoUrlPRD }}
+              viteHostUrl: ${{ parameters.viteHostUrlPrd }}
+              env_vars: ${{ parameters.env_vars }}
+
+          - template: templates/deploy-frontend.yaml
+            parameters:
+              environment: prd
+              cloudfront: ${{ parameters.cloudfront }}
+              serviceAccount: ${{ variables.PrdServiceAccount }}
+              awsRegion: ${{ variables.PrdAwsRegion }}
+              awsAccID: ${{ variables.PrdAwsAccId }}
+              cloudfrontDistributionId: $(tfOutputs.CLOUDFRONT_DISTRIBUTION_ID)
+
+- stage: PR_PRD
+  displayName: PR HML -> PRD/Main
+  dependsOn: PRD
+  condition: succeeded()
+  jobs:
+    - template: templates/utils/create-pullrequest.yaml
+      parameters:
+        sourceBranch: 'homolog'
+        targetBranch: 'main'
+#  jobs:
+#  - job: CreatePRHmlPrd
+#    steps:
+#    - checkout: self
+#      persistCredentials: true
+#    - script: |
+#        az repos pr create \
+#          --source-branch homolog \
+#          --target-branch main \
+#          --title "Promote HML -> PRD/Main" \
+#          --auto-complete true
+#      env:
+#        AZURE_DEVOPS_EXT_PAT: $(System.AccessToken)
