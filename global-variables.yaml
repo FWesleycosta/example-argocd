@@ -1,76 +1,104 @@
 parameters:
-  - name: serviceAccount
+  - name: sourceDir
     type: string
-  - name: awsRegion
-    type: string
-  - name: clusterName
-    type: string
-  - name: namespace
-    type: string
-  - name: manifestsDir
+  - name: outputDir
     type: string
     default: '$(Build.SourcesDirectory)/k8s'
-  - name: createNamespace
+  - name: substitutions
+    type: object
+  - name: requiredManifests
+    type: object
+    default:
+      - deployment.yaml
+      - service.yaml
+      - hpa.yaml
+      - configmap.yaml
+      - ingress.yaml
+  - name: generateConfigMap
     type: boolean
     default: true
-  - name: annotate
-    type: boolean
-    default: true
-  - name: workloadName
+  - name: configMapName
     type: string
-    default: '$(Build.Repository.Name)'
+    default: '$(Build.Repository.Name)-app-vars'
+  - name: namespace
+    type: string
+    default: ''
+  - name: envVars
+    type: object
+    default: []
 
 steps:
-  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'K8s: configurar kubeconfig'
-    inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion }}
-      scriptType: inline
-      inlineScript: |
-        set -euo pipefail
-        aws eks update-kubeconfig --region "${{ parameters.awsRegion }}" --name "${{ parameters.clusterName }}"
+  - bash: |
+      set -euo pipefail
+      SRC="${{ parameters.sourceDir }}"
+      OUT="${{ parameters.outputDir }}"
 
-  - ${{ if eq(parameters.createNamespace, true) }}:
-      - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-        displayName: 'K8s: garantir namespace'
-        inputs:
-          awsCredentials: ${{ parameters.serviceAccount }}
-          regionName: ${{ parameters.awsRegion }}
-          scriptType: inline
-          inlineScript: |
-            set -euo pipefail
-            kubectl create namespace "${{ parameters.namespace }}" --dry-run=client -o yaml | kubectl apply -f -
+      [ -d "$SRC" ] || { echo "##[error]Templates K8s não encontrados: $SRC"; exit 1; }
+      mkdir -p "$OUT"
+      cp -r "$SRC"/. "$OUT/"
+      echo "Manifests copiados para $OUT:"; ls -la "$OUT"
 
-  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'K8s: aplicar manifests'
-    inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion }}
-      scriptType: inline
-      inlineScript: |
-        set -euo pipefail
-        K8S_DIR="${{ parameters.manifestsDir }}"
-        echo "Aplicando manifests de: $K8S_DIR"
-        ls -la "$K8S_DIR"
-        kubectl apply -f "$K8S_DIR/" -n "${{ parameters.namespace }}"
+      MISSING=0
+      while IFS= read -r m; do
+        [ -z "$m" ] && continue
+        [ -f "$OUT/$m" ] || { echo "##[error]Manifest obrigatório ausente: $OUT/$m"; MISSING=1; }
+      done < <(echo '${{ convertToJson(parameters.requiredManifests) }}' | jq -r '.[]')
+      [ "$MISSING" -eq 0 ] || exit 1
+    displayName: 'K8s render: copiar manifests'
 
-  - ${{ if eq(parameters.annotate, true) }}:
-      - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-        displayName: 'K8s: anotar deployment (rastreabilidade)'
-        inputs:
-          awsCredentials: ${{ parameters.serviceAccount }}
-          regionName: ${{ parameters.awsRegion }}
-          scriptType: inline
-          inlineScript: |
-            set -uo pipefail
-            APP="${{ parameters.workloadName }}"
-            NS="${{ parameters.namespace }}"
+  - bash: |
+      set -euo pipefail
+      OUT="${{ parameters.outputDir }}"
 
-            kubectl patch deployment "$APP" -n "$NS" \
-              --type=merge \
-              -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"deploy.fibra.io/build-id\":\"$(Build.BuildId)\",\"deploy.fibra.io/commit\":\"$(Build.SourceVersion)\",\"deploy.fibra.io/branch\":\"$(Build.SourceBranchName)\",\"deploy.fibra.io/triggered-by\":\"$(Build.RequestedFor)\"}}}}}"
+      declare -A SUBS
+      while IFS=$'\t' read -r k v; do
+        [ -n "$k" ] && SUBS["$k"]="$v"
+      done < <(echo '${{ convertToJson(parameters.substitutions) }}' | jq -r 'to_entries[] | "\(.key)\t\(.value)"')
 
-            echo "Annotations aplicadas:"
-            kubectl get deployment "$APP" -n "$NS" \
-              -o jsonpath='{.spec.template.metadata.annotations}' | jq .
+      # nenhum token pode ficar vazio
+      for key in "${!SUBS[@]}"; do
+        [ -z "${SUBS[$key]}" ] && { echo "##[error]Valor vazio para o token: $key"; exit 1; }
+      done
+
+      # substitui em todos os manifests
+      for FILE in "$OUT"/*.yaml; do
+        [ -f "$FILE" ] || continue
+        for key in "${!SUBS[@]}"; do
+          sed -i "s|${key}|${SUBS[$key]}|g" "$FILE"
+        done
+        echo "Processado: $FILE"
+      done
+
+      REMAINING=$(grep -rl "PLACEHOLDER_" "$OUT"/*.yaml 2>/dev/null || true)
+      if [ -n "$REMAINING" ]; then
+        echo "##[error]Placeholders não substituídos:"
+        grep -rn "PLACEHOLDER_" "$OUT"/*.yaml
+        exit 1
+      fi
+      echo "##[section]Manifests renderizados com sucesso"
+    displayName: 'K8s render: substituir placeholders'
+
+  - ${{ if eq(parameters.generateConfigMap, true) }}:
+      - bash: |
+          set -euo pipefail
+          OUT="${{ parameters.outputDir }}"
+          CM="$OUT/configmap-app-vars.yaml"
+          ENV_JSON='${{ convertToJson(parameters.envVars) }}'
+
+          cat > "$CM" <<EOF
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ${{ parameters.configMapName }}
+            namespace: ${{ parameters.namespace }}
+          data:
+          EOF
+
+          COUNT=$(echo "$ENV_JSON" | jq 'length')
+          if [ "$COUNT" -eq 0 ]; then
+            echo "##[warning]Nenhuma env_var definida. ConfigMap gerado sem entradas."
+          else
+            echo "$ENV_JSON" | jq -r '.[] | "  \(.name): \"\(.value)\""' >> "$CM"
+          fi
+          echo "ConfigMap gerado:"; cat "$CM"
+        displayName: 'K8s render: gerar ConfigMap (env_vars)'
