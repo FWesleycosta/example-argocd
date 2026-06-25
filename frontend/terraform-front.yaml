@@ -1,0 +1,175 @@
+parameters:
+  - name: environment
+    type: string
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: tfstatesBucket
+    type: string
+  - name: accessLogging
+    type: string
+    default: ''
+  - name: s3
+    type: boolean
+    default: true
+  - name: cloudfront
+    type: boolean
+    default: true
+  - name: dns_name
+    type: string
+    default: ''
+  - name: terraformVersion
+    type: string
+    default: '1.9.8'
+  - name: lockTimeout
+    type: string
+    default: '5m'
+  - name: tolerableErrorPatterns
+    type: string
+    default: ''
+  - name: planOnly
+    type: boolean
+    default: false
+
+steps:
+  - bash: |
+      set -euo pipefail
+      SRC="$(Build.SourcesDirectory)/templates/manifests/terraform-front"
+      DEST="$(System.DefaultWorkingDirectory)/terraform-front"
+      for f in s3 cloudfront; do
+        [ -d "$SRC/$f" ] || { echo "##[error]Módulo TF não encontrado: $SRC/$f"; exit 1; }
+        mkdir -p "$DEST/$f"
+        cp -r "$SRC/$f"/. "$DEST/$f/"
+      done
+      echo "##[section]Módulos TF do frontend:"; ls -la "$DEST"/*
+    displayName: 'TF-front: preparar módulos (s3, cloudfront)'
+
+  - task: TerraformInstaller@1
+    displayName: 'Install Terraform ${{ parameters.terraformVersion }}'
+    inputs:
+      terraformVersion: ${{ parameters.terraformVersion }}
+
+  - ${{ if eq(parameters.s3, true) }}:
+      - bash: |
+          set -euo pipefail
+          cd "$(System.DefaultWorkingDirectory)/terraform-front/s3"
+          cat > backend.tf <<EOF
+          terraform {
+            backend "s3" {
+              bucket  = "${{ parameters.tfstatesBucket }}"
+              key     = "tfstate-$(Build.Repository.Name)-${{ parameters.environment }}/s3"
+              region  = "${{ parameters.awsRegion }}"
+              encrypt = true
+            }
+          }
+          EOF
+          jq -n \
+            --arg n "$(Build.Repository.Name)-${{ parameters.environment }}" \
+            --arg r "${{ parameters.awsRegion }}" \
+            --arg a "${{ parameters.accessLogging }}" \
+            '{NAME_BUCKET_FRONT:$n, AWS_REGION:$r, Access_logging_workloads:$a}' > module.auto.tfvars.json
+          echo "backend.tf + tfvars (s3):"; cat backend.tf module.auto.tfvars.json
+        workingDirectory: $(System.DefaultWorkingDirectory)/terraform-front/s3
+        displayName: 'TF-front s3: backend.tf + tfvars'
+
+      - template: terraform/init.yaml
+        parameters:
+          serviceAccount: ${{ parameters.serviceAccount }}
+          awsRegion: ${{ parameters.awsRegion }}
+          workingDirectory: $(System.DefaultWorkingDirectory)/terraform-front/s3
+          lockTimeout: ${{ parameters.lockTimeout }}
+      - template: terraform/validate.yaml
+        parameters:
+          serviceAccount: ${{ parameters.serviceAccount }}
+          awsRegion: ${{ parameters.awsRegion }}
+          workingDirectory: $(System.DefaultWorkingDirectory)/terraform-front/s3
+      - template: terraform/plan.yaml
+        parameters:
+          serviceAccount: ${{ parameters.serviceAccount }}
+          awsRegion: ${{ parameters.awsRegion }}
+          workingDirectory: $(System.DefaultWorkingDirectory)/terraform-front/s3
+          lockTimeout: ${{ parameters.lockTimeout }}
+          planFile: tfplan
+          hasChangesVariable: tfChanges_s3
+      - ${{ if eq(parameters.planOnly, false) }}:
+          - template: terraform/apply.yaml
+            parameters:
+              serviceAccount: ${{ parameters.serviceAccount }}
+              awsRegion: ${{ parameters.awsRegion }}
+              workingDirectory: $(System.DefaultWorkingDirectory)/terraform-front/s3
+              lockTimeout: ${{ parameters.lockTimeout }}
+              planFile: tfplan
+              hasChangesVariable: tfChanges_s3
+              tolerableErrorPatterns: ${{ parameters.tolerableErrorPatterns }}
+
+  - ${{ if eq(parameters.cloudfront, true) }}:
+      - bash: |
+          set -euo pipefail
+          cd "$(System.DefaultWorkingDirectory)/terraform-front/cloudfront"
+          cat > backend.tf <<EOF
+          terraform {
+            backend "s3" {
+              bucket  = "${{ parameters.tfstatesBucket }}"
+              key     = "tfstate-$(Build.Repository.Name)-${{ parameters.environment }}/cloudfront"
+              region  = "${{ parameters.awsRegion }}"
+              encrypt = true
+            }
+          }
+          EOF
+          jq -n \
+            --arg n "$(Build.Repository.Name)-${{ parameters.environment }}" \
+            --arg r "${{ parameters.awsRegion }}" \
+            --arg e "${{ parameters.environment }}" \
+            --arg app "${{ parameters.dns_name }}" \
+            '{NAME_BUCKET_FRONT:$n, AWS_REGION:$r, ENVIRONMENT:$e, APP_NAME:$app}' > module.auto.tfvars.json
+          echo "backend.tf + tfvars (cloudfront):"; cat backend.tf module.auto.tfvars.json
+        workingDirectory: $(System.DefaultWorkingDirectory)/terraform-front/cloudfront
+        displayName: 'TF-front cloudfront: backend.tf + tfvars'
+
+      - template: terraform/init.yaml
+        parameters:
+          serviceAccount: ${{ parameters.serviceAccount }}
+          awsRegion: ${{ parameters.awsRegion }}
+          workingDirectory: $(System.DefaultWorkingDirectory)/terraform-front/cloudfront
+          lockTimeout: ${{ parameters.lockTimeout }}
+      - template: terraform/validate.yaml
+        parameters:
+          serviceAccount: ${{ parameters.serviceAccount }}
+          awsRegion: ${{ parameters.awsRegion }}
+          workingDirectory: $(System.DefaultWorkingDirectory)/terraform-front/cloudfront
+      - template: terraform/plan.yaml
+        parameters:
+          serviceAccount: ${{ parameters.serviceAccount }}
+          awsRegion: ${{ parameters.awsRegion }}
+          workingDirectory: $(System.DefaultWorkingDirectory)/terraform-front/cloudfront
+          lockTimeout: ${{ parameters.lockTimeout }}
+          planFile: tfplan
+          hasChangesVariable: tfChanges_cf
+      - ${{ if eq(parameters.planOnly, false) }}:
+          - template: terraform/apply.yaml
+            parameters:
+              serviceAccount: ${{ parameters.serviceAccount }}
+              awsRegion: ${{ parameters.awsRegion }}
+              workingDirectory: $(System.DefaultWorkingDirectory)/terraform-front/cloudfront
+              lockTimeout: ${{ parameters.lockTimeout }}
+              planFile: tfplan
+              hasChangesVariable: tfChanges_cf
+              tolerableErrorPatterns: ${{ parameters.tolerableErrorPatterns }}
+
+          - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+            name: tfOutputs
+            displayName: 'TF-front cloudfront: exportar outputs'
+            inputs:
+              awsCredentials: ${{ parameters.serviceAccount }}
+              regionName: ${{ parameters.awsRegion }}
+              scriptType: inline
+              inlineScript: |
+                set -euo pipefail
+                cd "$(System.DefaultWorkingDirectory)/terraform-front/cloudfront"
+                if terraform output -json > /dev/null 2>&1; then
+                  for key in $(terraform output -json | jq -r 'keys[]'); do
+                    value=$(terraform output -raw "$key" 2>/dev/null || echo "")
+                    [ -n "$value" ] && echo "##vso[task.setvariable variable=${key};isOutput=true]${value}" && echo "Exported: $key"
+                  done
+                fi
