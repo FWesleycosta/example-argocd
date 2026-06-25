@@ -1,104 +1,45 @@
 parameters:
-  - name: sourceDir
+  - name: serviceAccount
     type: string
-  - name: outputDir
+  - name: awsRegion
     type: string
-    default: '$(Build.SourcesDirectory)/k8s'
-  - name: substitutions
-    type: object
-  - name: requiredManifests
-    type: object
-    default:
-      - deployment.yaml
-      - service.yaml
-      - hpa.yaml
-      - configmap.yaml
-      - ingress.yaml
-  - name: generateConfigMap
+  - name: artifactName
+    type: string
+    default: docker-image
+  - name: imageName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: imageTag
+    type: string
+    default: '$(Build.BuildId)'
+  - name: autoCreateRepository
     type: boolean
     default: true
-  - name: configMapName
-    type: string
-    default: '$(Build.Repository.Name)-app-vars'
-  - name: namespace
-    type: string
-    default: ''
-  - name: envVars
-    type: object
-    default: []
+  - name: pushTimeoutMinutes
+    type: number
+    default: 10
 
 steps:
-  - bash: |
-      set -euo pipefail
-      SRC="${{ parameters.sourceDir }}"
-      OUT="${{ parameters.outputDir }}"
-
-      [ -d "$SRC" ] || { echo "##[error]Templates K8s não encontrados: $SRC"; exit 1; }
-      mkdir -p "$OUT"
-      cp -r "$SRC"/. "$OUT/"
-      echo "Manifests copiados para $OUT:"; ls -la "$OUT"
-
-      MISSING=0
-      while IFS= read -r m; do
-        [ -z "$m" ] && continue
-        [ -f "$OUT/$m" ] || { echo "##[error]Manifest obrigatório ausente: $OUT/$m"; MISSING=1; }
-      done < <(echo '${{ convertToJson(parameters.requiredManifests) }}' | jq -r '.[]')
-      [ "$MISSING" -eq 0 ] || exit 1
-    displayName: 'K8s render: copiar manifests'
+  - download: current
+    artifact: ${{ parameters.artifactName }}
+    displayName: 'Download da imagem (artefato ${{ parameters.artifactName }})'
 
   - bash: |
       set -euo pipefail
-      OUT="${{ parameters.outputDir }}"
+      docker load -i "$(Pipeline.Workspace)/${{ parameters.artifactName }}/${{ parameters.imageName }}.tar"
+    displayName: 'Carregar imagem (docker load)'
 
-      declare -A SUBS
-      while IFS=$'\t' read -r k v; do
-        [ -n "$k" ] && SUBS["$k"]="$v"
-      done < <(echo '${{ convertToJson(parameters.substitutions) }}' | jq -r 'to_entries[] | "\(.key)\t\(.value)"')
-
-      # nenhum token pode ficar vazio
-      for key in "${!SUBS[@]}"; do
-        [ -z "${SUBS[$key]}" ] && { echo "##[error]Valor vazio para o token: $key"; exit 1; }
-      done
-
-      # substitui em todos os manifests
-      for FILE in "$OUT"/*.yaml; do
-        [ -f "$FILE" ] || continue
-        for key in "${!SUBS[@]}"; do
-          sed -i "s|${key}|${SUBS[$key]}|g" "$FILE"
-        done
-        echo "Processado: $FILE"
-      done
-
-      REMAINING=$(grep -rl "PLACEHOLDER_" "$OUT"/*.yaml 2>/dev/null || true)
-      if [ -n "$REMAINING" ]; then
-        echo "##[error]Placeholders não substituídos:"
-        grep -rn "PLACEHOLDER_" "$OUT"/*.yaml
-        exit 1
-      fi
-      echo "##[section]Manifests renderizados com sucesso"
-    displayName: 'K8s render: substituir placeholders'
-
-  - ${{ if eq(parameters.generateConfigMap, true) }}:
-      - bash: |
-          set -euo pipefail
-          OUT="${{ parameters.outputDir }}"
-          CM="$OUT/configmap-app-vars.yaml"
-          ENV_JSON='${{ convertToJson(parameters.envVars) }}'
-
-          cat > "$CM" <<EOF
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: ${{ parameters.configMapName }}
-            namespace: ${{ parameters.namespace }}
-          data:
-          EOF
-
-          COUNT=$(echo "$ENV_JSON" | jq 'length')
-          if [ "$COUNT" -eq 0 ]; then
-            echo "##[warning]Nenhuma env_var definida. ConfigMap gerado sem entradas."
-          else
-            echo "$ENV_JSON" | jq -r '.[] | "  \(.name): \"\(.value)\""' >> "$CM"
-          fi
-          echo "ConfigMap gerado:"; cat "$CM"
-        displayName: 'K8s render: gerar ConfigMap (env_vars)'
+  - task: AmazonWebServices.aws-vsts-tools.ECRPushImage.ECRPushImage@1
+    displayName: 'Push da imagem para o ECR'
+    timeoutInMinutes: ${{ parameters.pushTimeoutMinutes }}
+    retryCountOnTaskFailure: 2
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      sourceImageName: ${{ parameters.imageName }}
+      repositoryName: ${{ parameters.imageName }}
+      sourceImageTag: ${{ parameters.imageTag }}
+      pushTag: ${{ parameters.imageTag }}
+      logRequest: false
+      logResponse: false
+      autoCreateRepository: ${{ parameters.autoCreateRepository }}
