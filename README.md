@@ -65,7 +65,8 @@ vez, reutilizável e pinada por tag.
     │   └── dotnet-backend.yaml     # ENTRYPOINT .NET — roteia por branch
     ├── stages/
     │   ├── deploy.yaml             # 1 stage de deploy; param: environment
-    │   └── veracode.yaml           # 1 stage de SAST (reusado por release/* e hotfix)
+    │   ├── veracode.yaml           # 1 stage de SAST (reusado por release/* e hotfix)
+    │   └── rollback.yaml           # rollback rastreado de PRD (set image p/ tag no ECR)
     ├── steps/
     │   ├── image-promote.yaml      # download + docker load + push ECR
     │   ├── k8s-render.yaml         # copia manifests + substitui PLACEHOLDER_* + ConfigMap
@@ -192,6 +193,63 @@ Implicações para o app:
 > (`${{ if eq(parameters.environment, 'prd') }}`). Para flexibilizar (ex.: HML
 > espelhar PRD), adicione overrides por ambiente no objeto `pod` e ajuste o `deploy.yaml`.
 
+### 4.2 Rollback rastreado de PRD
+
+**Problema que resolve:** sem isso, um rollback feito "por fora" (ex.: `kubectl rollout
+undo`) reverte o cluster mas o Azure DevOps não fica sabendo — o Environment continua
+apontando para o deploy que falhou e você **perde o controle visual** do que está em PRD.
+
+**Como funciona:** o rollback é uma execução **manual da própria pipeline** (não há
+segundo arquivo). Ele re-aponta o Deployment para uma imagem que **já existe no ECR**
+(uma versão anterior), **sem rebuild**, passando pelo Environment `prd`. Assim:
+- fica no histórico de **Pipelines → Environments → prd** (o painel "o que está live");
+- passa pelo **mesmo gate de GMUD** do PRD;
+- o run é renomeado para `app-rollback-<tag>` e ganha as tags `rollback` / `image-<tag>`;
+- o Deployment é anotado (`deploy.fibra.io/rollback=true`, `/image-tag`, `/triggered-by`).
+
+**Pré-requisito no app** (uma vez): expor o parâmetro e repassá-lo ao stack —
+ver `examples/azure-pipelines.yml`:
+
+```yaml
+parameters:
+  - name: rollbackImageTag
+    type: string
+    default: ''                     # vazio = deploy normal
+    displayName: 'Rollback PRD: tag/versão a restaurar (vazio = deploy normal)'
+
+extends:
+  template: templates/stacks/dotnet-backend.yaml@templates
+  parameters:
+    rollbackImageTag: ${{ parameters.rollbackImageTag }}
+    pod: { ... }
+```
+
+**Exemplo de uso (passo a passo):**
+
+1. Descubra a versão a restaurar — a tag da imagem no ECR (hoje = `Build.BuildId`).
+   Ex.: nos runs anteriores filtre pela tag `production`, ou veja a annotation
+   `deploy.fibra.io/build-id` no Deployment. Digamos que a última versão boa seja **`48180`**.
+2. No Azure DevOps, abra a pipeline do app e clique **Run pipeline**.
+3. No campo **"Rollback PRD: tag/versão a restaurar"**, informe `48180` e execute.
+4. Aprove o **gate de GMUD** do Environment `prd` (igual a um deploy normal).
+5. Resultado:
+   - a esteira **pula Sonar/Build** e roda só o stage `Rollback_prd`;
+   - executa `kubectl set image deployment/<app> <app>=<ecr>/<app>:48180`;
+   - o run aparece como **`<app>-rollback-48180`** (tags `rollback`, `image-48180`);
+   - o Environment `prd` registra essa implantação → ADO e cluster **sincronizados**.
+
+```
+Run pipeline ▶  rollbackImageTag = 48180
+   └─ Stage: Rollback_prd  (Environment prd → gate GMUD)
+        └─ kubectl set image … :48180  →  rollout status  →  ✔
+   Run: minha-api-rollback-48180   [tags: rollback, image-48180]
+```
+
+> ⚠️ A imagem `48180` precisa **ainda existir no ECR** — ajuste a lifecycle policy do
+> repositório para reter versões suficientes. E confirme o **nome do container** no
+> `deployment.yaml` (o stage assume = nome do app; senão passe `containerName`).
+> Em push/CI normal o parâmetro fica vazio → fluxo normal, sem risco.
+
 ---
 
 ## 5. Catálogo de templates
@@ -199,13 +257,14 @@ Implicações para o app:
 ### Stacks (entrypoints — alvo do `extends`)
 | Template | Uso |
 |---|---|
-| `stacks/dotnet-backend.yaml` | Backend .NET. Declara o contrato de parâmetros e roteia por branch. |
+| `stacks/dotnet-backend.yaml` | Backend .NET. Declara o contrato de parâmetros, roteia por branch e expõe `rollbackImageTag` (rollback rastreado). |
 
 ### Stages (reutilizáveis)
 | Template | Responsabilidade |
 |---|---|
 | `stages/deploy.yaml` | Deploy de **1** ambiente (`environment`); resolve infra de `variables/env/<env>.yaml`; chama `deploy-backend.yaml` + `rollout-verify`. |
 | `stages/veracode.yaml` | Stage de SAST (Veracode). |
+| `stages/rollback.yaml` | Rollback rastreado: `kubectl set image` para uma tag já no ECR, via Environment (ver §4.2). |
 
 ### Steps (reutilizáveis, agnósticos de stack)
 | Template | Responsabilidade | Parâmetros-chave |
