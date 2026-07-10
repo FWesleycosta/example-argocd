@@ -1,50 +1,118 @@
-// <copyright file="TitulosHandler.cs" company="Banco Fibra">
-// Direitos autorais (c) Banco Fibra. Todos os direitos reservados.
-// </copyright>
-using Amazon.Lambda.Core;
-using Datadog.Trace;
+steps:
+  - task: SonarSource.sonarqube.15B84CA1-B62F-4A2A-A403-89B77A063157.SonarQubePrepare@7
+    displayName: 'Configuration SonarQube (.NET)'
+    inputs:
+      SonarQube: SonarQube
+      scannerMode: 'dotnet'
+      projectKey: '$(Build.Repository.Name)-key'
+      projectName: '$(Build.Repository.Name)'
+      extraProperties: |
+        sonar.scm.disabled=true
+        sonar.branch.name=develop
+        # Apontamos para uma pasta temporária fora da raiz do projeto
+        sonar.cs.vscoveragexml.reportsPaths=$(Agent.TempDirectory)/coverage.xml
+        # Cobertura: excluir código gerado, DTOs e caminhos sem valor de métrica
+        sonar.coverage.exclusions=**/obj/**,**/*.generated.cs,**/Program.cs,**/DTOs/**,**/Domain/**,**/Configuration/**,**/HealthController.cs,**/Services/**
+        # Análise: excluir testes, gerados e terceiros
+        sonar.exclusions=**/obj/**,**/*.generated.cs,test/**,**/HealthController.cs
+        # CPD: excluir duplicações em DTOs, domain e contratos REST
+        sonar.cpd.exclusions=**/DTOs/**,**/Domain/**,**/Services/Rest/**/Contracts/**
+    continueOnError: false
 
-// Assembly attribute to enable the Lambda function's JSON input to be converted into a .NET class.
-[assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
+  - task: UseDotNet@2
+    displayName: 'Use .NET Core sdk 10.x'
+    inputs:
+      version: 10.x
+      includePreviewVersions: true
 
-namespace Fibra.Produtos.CessaoCredito.FCT.Handlers;
+  - script: dotnet tool install --global dotnet-coverage
+    displayName: 'Install dotnet-coverage'
 
-/// <summary>
-/// Handler mínimo de exemplo: gera um trace de APM para validação no Datadog.
-/// </summary>
-public class TitulosHandler
-{
-    private static readonly HttpClient Http = new();
+  - task: DotNetCoreCLI@2
+    displayName: 'Restore'
+    inputs:
+      command: restore
+      projects: '**/*.slnx'
+      vstsFeed: 'fe426c42-a2f6-4500-bfe3-a01db2340d0b'
+    # TEMPORÁRIO: contorna NU3012 (ex.: assinatura/revogação de certificado em pacotes NuGet, ex. Refit).
+    # Remover quando os pacotes estiverem republicados com assinatura válida.
+    env:
+      NUGET_CERT_REVOCATION_MODE: no
+      DOTNET_NUGET_SIGNATURE_VERIFICATION: false
 
-    /// <summary>
-    /// Cria um span manual (e um span filho de HTTP) só para validar o APM no Datadog.
-    /// </summary>
-    /// <param name="input">Payload opcional (não utilizado).</param>
-    /// <param name="context">Contexto da execução Lambda.</param>
-    /// <returns>Mensagem de saudação.</returns>
-    public async Task<string> HelloWorldAsync(object? input, ILambdaContext context)
-    {
-        _ = input;
+  - script: |
+      # Localiza a solução de forma segura no Linux
+      SOLUTION=$(find . -maxdepth 2 -name "*.slnx" | head -n 1)
 
-        // Span manual: garante que um trace exista, mesmo que a auto-instrumentação
-        // não capture o entrypoint do handler.
-        using var scope = Tracer.Instance.StartActive("titulos.hello_world");
-        scope.Span.ResourceName = "HelloWorldAsync";
-        scope.Span.SetTag("test.apm", "validation");
-        scope.Span.SetTag("aws.request_id", context.AwsRequestId);
+      echo "Building: $SOLUTION"
+      dotnet build "$SOLUTION" --configuration Release --no-incremental
 
-        // Chamada HTTP simples: a auto-instrumentação do HttpClient deve criar um span filho.
-        try
-        {
-            using var resp = await Http.GetAsync("https://checkip.amazonaws.com");
-            scope.Span.SetTag("demo.http_status", ((int)resp.StatusCode).ToString());
-        }
-        catch (Exception ex)
-        {
-            scope.Span.SetTag("error", "true");
-            scope.Span.SetTag("error.msg", ex.Message);
-        }
+      echo "Generating coverage at $(Agent.TempDirectory)/coverage.xml"
+      # Geramos o arquivo na pasta TEMP do Agente, longe dos fontes
+      dotnet-coverage collect "dotnet test --configuration Release --no-build" -f xml -o "$(Agent.TempDirectory)/coverage.xml"
+    displayName: 'Build and Collect Coverage'
+    env:
+      PATH: $(PATH):$(HOME)/.dotnet/tools
+      NUGET_CERT_REVOCATION_MODE: no
+      DOTNET_NUGET_SIGNATURE_VERIFICATION: false
 
-        return "Hello World";
-    }
-}
+  - task: SonarSource.sonarqube.6D01813A-9589-4B15-8491-8164AEB38055.SonarQubeAnalyze@7
+    displayName: 'Code Analysis'
+    inputs:
+      jdkversion: 'JAVA_HOME'
+    continueOnError: false
+
+  - task: SonarSource.sonarqube.291ed61f-1ee4-45d3-b1b0-bf822d9095ef.SonarQubePublish@7
+    displayName: 'Publish Quality Gate Result'
+    inputs:
+      pollingTimeoutSec: '300'
+    continueOnError: false
+
+  - task: Bash@3
+    displayName: 'Break build on quality gate failure'
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+
+        # Localiza o report-task.txt gerado pela análise do Sonar
+        REPORT_TASK=$(find "$(Build.SourcesDirectory)" -name "report-task.txt" | head -n 1)
+        if [ -z "$REPORT_TASK" ]; then
+          echo "##[error]report-task.txt não encontrado. A análise do Sonar rodou?"
+          exit 1
+        fi
+        echo "Usando: $REPORT_TASK"
+
+        # Extrai valores do arquivo
+        CE_TASK_ID=$(grep '^ceTaskId=' "$REPORT_TASK" | cut -d'=' -f2-)
+        SONAR_URL=$(grep '^serverUrl=' "$REPORT_TASK" | cut -d'=' -f2-)
+        echo "Servidor: $SONAR_URL"
+        echo "Task de análise: $CE_TASK_ID"
+
+        AUTH="$(SONAR_TOKEN):"
+
+        # Aguarda o Sonar terminar de processar a análise (polling)
+        for i in $(seq 1 30); do
+          CE_STATUS=$(curl -s -u "$AUTH" "$SONAR_URL/api/ce/task?id=$CE_TASK_ID" | grep -o '"status":"[^"]*"' | head -n1 | cut -d'"' -f4)
+          echo "Tentativa $i - status do processamento: $CE_STATUS"
+          if [ "$CE_STATUS" = "SUCCESS" ]; then
+            break
+          elif [ "$CE_STATUS" = "FAILED" ] || [ "$CE_STATUS" = "CANCELED" ]; then
+            echo "##[error]Processamento da análise falhou no servidor: $CE_STATUS"
+            exit 1
+          fi
+          sleep 5
+        done
+
+        # Pega o analysisId e consulta o Quality Gate
+        ANALYSIS_ID=$(curl -s -u "$AUTH" "$SONAR_URL/api/ce/task?id=$CE_TASK_ID" | grep -o '"analysisId":"[^"]*"' | cut -d'"' -f4)
+        GATE_STATUS=$(curl -s -u "$AUTH" "$SONAR_URL/api/qualitygates/project_status?analysisId=$ANALYSIS_ID" | grep -o '"status":"[^"]*"' | head -n1 | cut -d'"' -f4)
+
+        echo "Quality Gate: $GATE_STATUS"
+        if [ "$GATE_STATUS" != "OK" ]; then
+          echo "##[error]Quality Gate falhou (status: $GATE_STATUS). Bloqueando o build."
+          exit 1
+        fi
+        echo "Quality Gate aprovado."
+    env:
+      SONAR_TOKEN: $(SONAR_TOKEN)
