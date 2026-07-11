@@ -69,13 +69,15 @@ steps:
     continueOnError: false
 
   # ---------------------------------------------------------------------------
-  # Bloqueia o build quando o Quality Gate falha.
-  # O SonarQubePublish apenas publica o status; ele NAO quebra o build sozinho.
-  # Este step le o report-task.txt, consulta a API do Sonar e falha com exit 1
-  # se o Quality Gate nao estiver OK. Funciona na Community Edition.
+  # Bloqueia o build quando o Quality Gate falha e imprime as metricas
+  # (coverage, issues, duplicacao) com valor atual x limite exigido.
   #
-  # O token e extraido de SONARQUBE_SCANNER_PARAMS, que o SonarQubePrepare
-  # ja exporta a partir do service connection -- nao precisa criar secret.
+  # O SonarQubePublish apenas publica o status; ele NAO quebra o build sozinho.
+  # Este step le o report-task.txt, consulta a API do SonarQube e falha com
+  # exit 1 se o Quality Gate nao estiver OK. Compativel com a Community Edition.
+  #
+  # O token e extraido de SONARQUBE_SCANNER_PARAMS, que o SonarQubePrepare ja
+  # exporta a partir do service connection -- nao precisa criar secret.
   # ---------------------------------------------------------------------------
   - task: Bash@3
     displayName: 'Break build on quality gate failure'
@@ -84,7 +86,7 @@ steps:
       script: |
         set -euo pipefail
 
-        # Caminho do report-task.txt: variavel oficial do scanner, com fallback por busca.
+        # --- Localiza o report-task.txt -------------------------------------
         REPORT_TASK="${SONAR_SCANNER_REPORTTASKFILE:-}"
         if [ -z "$REPORT_TASK" ] || [ ! -f "$REPORT_TASK" ]; then
           REPORT_TASK=$(find "$(Agent.WorkFolder)" -name "report-task.txt" 2>/dev/null | head -n 1)
@@ -93,31 +95,39 @@ steps:
           echo "##[error]report-task.txt nao encontrado. A analise do Sonar rodou?"
           exit 1
         fi
-        echo "Usando: $REPORT_TASK"
 
         CE_TASK_ID=$(grep '^ceTaskId=' "$REPORT_TASK" | cut -d'=' -f2-)
         SONAR_URL=$(grep '^serverUrl=' "$REPORT_TASK" | cut -d'=' -f2-)
-        echo "Servidor: $SONAR_URL"
-        echo "Task de analise: $CE_TASK_ID"
+        DASHBOARD_URL=$(grep '^dashboardUrl=' "$REPORT_TASK" | cut -d'=' -f2- || true)
 
-        # Extrai o token que o SonarQubePrepare ja colocou em SONARQUBE_SCANNER_PARAMS.
+        echo "##[group]Detalhes da analise"
+        echo "report-task.txt : $REPORT_TASK"
+        echo "Servidor        : $SONAR_URL"
+        echo "Task de analise : $CE_TASK_ID"
+        echo "##[endgroup]"
+
+        # --- Token exportado pelo SonarQubePrepare ---------------------------
         TOKEN=$(echo "${SONARQUBE_SCANNER_PARAMS:-}" | grep -o '"sonar.token":"[^"]*"' | cut -d'"' -f4)
         if [ -z "$TOKEN" ]; then
           echo "##[error]Nao consegui extrair o token do Sonar (SONARQUBE_SCANNER_PARAMS)."
           exit 1
         fi
-
-        # Autenticacao HTTP Basic: token como usuario, senha vazia.
         AUTH="${TOKEN}:"
 
-        # Aguarda o Sonar terminar de processar a analise (ate ~2,5 min).
+        # --- Garante o jq (parsing do JSON) ---------------------------------
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "jq nao encontrado, instalando..."
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq
+        fi
+
+        # --- Aguarda o processamento da analise ------------------------------
         ANALYSIS_ID=""
         for i in $(seq 1 30); do
           RESP=$(curl -s -u "$AUTH" "$SONAR_URL/api/ce/task?id=$CE_TASK_ID")
-          CE_STATUS=$(echo "$RESP" | grep -o '"status":"[^"]*"' | head -n1 | cut -d'"' -f4)
+          CE_STATUS=$(echo "$RESP" | jq -r '.task.status // empty')
           echo "Tentativa $i - status do processamento: $CE_STATUS"
           if [ "$CE_STATUS" = "SUCCESS" ]; then
-            ANALYSIS_ID=$(echo "$RESP" | grep -o '"analysisId":"[^"]*"' | cut -d'"' -f4)
+            ANALYSIS_ID=$(echo "$RESP" | jq -r '.task.analysisId // empty')
             break
           elif [ "$CE_STATUS" = "FAILED" ] || [ "$CE_STATUS" = "CANCELED" ]; then
             echo "##[error]Processamento da analise falhou no servidor: $CE_STATUS"
@@ -131,11 +141,52 @@ steps:
           exit 1
         fi
 
-        GATE_STATUS=$(curl -s -u "$AUTH" "$SONAR_URL/api/qualitygates/project_status?analysisId=$ANALYSIS_ID" | grep -o '"status":"[^"]*"' | head -n1 | cut -d'"' -f4)
-        echo "Quality Gate: $GATE_STATUS"
+        # --- Consulta o Quality Gate -----------------------------------------
+        GATE_JSON=$(curl -s -u "$AUTH" "$SONAR_URL/api/qualitygates/project_status?analysisId=$ANALYSIS_ID")
+        GATE_STATUS=$(echo "$GATE_JSON" | jq -r '.projectStatus.status // empty')
 
+        # --- Resumo destacado -------------------------------------------------
+        echo ""
+        echo "##[section]===================== QUALITY GATE ====================="
+        echo ""
+        printf "  %-28s %12s %12s %10s\n" "METRICA" "ATUAL" "LIMITE" "STATUS"
+        printf "  %-28s %12s %12s %10s\n" "----------------------------" "------------" "------------" "----------"
+
+        echo "$GATE_JSON" | jq -r '
+          .projectStatus.conditions[]
+          | [ .metricKey,
+              (.actualValue    // "-"),
+              (.errorThreshold // "-"),
+              .status ]
+          | @tsv' \
+        | while IFS=$'\t' read -r METRIC ACTUAL THRESH CSTATUS; do
+            printf "  %-28s %12s %12s %10s\n" "$METRIC" "$ACTUAL" "$THRESH" "$CSTATUS"
+          done
+
+        echo ""
+
+        # Destaca a cobertura separadamente (metrica mais consultada)
+        COV=$(echo "$GATE_JSON" | jq -r '
+          .projectStatus.conditions[]
+          | select(.metricKey | test("coverage"))
+          | "  COBERTURA: \(.actualValue)% (minimo exigido: \(.errorThreshold)%) -> \(.status)"' || true)
+        if [ -n "$COV" ]; then
+          echo "$COV"
+          echo ""
+        fi
+
+        echo "  RESULTADO GERAL: $GATE_STATUS"
+        if [ -n "${DASHBOARD_URL:-}" ]; then
+          echo "  Dashboard: $DASHBOARD_URL"
+        fi
+        echo ""
+        echo "##[section]========================================================"
+        echo ""
+
+        # --- Decisao ----------------------------------------------------------
         if [ "$GATE_STATUS" != "OK" ]; then
-          echo "##[error]Quality Gate falhou (status: $GATE_STATUS). Bloqueando o build."
+          echo "##vso[task.logissue type=error]Quality Gate falhou (status: $GATE_STATUS)."
+          echo "##[error]Bloqueando o build."
           exit 1
         fi
         echo "Quality Gate aprovado."
