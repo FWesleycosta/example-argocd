@@ -11,7 +11,7 @@ O versionamento segue [Semantic Versioning](https://semver.org/lang/pt-BR/) (`MA
 | **MINOR** | Nova funcionalidade compatível (novo template, novo parâmetro opcional, novo ambiente) |
 | **PATCH** | Correção compatível (bugfix, melhoria de `displayName`, ajuste de script sem quebrar contrato) |
 
-Ao referenciar este repositório nos pipelines das aplicações, **fixe a versão por tag** (ex.: `@refs/tags/v1.0.0`) em vez de apontar para `main`.
+Ao referenciar este repositório nos pipelines das aplicações, **fixe a versão por tag** (ex.: `@refs/tags/v1.2.0`) em vez de apontar para `main`.
 
 ---
 
@@ -31,7 +31,7 @@ resources:
     - repository: templates
       type: git
       name: Fibra.DevOps/fibra-devops-pipelines
-      ref: refs/tags/v1.0.0
+      ref: refs/tags/v1.2.0
 
 extends:
   template: templates/stacks/dotnet-backend.yaml@templates
@@ -158,31 +158,54 @@ flowchart TD
 
 ---
 
-## [1.0.0] - 2026-06-24
+## [1.2.0] - 2026-07-20
 
-Primeira versão da biblioteca de pipelines compartilhados.
+Parametrização dos templates de qualidade, build e autenticação Git. **Nenhuma quebra de contrato**:
+todos os parâmetros novos são opcionais e seus defaults reproduzem o comportamento de `1.1.1`.
+
+> ⚠️ **Ao tagear**: `examples/azure-pipelines.yml` referencia `refs/tags/v2.0.0`, tag que não existe.
+> Aponte o exemplo para `refs/tags/v1.2.0` — senão um pipeline copiado dele não resolve o
+> `resources.repositories` e sequer compila.
+
+### Removido
+
+- `templates/variables/frontend/{dev,hml,prd}.yaml` e `templates/variables/pix/{dev,hml,prd}.yaml`. Eram um estado intermediário do fatiamento por domínio × ambiente e **nunca chegaram a uma tag publicada** — por isso não há migração a fazer nem quebra de contrato. As variáveis de ambiente ficam apenas em `templates/variables/env/{dev,hml,prd}.yaml`.
 
 ### Adicionado
 
-- Stack `templates/stacks/dotnet-backend.yaml` com orquestração completa por branch.
-- Build .NET 10 com Docker, autenticação NuGet e artefato `docker-image` (`.tar`).
-- Análise SonarQube para .NET com cobertura (`dotnet-coverage`), Quality Gate e build breaker.
-- Scan Veracode SAST (empacotamento ZIP + upload).
-- Stage de deploy reutilizável com variáveis por ambiente (`dev`, `hml`, `prd`).
-- Template `deploy-backend.yaml`: ECR, Terraform, manifests K8s e anotações de rastreabilidade.
-- Manifests base em `manifests/k8s/` (Deployment, Service, HPA, Ingress, ConfigMap).
-- Manifests Terraform para IAM Pod Identity, API Gateway, DynamoDB, S3, SQS e integrações AWS.
-- Fluxo de **hotfix** com aprovação manual, PRs em cascata e exclusão automática da branch.
-- Fluxo de **release** com deploy hml/prd, Veracode e back-merge para `develop`.
-- Utilitário `create-pullrequest.yaml` para criar/concluir PRs via Azure CLI.
-- Setup de autenticação Git (`GIT_PAT`) para módulos Terraform privados.
-- `displayName` descritivos em português em todos os templates principais.
+- **`templates/infra/setup-git-auth.yaml` parametrizado**: `orgUrl`, `patVariable`, `probeRepo` e `verifyAccess`. A organização (`bancofibra`) e o repositório de módulos (`Fibra.DevOps.Terraform`) deixam de estar fixos no corpo do script. Todos os defaults preservam o comportamento anterior.
+- **`templates/dotnet/build-backend-dotnet.yaml` parametrizado**: `pool`, `dockerfilePath`, `buildContext`, `imageName`, `imageTag`, `artifactName` e `extraBuildArgs`. O template não tinha nenhum parâmetro; os defaults de `imageName`/`imageTag`/`artifactName` são iguais aos de `steps/image-promote.yaml` por contrato — se alterar em um, altere no outro.
+- **`templates/sonarqube/qa-sonar-dotnet.yaml` parametrizado** (16 parâmetros): `sonarServiceConnection`, `projectKey`, `projectName`, `branchName`, `extraProperties`, `dotnetVersion`, `includePreviewVersions`, `solutionPattern`, `nugetFeedId`, `buildConfiguration`, `coverageFile`, `relaxNugetSignatureChecks`, `pollingTimeoutSec`, `gateWaitAttempts`, `gateWaitIntervalSeconds` e `breakOnQualityGate`.
+  - `extraProperties` substitui os blocos de `sonar.exclusions` / `coverage.exclusions` / `cpd.exclusions` que estavam comentados no arquivo — agora o app declara as exclusões sem forkar o template.
+  - `breakOnQualityGate: false` publica o resultado do gate sem derrubar o build, permitindo adoção gradual em aplicações novas.
+- **Resultados de teste publicados no run** (`PublishTestResults@2`): o `dotnet test` passou a gerar `.trx` e a aba **Tests** do Azure DevOps deixa de ficar vazia — com contagem, duração e histórico de flakiness. Roda com `condition: succeededOrFailed()` (é quando o teste falha que o relatório importa) e não falha se não houver `.trx`. Desligável com `publishTestResults: false`.
+- `qa-sonar-dotnet.yaml`: parâmetro `coverageToolVersion` para pinar a versão do `dotnet-coverage`. Vazio (default) instala a última e emite `##[warning]` — **defina uma versão** para builds reprodutíveis.
+
+### Alterado
+
+- **`sonar.branch.name` deixou de ser fixo em `develop`** e passa a derivar da branch do run (`coalesce(parameters.branchName, replace(variables['Build.SourceBranch'], 'refs/heads/', ''))`). Análises de `release/*` e `hotfix/*` passam a ser registradas na branch correta. Depende do `sonarqube-community-branch-plugin` instalado no servidor; para voltar ao comportamento anterior, passe `branchName: 'develop'`.
+- `templates/sonarqube/qa-sonar-dotnet.yaml`: o glob do `restore` e o `find` do build passaram a derivar do mesmo parâmetro `solutionPattern` — antes eram dois literais `*.slnx` independentes.
+
+### Corrigido
+
+- **`setup-git-auth.yaml` não imprime mais o PAT no log.** A linha de diagnóstico usava `${GIT_PAT}` (o valor) onde a intenção era `${#GIT_PAT}` (o tamanho).
+- `build-backend-dotnet.yaml`: a autodetecção da pasta em `src/` (`ls | head -1`, ordem alfabética) agora emite `##[warning]` quando há mais de uma pasta e falha explicitamente se o Dockerfile não existir. Use `dockerfilePath` para eliminar a ambiguidade.
+- `qa-sonar-dotnet.yaml`: `find` sem resultado agora falha com mensagem clara em vez de chamar `dotnet build ""`.
+- `qa-sonar-dotnet.yaml`: `NUGET_CERT_REVOCATION_MODE: 'no'` passou a ser citado (em YAML, `no` sem aspas é o booleano `false`).
+- **`qa-sonar-dotnet.yaml`: falha intermitente por `SIGPIPE`.** Os dois `find … | head -n 1` (solução e `report-task.txt`) rodavam sob `set -o pipefail`: quando o `head` fechava o pipe antes de o `find` terminar, o `find` saía com 141 e derrubava o step sem motivo aparente. Trocados por `find … -print -quit`.
+- **`qa-sonar-dotnet.yaml`: `PATH` montado com macro do Azure DevOps.** O bloco `env` usava `PATH: $(PATH):$(HOME)/.dotnet/tools`; se as macros não resolvessem, o `PATH` do step viraria a string literal e todo comando falharia com *command not found*. Passou a ser `export PATH="$PATH:$HOME/.dotnet/tools"` dentro do script, onde é shell de verdade.
+- **`qa-sonar-dotnet.yaml`: token do SonarQube agora é mascarado** (`##vso[task.setsecret]`) assim que é extraído de `SONARQUBE_SCANNER_PARAMS`, protegendo contra vazamento em log caso alguém habilite `set -x` ou um erro ecoe a linha de comando.
+- `qa-sonar-dotnet.yaml`: removida a instalação de `jq` via `sudo apt-get` em runtime. O `jq` já vem no `ubuntu-latest` e os demais templates do repo o consomem sem instalar; agora o step falha com mensagem clara se faltar.
+- `qa-sonar-dotnet.yaml`: `dotnet tool install` trocado por `dotnet tool update`, que é idempotente — o `install` falhava quando a ferramenta já existia no agente (self-hosted reaproveitado).
 
 ### Notas de adoção
 
-- Publicar tag `v1.0.0` após validação em um serviço piloto.
-- Garantir Variable Group `git-credentials` e service connections AWS/Veracode/SonarQube configuradas no Azure DevOps.
-- Registrar o repositório `templates` como resource em cada `azure-pipelines.yml` consumidor.
+- Nenhum chamador precisa mudar: todos os parâmetros novos são opcionais e os defaults preservam o comportamento anterior — **exceto** `sonar.branch.name`, que muda de propósito (ver *Alterado*).
+- **Valide no primeiro run**: confira no log do step `Configurar SonarQube (.NET)` se `sonar.branch.name` recebeu o valor esperado. Se vier vazio ou com o prefixo `refs/heads/`, a expressão não resolveu — passe `branchName` a partir de `stacks/dotnet-backend.yaml`.
+- Com branches reais, cada `release/X.Y.Z` vira um registro permanente no SonarQube. Configure o *housekeeping* de branches inativas antes de adotar.
+- A primeira análise de cada branch nova não tem baseline; Quality Gates com condição sobre *novo código* podem se comportar de forma diferente nesse run.
+- **Verifique se teste quebrado derruba o stage.** O `dotnet test` roda dentro do `dotnet-coverage collect`; se o exit code não for propagado, um teste falhando passaria despercebido. Com o `PublishTestResults@2` desta versão dá para conferir: quebre um teste de propósito e confirme que a aba **Tests** fica vermelha **e** o stage falha.
+- **Pine o `dotnet-coverage`.** O default de `coverageToolVersion` é vazio (instala a última) e emite `##[warning]`. Pegue a versão do log do primeiro run e passe no chamador.
 
 ---
 
@@ -214,29 +237,31 @@ Primeira versão da biblioteca de pipelines compartilhados.
 - O `[skip ci]` no commit do registro é o que impede o redisparo da esteira em `hotfix/*`; não remova.
 - Registro é **best-effort**: falha em qualquer etapa do registro vira warning e não bloqueia o deploy.
 
-
 ## [1.0.29] - 2026-07-16
 
 ### Adicionado
 
-- Suporte a tópicos SNS e filas SQS já existentes na conta AWS nas `sns_sqs_subscriptions`. Nomes não declarados em 
+- Suporte a tópicos SNS e filas SQS já existentes na conta AWS nas `sns_sqs_subscriptions`. Nomes não declarados em
   `topic_name`/`queue_name` passam a ser resolvidos via data source, permitindo reaproveitar recursos criados por outros
   projetos.
 
 ### Corrigido
 
 - Corrigido `local.managed_queue_names`, que referenciava a variável inexistente `var.sqs_queues` em vez de `var.queue_name`,
-fazendo com que toda fila fosse tratada com externa.
+  fazendo com que toda fila fosse tratada como externa.
 
 
 ## [1.0.27] - 2026-07-15
 
 ### Alterado
 
-- Rollback de stages no fluxo `release/` do `templates/stacks/dotnet-backend.yaml`. O stage `Deploy_DEV` passa a ser executado agora somente com a branch `develop & sandbox´
+- Rollback de stages no fluxo `release/` do `templates/stacks/dotnet-backend.yaml`. O stage `Deploy_DEV` passa a ser executado agora somente com a branch `develop & sandbox`
 
 
 ## [1.0.26] - 2026-07-10
+
+> ⚠️ **Obsoleto.** Este encadeamento foi revertido em [1.0.27]. No fluxo atual, `Deploy_hml` e `Veracode`
+> dependem ambos de `[Build]`, e não existe `Deploy_dev` no caminho `release/*`.
 
 ### Alterado
 
@@ -247,14 +272,14 @@ fazendo com que toda fila fosse tratada com externa.
 
 ### Alterado
 
-- Padronização do nome dos **queues SQS** por aplicação. O `manifests/terraform/main.tf` passa a iterar sobre o novo `local.sqs_queues` (em `locals.tf`) em vez de `var.queue_name` diretamente. O local monta o nome no padrão `sqs-${var.environment}-{data.aws_region.current.name}-<queue_name>`, converte `fifo_queue` / via `tobool(lower(...))` e acrescenta o sufixo `.fifo` automaticamente para queues FIFO. Adicionado `datasource.tf` com `dat "aws_region" "current"`. O dev passa a declarar apenas a parte curta do nome em `resources.sqs[].queue_name`;
+- Padronização do nome dos **queues SQS** por aplicação. O `manifests/terraform/main.tf` passa a iterar sobre o novo `local.sqs_queues` (em `locals.tf`) em vez de `var.queue_name` diretamente. O local monta o nome no padrão `sqs-${var.environment}-${data.aws_region.current.name}-<queue_name>`, converte `fifo_queue` / via `tobool(lower(...))` e acrescenta o sufixo `.fifo` automaticamente para queues FIFO. Adicionado `datasource.tf` com `data "aws_region" "current"`. O dev passa a declarar apenas a parte curta do nome em `resources.sqs[].queue_name`;
 
 
 ## [1.0.24] - 2026-07-10
 
 ### Alterado
 
-- Padronização do nome dos **tópicos SNS** por aplicação. O `manifests/terraform/main.tf` passa a iterar sobre o novo `local.sns_topics` (em `locals.tf`) em vez de `var.topic_name` diretamente. O local monta o nome no padrão `sns-${var.environment}-{data.aws_region.current.name}-<topic_name>`, converte `fifo_topic` / `content_based_deduplication` via `tobool(lower(...))` e acrescenta o sufixo `.fifo` automaticamente para tópicos FIFO. Adicionado `datasource.tf` com `dat "aws_region" "current"`. O dev passa a declarar apenas a parte curta do nome em `resources.sns_topics[].topic_name`;
+- Padronização do nome dos **tópicos SNS** por aplicação. O `manifests/terraform/main.tf` passa a iterar sobre o novo `local.sns_topics` (em `locals.tf`) em vez de `var.topic_name` diretamente. O local monta o nome no padrão `sns-${var.environment}-${data.aws_region.current.name}-<topic_name>`, converte `fifo_topic` / `content_based_deduplication` via `tobool(lower(...))` e acrescenta o sufixo `.fifo` automaticamente para tópicos FIFO. Adicionado `datasource.tf` com `data "aws_region" "current"`. O dev passa a declarar apenas a parte curta do nome em `resources.sns_topics[].topic_name`;
 
 
 ## [1.0.22] - 2026-07-08
@@ -271,17 +296,28 @@ fazendo com que toda fila fosse tratada com externa.
 
 ## [1.0.20] - 2026-07-02
 
+> ⚠️ **Obsoleto.** O registro em Wiki foi substituído em [1.1.0] pelo `DEPLOY-PRD.md` no repositório da
+> aplicação. Esta correção não se aplica ao template atual — não há mais chamada à API de Wiki.
+
 ### Corrigido
 
 - `record-prod-release` não bloqueia mais a atualização da Wiki quando a **API de listagem** (`_apis/wiki/wikis`) retorna vazia para o token do build (comportamento observado mesmo com *Contribute* concedido — `list` e `get` têm checagens de permissão/escopo diferentes). Agora, se a listagem não resolver o `id`, o step **cai de volta para o identificador por nome `<Projeto>.wiki`** e tenta o GET/PUT diretamente (que costuma funcionar), decidindo o sucesso pela resposta real da página — em vez de abortar. Também passou a **logar a resposta crua da listagem** (500 primeiros chars) para diagnóstico, e a URL-encodar o identificador da Wiki.
 
 ## [1.0.19] - 2026-07-02
 
+> ⚠️ **Obsoleto.** O registro em Wiki foi substituído em [1.1.0] pelo `DEPLOY-PRD.md` no repositório da
+> aplicação. O parâmetro `wikiName` não existe mais.
+
 ### Alterado
 
 - `record-prod-release` agora **descobre a Wiki de projeto automaticamente** (via API de listagem `_apis/wiki/wikis`, usando o `id`/GUID da Wiki do tipo `projectWiki`) em vez de assumir o nome `<Projeto>.wiki`. Isso evita `WikiNotFoundException` (HTTP 404) quando o identificador por nome não resolve e torna o parâmetro `wikiName` opcional (só necessário para *code wikis* ou cenários específicos). Quando não existe nenhuma Wiki no projeto, o warning fica explícito ("crie em Overview > Wiki > Create project wiki e dê Contribute ao Build Service").
 
 ## [1.0.18] - 2026-07-02
+
+> ⚠️ **Parcialmente obsoleto.** O **histórico em Wiki** foi substituído em [1.1.0] pelo `DEPLOY-PRD.md` no
+> repositório da aplicação: os parâmetros `updateWiki`, `wikiName` e `wikiPagePath` não existem mais —
+> os equivalentes atuais são `updateReleaseLog` e `recordBranch`. O **carimbo do run** (`stampRun`) segue
+> válido e em uso.
 
 ### Adicionado
 
@@ -298,11 +334,19 @@ fazendo com que toda fila fosse tratada com externa.
 
 ## [1.0.16] - 2026-07-01
 
+> ⚠️ **Obsoleto.** Depende do forçamento de `min_replicas: 2` em prd introduzido em [1.0.9], que não
+> existe mais. Hoje `prd` usa os valores de `pod.min_replicas`/`pod.max_replicas` da aplicação sem
+> alteração, e `dev`/`hml` são forçados a `1`/`1`.
+
 ### Corrigido
 
 - HPA inválido em produção (`spec.maxReplicas must be >= minReplicas`): como o ambiente `prd` força `min_replicas: 2`, o `max_replicas` da aplicação era mantido mesmo quando menor que 2, resultando em `min=2 > max=1`. Agora, em `prd`, quando a aplicação define `max_replicas < 2`, o template usa `5` como teto padrão; valores `>= 2` continuam sendo respeitados. `dev`/`hml` seguem usando o `min`/`max` informados pela aplicação.
 
 ## [1.0.15] - 2026-07-01
+
+> ⚠️ **Referência obsoleta.** A subseção "Valores aceitos por parâmetro" não existe mais: a `docs/` foi
+> reescrita (índice, glossário, C4 e ADRs). O contrato de parâmetros hoje está em
+> `docs/devops/workflow.md` e `docs/arquitetura/c4-componentes.md`.
 
 ### Adicionado
 
@@ -313,6 +357,11 @@ fazendo com que toda fila fosse tratada com externa.
 - Exemplo de consumo na doc estava com `api_visibility: internal` (valor inválido); corrigido para `private` e adicionados comentários inline com os valores aceitos.
 
 ## [1.0.14] - 2026-07-01
+
+> ⚠️ **Obsoleto.** Nada desta entrada descreve o comportamento atual: o encadeamento sequencial foi
+> revertido em [1.0.27]; `Validate`, `SonarQube` e `Build` voltaram a rodar em todos os fluxos que não
+> são rollback; o stage **`Skip` não existe** no repositório; e a documentação citada foi substituída
+> pela `docs/` atual.
 
 ### Alterado
 
@@ -325,6 +374,11 @@ fazendo com que toda fila fosse tratada com externa.
 - Documentação didática em [`docs/README.md`](docs/README.md): visão geral, glossário, estrutura do repositório, como as aplicações consomem os templates, fluxogramas da esteira (geral, `release/*`, `hotfix/*` e anatomia do deploy), guia passo a passo de **como adicionar novas linguagens** (com contratos a respeitar), tabela de alterações comuns, boas práticas e FAQ/troubleshooting.
 
 ## [1.0.13] - 2026-07-01
+
+> ⚠️ **Parcialmente obsoleto.** O `record-prod-release.yaml` continua existindo, mas evoluiu bastante
+> (ver [1.1.0] e [1.1.1]) e hoje é invocado por `stages/deploy.yaml`, não pelo `deploy-backend.yaml`.
+> A mudança de fluxo descrita em *Alterado* — `Deploy_dev` como primeira etapa do `release/*` — foi
+> revertida em [1.0.27].
 
 ### Adicionado
 
@@ -358,6 +412,10 @@ fazendo com que toda fila fosse tratada com externa.
 - Restaurados os `displayName` do `dotnet-backend.yaml` para a convenção padrão (verbo no infinitivo + objeto, PT) após a refatoração do fluxo, e padronizados os nomes do novo `rollback.yaml`.
 
 ## [1.0.9] - 2026-06-25
+
+> ⚠️ **Obsoleto.** O forçamento de `min_replicas: 2` em prd não existe mais. Hoje `stages/deploy.yaml`
+> repassa `pod.min_replicas`/`pod.max_replicas` da aplicação sem alterar em prd, e força `1`/`1` em
+> `dev`/`hml`. Veja também a nota em [1.0.16].
 
 ### Alterado
 
@@ -415,4 +473,31 @@ fazendo com que toda fila fosse tratada com externa.
 
 - Padronização dos `displayName` com a convenção **verbo no infinitivo + objeto** (PT), concisos e fáceis de identificar em execução; ambiente/branch entre parênteses quando agrega valor (ex.: `Implantar (prd)`, `Abrir PR (release → main)`).
 - `deploy-backend.yaml` movido para `templates/deploy-backend.yaml` (path esperado por `deploy.yaml`).
- 
+
+---
+
+## [1.0.0] - 2026-06-24
+
+Primeira versão da biblioteca de pipelines compartilhados.
+
+### Adicionado
+
+- Stack `templates/stacks/dotnet-backend.yaml` com orquestração completa por branch.
+- Build .NET 10 com Docker, autenticação NuGet e artefato `docker-image` (`.tar`).
+- Análise SonarQube para .NET com cobertura (`dotnet-coverage`), Quality Gate e build breaker.
+- Scan Veracode SAST (empacotamento ZIP + upload).
+- Stage de deploy reutilizável com variáveis por ambiente (`dev`, `hml`, `prd`).
+- Template `deploy-backend.yaml`: ECR, Terraform, manifests K8s e anotações de rastreabilidade.
+- Manifests base em `manifests/k8s/` (Deployment, Service, HPA, Ingress, ConfigMap).
+- Manifests Terraform para IAM Pod Identity, API Gateway, DynamoDB, S3, SQS e integrações AWS.
+- Fluxo de **hotfix** com aprovação manual, PRs em cascata e exclusão automática da branch.
+- Fluxo de **release** com deploy hml/prd, Veracode e back-merge para `develop`.
+- Utilitário `create-pullrequest.yaml` para criar/concluir PRs via Azure CLI.
+- Setup de autenticação Git (`GIT_PAT`) para módulos Terraform privados.
+- `displayName` descritivos em português em todos os templates principais.
+
+### Notas de adoção
+
+- Publicar tag `v1.0.0` após validação em um serviço piloto.
+- Garantir Variable Group `git-credentials` e service connections AWS/Veracode/SonarQube configuradas no Azure DevOps.
+- Registrar o repositório `templates` como resource em cada `azure-pipelines.yml` consumidor.
