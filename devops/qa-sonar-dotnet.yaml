@@ -1,0 +1,263 @@
+parameters:
+  - name: sonarServiceConnection
+    type: string
+    default: 'SonarQube'
+  - name: projectKey
+    type: string
+    default: '$(Build.Repository.Name)-key'
+  - name: projectName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: branchName
+    type: string
+    default: ''
+  - name: extraProperties
+    type: string
+    default: ''
+  - name: dotnetVersion
+    type: string
+    default: '10.x'
+  - name: includePreviewVersions
+    type: boolean
+    default: true
+  - name: solutionPattern
+    type: string
+    default: '*.slnx'
+  - name: nugetFeedId
+    type: string
+    default: 'fe426c42-a2f6-4500-bfe3-a01db2340d0b'
+  - name: buildConfiguration
+    type: string
+    default: 'Release'
+  - name: coverageFile
+    type: string
+    default: '$(Agent.TempDirectory)/coverage.xml'
+  - name: coverageToolVersion
+    type: string
+    default: ''
+  - name: publishTestResults
+    type: boolean
+    default: true
+  - name: relaxNugetSignatureChecks
+    type: boolean
+    default: true
+  - name: pollingTimeoutSec
+    type: string
+    default: '300'
+  - name: gateWaitAttempts
+    type: number
+    default: 30
+  - name: gateWaitIntervalSeconds
+    type: number
+    default: 5
+  - name: breakOnQualityGate
+    type: boolean
+    default: true
+
+steps:
+  - task: SonarSource.sonarqube.15B84CA1-B62F-4A2A-A403-89B77A063157.SonarQubePrepare@7
+    displayName: 'Configurar SonarQube (.NET)'
+    inputs:
+      SonarQube: ${{ parameters.sonarServiceConnection }}
+      scannerMode: 'dotnet'
+      projectKey: '${{ parameters.projectKey }}'
+      projectName: '${{ parameters.projectName }}'
+      extraProperties: |
+        sonar.scm.disabled=true
+        sonar.branch.name=${{ coalesce(parameters.branchName, replace(variables['Build.SourceBranch'], 'refs/heads/', '')) }}
+        sonar.cs.vscoveragexml.reportsPaths=${{ parameters.coverageFile }}
+        ${{ parameters.extraProperties }}
+    continueOnError: false
+
+  - task: UseDotNet@2
+    displayName: 'Instalar .NET SDK ${{ parameters.dotnetVersion }}'
+    inputs:
+      version: ${{ parameters.dotnetVersion }}
+      includePreviewVersions: ${{ parameters.includePreviewVersions }}
+
+  - script: |
+      set -euo pipefail
+      VERSION="${{ parameters.coverageToolVersion }}"
+      if [ -n "$VERSION" ]; then
+        dotnet tool update --global dotnet-coverage --version "$VERSION"
+      else
+        echo "##[warning]dotnet-coverage sem versao pinada. Defina 'coverageToolVersion' para builds reprodutiveis."
+        dotnet tool update --global dotnet-coverage
+      fi
+    displayName: 'Instalar dotnet-coverage'
+
+  - task: DotNetCoreCLI@2
+    displayName: 'Restaurar pacotes'
+    inputs:
+      command: restore
+      projects: '**/${{ parameters.solutionPattern }}'
+      vstsFeed: '${{ parameters.nugetFeedId }}'
+    ${{ if parameters.relaxNugetSignatureChecks }}:
+      env:
+        NUGET_CERT_REVOCATION_MODE: 'no'
+        DOTNET_NUGET_SIGNATURE_VERIFICATION: 'false'
+
+  - script: |
+      set -euo pipefail
+      export PATH="$PATH:$HOME/.dotnet/tools"
+
+      TRX_DIR="$(Agent.TempDirectory)/testresults"
+      mkdir -p "$TRX_DIR"
+
+      # -print -quit: para no primeiro match sem pipe. Com 'find | head' o find
+      # leva SIGPIPE e o pipefail derruba o step de forma intermitente.
+      SOLUTION=$(find . -maxdepth 2 -name "${{ parameters.solutionPattern }}" -print -quit)
+      if [ -z "$SOLUTION" ]; then
+        echo "##[error]Nenhuma solução '${{ parameters.solutionPattern }}' encontrada até 2 níveis a partir da raiz."
+        exit 1
+      fi
+
+      echo "Building: $SOLUTION"
+      dotnet build "$SOLUTION" --configuration ${{ parameters.buildConfiguration }} --no-incremental
+
+      echo "Generating coverage at ${{ parameters.coverageFile }}"
+      dotnet-coverage collect \
+        "dotnet test --configuration ${{ parameters.buildConfiguration }} --no-build --logger trx --results-directory $TRX_DIR" \
+        -f xml -o "${{ parameters.coverageFile }}"
+    displayName: 'Compilar e coletar cobertura'
+    ${{ if parameters.relaxNugetSignatureChecks }}:
+      env:
+        NUGET_CERT_REVOCATION_MODE: 'no'
+        DOTNET_NUGET_SIGNATURE_VERIFICATION: 'false'
+
+  - ${{ if parameters.publishTestResults }}:
+      - task: PublishTestResults@2
+        displayName: 'Publicar resultados de teste'
+        condition: succeededOrFailed()
+        inputs:
+          testResultsFormat: VSTest
+          testResultsFiles: '$(Agent.TempDirectory)/testresults/*.trx'
+          failTaskOnMissingResultsFile: false
+          testRunTitle: '$(Build.Repository.Name) - $(Build.BuildId)'
+
+  - task: SonarSource.sonarqube.6D01813A-9589-4B15-8491-8164AEB38055.SonarQubeAnalyze@7
+    displayName: 'Analisar código'
+    inputs:
+      jdkversion: 'JAVA_HOME'
+    continueOnError: false
+
+  - task: SonarSource.sonarqube.291ed61f-1ee4-45d3-b1b0-bf822d9095ef.SonarQubePublish@7
+    displayName: 'Publicar resultado do Quality Gate'
+    inputs:
+      pollingTimeoutSec: '${{ parameters.pollingTimeoutSec }}'
+    continueOnError: false
+
+  - task: Bash@3
+    displayName: 'Avaliar Quality Gate'
+    env:
+      BREAK_ON_GATE: ${{ parameters.breakOnQualityGate }}
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+
+        BREAK=$(printf '%s' "${BREAK_ON_GATE:-true}" | tr '[:upper:]' '[:lower:]')
+
+        REPORT_TASK="${SONAR_SCANNER_REPORTTASKFILE:-}"
+        if [ -z "$REPORT_TASK" ] || [ ! -f "$REPORT_TASK" ]; then
+          REPORT_TASK=$(find "$(Agent.WorkFolder)" -name "report-task.txt" -print -quit 2>/dev/null)
+        fi
+        if [ -z "$REPORT_TASK" ] || [ ! -f "$REPORT_TASK" ]; then
+          echo "##[error]report-task.txt nao encontrado. A analise do Sonar rodou?"
+          exit 1
+        fi
+
+        CE_TASK_ID=$(grep '^ceTaskId=' "$REPORT_TASK" | cut -d'=' -f2-)
+        SONAR_URL=$(grep '^serverUrl=' "$REPORT_TASK" | cut -d'=' -f2-)
+        DASHBOARD_URL=$(grep '^dashboardUrl=' "$REPORT_TASK" | cut -d'=' -f2- || true)
+
+        echo "##[group]Detalhes da analise"
+        echo "report-task.txt : $REPORT_TASK"
+        echo "Servidor        : $SONAR_URL"
+        echo "Task de analise : $CE_TASK_ID"
+        echo "##[endgroup]"
+
+        TOKEN=$(echo "${SONARQUBE_SCANNER_PARAMS:-}" | grep -o '"sonar.token":"[^"]*"' | cut -d'"' -f4)
+        if [ -z "$TOKEN" ]; then
+          echo "##[error]Nao consegui extrair o token do Sonar (SONARQUBE_SCANNER_PARAMS)."
+          exit 1
+        fi
+        # Registra o token para mascaramento no log a partir daqui.
+        echo "##vso[task.setsecret]$TOKEN"
+        AUTH="${TOKEN}:"
+
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "##[error]jq nao encontrado no agente. Ele ja vem no 'ubuntu-latest';"
+          echo "##[error]em agente self-hosted, instale-o na imagem do agente."
+          exit 1
+        fi
+
+        ANALYSIS_ID=""
+        for i in $(seq 1 ${{ parameters.gateWaitAttempts }}); do
+          RESP=$(curl -s -u "$AUTH" "$SONAR_URL/api/ce/task?id=$CE_TASK_ID")
+          CE_STATUS=$(echo "$RESP" | jq -r '.task.status // empty')
+          echo "Tentativa $i - status do processamento: $CE_STATUS"
+          if [ "$CE_STATUS" = "SUCCESS" ]; then
+            ANALYSIS_ID=$(echo "$RESP" | jq -r '.task.analysisId // empty')
+            break
+          elif [ "$CE_STATUS" = "FAILED" ] || [ "$CE_STATUS" = "CANCELED" ]; then
+            echo "##[error]Processamento da analise falhou no servidor: $CE_STATUS"
+            exit 1
+          fi
+          sleep ${{ parameters.gateWaitIntervalSeconds }}
+        done
+
+        if [ -z "$ANALYSIS_ID" ]; then
+          echo "##[error]Timeout aguardando o processamento da analise no Sonar."
+          exit 1
+        fi
+
+        GATE_JSON=$(curl -s -u "$AUTH" "$SONAR_URL/api/qualitygates/project_status?analysisId=$ANALYSIS_ID")
+        GATE_STATUS=$(echo "$GATE_JSON" | jq -r '.projectStatus.status // empty')
+
+        echo ""
+        echo "##[section]===================== QUALITY GATE ====================="
+        echo ""
+        printf "  %-28s %12s %12s %10s\n" "METRICA" "ATUAL" "LIMITE" "STATUS"
+        printf "  %-28s %12s %12s %10s\n" "----------------------------" "------------" "------------" "----------"
+
+        echo "$GATE_JSON" | jq -r '
+          .projectStatus.conditions[]
+          | [ .metricKey,
+              (.actualValue    // "-"),
+              (.errorThreshold // "-"),
+              .status ]
+          | @tsv' \
+        | while IFS=$'\t' read -r METRIC ACTUAL THRESH CSTATUS; do
+            printf "  %-28s %12s %12s %10s\n" "$METRIC" "$ACTUAL" "$THRESH" "$CSTATUS"
+          done
+
+        echo ""
+
+        COV=$(echo "$GATE_JSON" | jq -r '
+          .projectStatus.conditions[]
+          | select(.metricKey | test("coverage"))
+          | "  COBERTURA: \(.actualValue)% (minimo exigido: \(.errorThreshold)%) -> \(.status)"' || true)
+        if [ -n "$COV" ]; then
+          echo "$COV"
+          echo ""
+        fi
+
+        echo "  RESULTADO GERAL: $GATE_STATUS"
+        if [ -n "${DASHBOARD_URL:-}" ]; then
+          echo "  Dashboard: $DASHBOARD_URL"
+        fi
+        echo ""
+        echo "##[section]========================================================"
+        echo ""
+
+        if [ "$GATE_STATUS" != "OK" ]; then
+          if [ "$BREAK" = "true" ]; then
+            echo "##vso[task.logissue type=error]Quality Gate falhou (status: $GATE_STATUS)."
+            echo "##[error]Bloqueando o build."
+            exit 1
+          fi
+          echo "##vso[task.logissue type=warning]Quality Gate falhou (status: $GATE_STATUS), mas breakOnQualityGate=false."
+          exit 0
+        fi
+        echo "Quality Gate aprovado."
