@@ -1,0 +1,99 @@
+parameters:
+  - name: pool
+    type: object
+    default:
+      name: 'Azure Pipelines'
+  - name: dockerfilePath
+    type: string
+    default: ''
+  - name: buildContext
+    type: string
+    default: '.'
+  - name: imageName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: imageTag
+    type: string
+    default: '$(Build.BuildId)'
+  - name: artifactName
+    type: string
+    default: 'docker-image'
+  - name: extraBuildArgs
+    type: string
+    default: ''
+
+jobs:
+  - job: Build
+    displayName: 'Compilar .NET + imagem Docker'
+    pool: ${{ parameters.pool }}
+
+    steps:
+      - checkout: self
+        displayName: 'Checkout do repositório Git'
+
+      - task: NuGetAuthenticate@1
+        displayName: 'Autenticar no feed NuGet'
+
+      - ${{ if eq(parameters.dockerfilePath, '') }}:
+          - script: |
+              set -euo pipefail
+              SRC="$(Build.SourcesDirectory)/src"
+
+              if [ ! -d "$SRC" ]; then
+                echo "##[error]Pasta 'src/' não encontrada."
+                echo "##[error]Informe o parâmetro 'dockerfilePath' para apontar o Dockerfile explicitamente."
+                exit 1
+              fi
+
+              COUNT=$(ls -1 "$SRC" | wc -l | tr -d ' ')
+              FOLDER=$(ls -1 "$SRC" | head -1)
+
+              if [ "$COUNT" -ne 1 ]; then
+                echo "##[warning]'src/' contém $COUNT pastas; usando a primeira em ordem alfabética ('$FOLDER')."
+                echo "##[warning]Defina 'dockerfilePath' para escolher explicitamente."
+              fi
+
+              RESOLVED="src/${FOLDER}/Dockerfile"
+              if [ ! -f "$(Build.SourcesDirectory)/${RESOLVED}" ]; then
+                echo "##[error]Dockerfile não encontrado em '${RESOLVED}'."
+                exit 1
+              fi
+
+              echo "Dockerfile: ${RESOLVED}"
+              echo "##vso[task.setvariable variable=DockerfileResolved]${RESOLVED}"
+            displayName: 'Localizar Dockerfile em src/'
+
+      - ${{ else }}:
+          - script: |
+              set -euo pipefail
+              RESOLVED="${{ parameters.dockerfilePath }}"
+
+              if [ ! -f "$(Build.SourcesDirectory)/${RESOLVED}" ]; then
+                echo "##[error]Dockerfile não encontrado em '${RESOLVED}' (parâmetro dockerfilePath)."
+                exit 1
+              fi
+
+              echo "Dockerfile: ${RESOLVED}"
+              echo "##vso[task.setvariable variable=DockerfileResolved]${RESOLVED}"
+            displayName: 'Validar Dockerfile informado'
+
+      - task: Docker@2
+        displayName: 'Construir imagem Docker'
+        inputs:
+          repository: ${{ parameters.imageName }}
+          command: build
+          Dockerfile: $(DockerfileResolved)
+          buildContext: ${{ parameters.buildContext }}
+          tags: |
+            ${{ parameters.imageTag }}
+          arguments: '--build-arg FEED_ACCESSTOKEN=$(VSS_NUGET_ACCESSTOKEN) --build-arg NUGET_CERT_REVOCATION_MODE=no --build-arg DOTNET_NUGET_SIGNATURE_VERIFICATION=false ${{ parameters.extraBuildArgs }}'
+
+      - script: |
+          set -euo pipefail
+          docker image save "${{ parameters.imageName }}:${{ parameters.imageTag }}" \
+            -o "$(Build.ArtifactStagingDirectory)/${{ parameters.imageName }}.tar"
+        displayName: 'Salvar imagem como artefato (.tar)'
+
+      - publish: $(Build.ArtifactStagingDirectory)
+        artifact: ${{ parameters.artifactName }}
+        displayName: 'Publicar artefato (${{ parameters.artifactName }})'
