@@ -1,0 +1,56 @@
+parameters:
+  - name: orgUrl
+    type: string
+    default: 'https://dev.azure.com/bancofibra/'
+  - name: patVariable
+    type: string
+    default: 'GIT_PAT'
+  - name: probeRepo
+    type: string
+    default: 'https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform'
+  - name: verifyAccess
+    type: boolean
+    default: true
+
+steps:
+  - task: Bash@3
+    displayName: 'Configurar autenticação Git (módulos Terraform)'
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+
+        if [ -z "${GIT_PAT:-}" ]; then
+          echo "##[error]A variável '${{ parameters.patVariable }}' está vazia."
+          echo "##[error]Confirme que o variable group com o PAT está vinculado a este pipeline."
+          exit 1
+        fi
+
+        echo "Token presente (${#GIT_PAT} caracteres)"
+
+        ORG_NO_SCHEME="${ORG_URL#https://}"
+        git config --global url."https://pat:${GIT_PAT}@${ORG_NO_SCHEME}".insteadOf "${ORG_URL}"
+
+        git config --global core.askPass ""
+        git config --global credential.helper ""
+        export GIT_TERMINAL_PROMPT=0
+
+        echo "Reescrita configurada para: ${ORG_URL}"
+
+        if [ "${VERIFY_ACCESS}" = "True" ] || [ "${VERIFY_ACCESS}" = "true" ]; then
+          echo "Testando acesso a ${PROBE_REPO}..."
+          if git ls-remote "${PROBE_REPO}" HEAD >/dev/null 2>&1; then
+            echo "Acesso confirmado"
+          else
+            echo "##[error]Falha no acesso a ${PROBE_REPO}."
+            echo "##[error]Verifique se o PAT está válido e tem escopo de leitura em Code."
+            exit 1
+          fi
+        else
+          echo "Sonda de acesso desabilitada (verifyAccess=false)."
+        fi
+    env:
+      GIT_PAT: $(${{ parameters.patVariable }})
+      ORG_URL: ${{ parameters.orgUrl }}
+      PROBE_REPO: ${{ parameters.probeRepo }}
+      VERIFY_ACCESS: ${{ parameters.verifyAccess }}
