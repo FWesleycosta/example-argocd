@@ -1,0 +1,69 @@
+trigger:
+  branches:
+    include:
+      - sandbox
+      - hotfix/*
+
+parameters:
+  - name: rollbackImageTag
+    type: string
+    default: 'none'
+    displayName: 'Rollback PRD: tag/versão a restaurar (vazio = deploy normal)'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Fibra.DevOps/fibra-devops-pipelines
+      ref: refs/tags/v1.3.3
+
+    - repository: terraform-modules
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Terraform
+      ref: refs/heads/main
+
+
+extends:
+  template: templates/stacks/dotnet-backend.yaml@templates
+  parameters:
+    rollbackImageTag: ${{ parameters.rollbackImageTag }}
+    pod:
+      min_replicas: '1'
+      max_replicas: '1'
+      requests_cpu: 100m
+      requests_memory: 256Mi
+      limits_cpu: 250m
+      limits_memory: 512Mi
+      cpu_utilization: '70'
+
+    networking:
+      ingress_path: /corporativo-dadosmercado
+      base_path: corporativo
+      api_visibility: private
+      #domain_name: dev-api-teste.bancofibra.com.br
+      deployment_aspnetcore_urls: http://0.0.0.0:8080
+
+    resources:
+      dynamodb_tables: []
+      s3_buckets: []
+      secrets: []
+      sqs: 
+        - queue_name: "minha-fila"
+          fifo_queue: false
+      sns_topics:
+        - topic_name: "aws-sqs-teste-fibra-corporativo"
+          fifo_topic: false
+      sns_sqs_subscriptions: []
+
+    observability:
+      dd_lang: dotnet
+      dd_lib_version: latest
+
+    config:
+      env_vars:
+        - name: DATA
+          value: teste
+      ssm_parameters:
+        dev: []
+        hml: []
+        prd: []
