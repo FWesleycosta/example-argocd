@@ -1,0 +1,37 @@
+trigger:
+  branches:
+    include:
+      - develop
+      - hotfix/*
+
+resources:
+  repositories:
+  - repository: pipelines
+    type: git
+    name: Fibra.DevOps/Fibra.DevOps.Pipelines
+    ref: refs/heads/main
+
+  - repository: terraform-modules
+    type: git
+    name: Fibra.DevOps/Fibra.DevOps.Terraform
+    ref: refs/heads/main
+
+extends:
+  template: templates/test/azure-pipelines-dotnet.yaml@pipelines
+  parameters:
+    api_visibility: public
+    deployment_aspnetcore_urls: http://0.0.0.0:8080
+    pod_min_replicas: 1
+    domain_name: dev-api-teste.bancofibra.com.br
+    pod_max_replicas: 1
+    pod_requests_cpu: 100m
+    pod_requests_memory: 256Mi
+    pod_limits_cpu: 250m
+    pod_limits_memory: 512Mi
+    ingress_path: /corporativo-dadosmercado
+    base_path: corporativo
+    cpu_utilization: 70
+    env_vars:
+      - name: DATA
+        value: teste
+ 
