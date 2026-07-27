@@ -53,8 +53,17 @@ parameters:
   - name: breakOnQualityGate
     type: boolean
     default: true
+  - name: debugCoverage
+    type: boolean
+    default: false
 
 steps:
+  - task: UseDotNet@2
+    displayName: 'Instalar .NET SDK ${{ parameters.dotnetVersion }}'
+    inputs:
+      version: ${{ parameters.dotnetVersion }}
+      includePreviewVersions: ${{ parameters.includePreviewVersions }}
+
   - task: SonarSource.sonarqube.15B84CA1-B62F-4A2A-A403-89B77A063157.SonarQubePrepare@7
     displayName: 'Configurar SonarQube (.NET)'
     inputs:
@@ -68,12 +77,6 @@ steps:
         sonar.cs.vscoveragexml.reportsPaths=${{ parameters.coverageFile }}
         ${{ parameters.extraProperties }}
     continueOnError: false
-
-  - task: UseDotNet@2
-    displayName: 'Instalar .NET SDK ${{ parameters.dotnetVersion }}'
-    inputs:
-      version: ${{ parameters.dotnetVersion }}
-      includePreviewVersions: ${{ parameters.includePreviewVersions }}
 
   - script: |
       set -euo pipefail
@@ -113,17 +116,56 @@ steps:
       fi
 
       echo "Building: $SOLUTION"
-      dotnet build "$SOLUTION" --configuration ${{ parameters.buildConfiguration }} --no-incremental
+      # -p:ContinuousIntegrationBuild=false  -> evita a normalizacao deterministica
+      #   de caminhos (/_/src/...), que impede o Sonar de casar o coverage.xml com
+      #   os arquivos indexados e resulta em cobertura 0%.
+      # -p:DebugType=portable / DebugSymbols -> o dotnet-coverage precisa de PDB
+      #   para instrumentar. Sem PDB o XML sai vazio e os testes passam mesmo assim.
+      dotnet build "$SOLUTION" \
+        --configuration ${{ parameters.buildConfiguration }} \
+        --no-incremental \
+        -p:ContinuousIntegrationBuild=false \
+        -p:DebugType=portable \
+        -p:DebugSymbols=true
 
       echo "Generating coverage at ${{ parameters.coverageFile }}"
       dotnet-coverage collect \
-        "dotnet test --configuration ${{ parameters.buildConfiguration }} --no-build --logger trx --results-directory $TRX_DIR" \
+        "dotnet test \"$SOLUTION\" --configuration ${{ parameters.buildConfiguration }} --no-build --logger trx --results-directory $TRX_DIR" \
         -f xml -o "${{ parameters.coverageFile }}"
     displayName: 'Compilar e coletar cobertura'
     ${{ if parameters.relaxNugetSignatureChecks }}:
       env:
         NUGET_CERT_REVOCATION_MODE: 'no'
         DOTNET_NUGET_SIGNATURE_VERIFICATION: 'false'
+
+  - ${{ if parameters.debugCoverage }}:
+      - script: |
+          set +e
+          F="${{ parameters.coverageFile }}"
+
+          echo "##[group]Arquivo de cobertura"
+          ls -la "$F" 2>/dev/null || echo "NAO EXISTE"
+          printf 'bytes: '
+          wc -c < "$F" 2>/dev/null || echo 0
+          echo "##[endgroup]"
+
+          echo "##[group]Modulos instrumentados"
+          grep -o 'module name="[^"]*"' "$F" 2>/dev/null | sort -u || echo "NENHUM"
+          echo "##[endgroup]"
+
+          echo "##[group]Caminhos de fonte (amostra)"
+          grep -o 'path="[^"]*"' "$F" 2>/dev/null | head -15 || echo "NENHUM"
+          echo "##[endgroup]"
+
+          echo "##[group]TRX gerados"
+          ls -la "$(Agent.TempDirectory)/testresults/" 2>/dev/null || echo "NENHUM"
+          echo "##[endgroup]"
+
+          echo "##[group]ProjectInfo.xml gerados pelo scanner"
+          find . -name "ProjectInfo.xml" -path "*.sonarqube*" | wc -l
+          echo "##[endgroup]"
+        displayName: 'DEBUG: cobertura'
+        condition: always()
 
   - ${{ if parameters.publishTestResults }}:
       - task: PublishTestResults@2
@@ -234,10 +276,12 @@ steps:
 
         echo ""
 
+        # test("coverage") casa com 'coverage' E 'new_coverage'. Com condicoes nas
+        # duas dimensoes do gate, o startswith diferencia qual linha e qual.
         COV=$(echo "$GATE_JSON" | jq -r '
           .projectStatus.conditions[]
           | select(.metricKey | test("coverage"))
-          | "  COBERTURA: \(.actualValue)% (minimo exigido: \(.errorThreshold)%) -> \(.status)"' || true)
+          | "  COBERTURA (\(if (.metricKey | startswith("new_")) then "novo código" else "base completa" end)): \(.actualValue)% (minimo exigido: \(.errorThreshold)%) -> \(.status)"' || true)
         if [ -n "$COV" ]; then
           echo "$COV"
           echo ""
