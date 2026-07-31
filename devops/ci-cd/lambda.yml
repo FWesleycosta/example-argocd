@@ -1,359 +1,422 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform:
-    - AWS::LanguageExtensions
-    - AWS::Serverless-2016-10-31
+  - AWS::LanguageExtensions
+  - AWS::Serverless-2016-10-31
 
 Description: "Lambda Template "
 Parameters:
-    ApplicationName:
-        Type: "String"
-        Description: "The application name"
-        Default: "#{ApplicationName}#"
+  ApplicationName:
+    Type: "String"
+    Description: "The application name"
+    Default: "#{ApplicationName}#"
 
-    SecurityGroupVpcId:
-        Type: "String"
-        Description: "The security group VPC Id"
-        Default: "#{SecurityGroupVpcId}#"
+  SecurityGroupVpcId:
+    Type: "String"
+    Description: "The security group VPC Id"
+    Default: "#{SecurityGroupVpcId}#"
 
-    BasicExecutionRole:
-        Type: "String"
-        Description: "The role used to execute the services"
-        Default: "#{BasicExecutionRole}#"
+  BasicExecutionRole:
+    Type: "String"
+    Description: "The role used to execute the services"
+    Default: "#{BasicExecutionRole}#"
 
-    DeployVersion:
-        Type: String
-        Description: "The version file"
-        Default: "#{DeployVersion}#"
+  DeployVersion:
+    Type: String
+    Description: "The version file"
+    Default: "#{DeployVersion}#"
 
-    DeployBucketName:
-        Type: String
-        Description: "The bucket environment name"
-        Default: "#{DeployBucketName}#"
-        AllowedValues:
-            - "fibradevdeploy"
-            - "fibrahomdeploy"
-            - "fibraproddeploy"
+  DeployBucketName:
+    Type: String
+    Description: "The bucket environment name"
+    Default: "#{DeployBucketName}#"
+    AllowedValues:
+      - "fibradevdeploy"
+      - "fibrahomdeploy"
+      - "fibraproddeploy"
 
-    DeployFileName:
-        Type: String
-        Description: "File name for deployment"
-        Default: "#{DeployFileName}#"
+  DeployFileName:
+    Type: String
+    Description: "File name for deployment"
+    Default: "#{DeployFileName}#"
 
-    SubnetIdsList:
-        Type: CommaDelimitedList
-        Description: Select at least two subnets in your selected VPC.   
-        Default: "#{SubnetIds}#"
+  SubnetIdsList:
+    Type: CommaDelimitedList
+    Description: Select at least two subnets in your selected VPC.
+    Default: "#{SubnetIds}#"
 
-    Environment:
-        Type: String
-        Description: Environment application. ("prod" or "dev" or "hom" )  
-        Default: "#{Environment}#" #Use "prod" para Producao   
+  Environment:
+    Type: String
+    Description: Environment application. ("prod" or "dev" or "hom" )
+    Default: "#{Environment}#" #Use "prod" para Producao
 
-    DomainName:
-        Type: String
-        Description: Domain Name url
-        Default: "#{DomainName}#"  #Use "prod" para Producao   
+  DomainName:
+    Type: String
+    Description: Domain Name url
+    Default: "#{DomainName}#"  #Use "prod" para Producao
 
+  ApiBasePath:
+    Type: String
+    Description: Api BasePath url
+    Default: "#{ApiBasePath}#"  #Use "prod" para Producao
 
-    ApiBasePath:
-        Type: String
-        Description: Api BasePath url
-        Default: "#{ApiBasePath}#"  #Use "prod" para Producao   
+  MatrizAcessoUrlApi:
+    Type: String
+    Description: "URL da api matriz acesso"
+    Default: "#{MATRIZACESSO}#"
 
-    MatrizAcessoUrlApi:
-        Type: String
-        Description: "URL da api matriz acesso"
-        Default: "#{MATRIZACESSO}#"
+  ContaUrlApi:
+    Type: String
+    Description: "URL da api matriz acesso"
+    Default: "#{CONTAAPIURL}#"
 
-    ContaUrlApi:
-        Type: String
-        Description: "URL da api matriz acesso"
-        Default: "#{CONTAAPIURL}#"
+  FachadaValkeyURL:
+    Type: String
+    Description: "URL do Elastic Cache (VALKEY)"
+    Default: "#{FACHADA_VALKEY_ENDPOINT}#"
 
-    FachadaValkeyURL:
-        Type: String
-        Description: "URL do Elastic Cache (VALKEY)"
-        Default: "#{FACHADA_VALKEY_ENDPOINT}#" 
+  AutbankUrlApi:
+    Type: String
+    Description: "URL da api autbank"
+    Default: "#{AUTBANKURLAPI}#"
 
-    AutbankUrlApi:
-        Type: String
-        Description: "URL da api autbank"
-        Default: "#{AUTBANKURLAPI}#"
+  TransacoesUrlApi:
+    Type: String
+    Description: "URL da api transacoes"
+    Default: "#{URL_TRANSACOES_API}#"
 
-    TransacoesUrlApi:
-        Type: String
-        Description: "URL da api transacoes"
-        Default: "#{URL_TRANSACOES_API}#"
+  AgenciaUrlApi:
+    Type: String
+    Description: "URL da api agencia cc"
+    Default: "#{URL_AGENCIA_CC_API}#"
 
-    AgenciaUrlApi:
-        Type: String
-        Description: "URL da api agencia cc"
-        Default: "#{URL_AGENCIA_CC_API}#"
+  IBPixUrlApi:
+    Type: String
+    Description: "URL da api Fachada Pix"
+    Default: "#{URL_IBPIX_API}#"
 
-    IBPixUrlApi:
-        Type: String
-        Description: "URL da api Fachada Pix"
-        Default: "#{URL_IBPIX_API}#"
+  IBPagamentosUrlApi:
+    Type: String
+    Description: "URL da api pagamento"
+    Default: "#{URL_IBPAGAMENTOS_API}#"
 
-    IBPagamentosUrlApi:
-      Type: String
-      Description: "URL da api pagamento"
-      Default: "#{URL_IBPAGAMENTOS_API}#"
+  DatadogEnabled:
+    Type: String
+    Description: "Habilita a instrumentacao Datadog (true/false)"
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
 
+  DatadogApiKeySecretArn:
+    Type: String
+    Description: "ARN do secret no Secrets Manager com a API key do Datadog"
+    Default: "#{DatadogApiKeySecretArn}#"
+
+  DatadogSite:
+    Type: String
+    Description: "Site do Datadog"
+    Default: "datadoghq.com"
+
+  DatadogExtensionLayerVersion:
+    Type: String
+    Description: "Versao da layer Datadog-Extension-ARM (v98 lancada em 23/06/2026)"
+    Default: "98"
+
+  DatadogTraceLayerVersion:
+    Type: String
+    Description: "Versao da layer dd-trace-dotnet-ARM (v24, versao atual na doc oficial)"
+    Default: "24"
+
+  DatadogServiceVersion:
+    Type: String
+    Description: "Versao semantica do servico para DD_VERSION (deployment tracking)"
+    Default: "#{DatadogServiceVersion}#"
 
 
 Conditions:
-  IsProd: !Equals [ !Ref Environment, prod ]  
-  IsDev: !Equals [ !Ref Environment, dev ] 
+  IsProd: !Equals [ !Ref Environment, prod ]
+  IsDev: !Equals [ !Ref Environment, dev ]
   IsHom: !Equals [ !Ref Environment, hom ]
   IsSaoPaulo: !Equals [ !Ref "AWS::Region", sa-east-1 ]
   IsOhio: !Equals [ !Ref "AWS::Region", us-east-2 ]
+  EnableDatadog: !Equals [ !Ref DatadogEnabled, "true" ]
 
 
 Resources:
 
-    ApplSecurityGroup:
-        Type: "AWS::EC2::SecurityGroup"
-        DeletionPolicy: Delete
-        Properties:
-            GroupDescription: "Allow access to protected resources from outside a perimeter"
-            GroupName: !Sub "${ApplicationName}-security-group"  
-            VpcId: !Ref SecurityGroupVpcId
-            SecurityGroupIngress: 
-              - 
-                CidrIp: "10.140.0.0/1"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.20.0.0/16"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.22.0.0/16"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.30.0.0/16"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.32.0.0/16"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.44.16.0/20"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.61.0.0/16"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "172.30.16.0/20"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "192.168.240.0/20"
-                IpProtocol: "-1"
-              - !If 
-                - IsProd
-                - 
-                  CidrIp: "128.1.0.0/16"  # CidrIp10 para Prod
-                  IpProtocol: "-1"
-                - !Ref "AWS::NoValue"
-            SecurityGroupEgress: 
-                - 
-                    CidrIp: "0.0.0.0/0"
-                    IpProtocol: "-1"
+  ApplSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    DeletionPolicy: Delete
+    Properties:
+      GroupDescription: "Allow access to protected resources from outside a perimeter"
+      GroupName: !Sub "${ApplicationName}-security-group"
+      VpcId: !Ref SecurityGroupVpcId
+      SecurityGroupIngress:
+        -
+          CidrIp: "10.140.0.0/1"
+          IpProtocol: "-1"
+        -
+          CidrIp: "10.20.0.0/16"
+          IpProtocol: "-1"
+        -
+          CidrIp: "10.22.0.0/16"
+          IpProtocol: "-1"
+        -
+          CidrIp: "10.30.0.0/16"
+          IpProtocol: "-1"
+        -
+          CidrIp: "10.32.0.0/16"
+          IpProtocol: "-1"
+        -
+          CidrIp: "10.44.16.0/20"
+          IpProtocol: "-1"
+        -
+          CidrIp: "10.61.0.0/16"
+          IpProtocol: "-1"
+        -
+          CidrIp: "172.30.16.0/20"
+          IpProtocol: "-1"
+        -
+          CidrIp: "192.168.240.0/20"
+          IpProtocol: "-1"
+        - !If
+          - IsProd
+          -
+            CidrIp: "128.1.0.0/16"  # CidrIp10 para Prod
+            IpProtocol: "-1"
+          - !Ref "AWS::NoValue"
+      SecurityGroupEgress:
+        -
+          CidrIp: "0.0.0.0/0"
+          IpProtocol: "-1"
 
-    IAMRole:
-        Type: "AWS::IAM::Role"
-        DeletionPolicy: Delete
-        Properties:
-            Path: "/"
-            RoleName: !Ref BasicExecutionRole
-            AssumeRolePolicyDocument: !Sub "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"lambda.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"},{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"scheduler.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"},{\"Effect\":\"Allow\",\"Principal\":{\"Service\":[\"states.${AWS::Region}.amazonaws.com\",\"states.amazonaws.com\"]},\"Action\":\"sts:AssumeRole\"}]}"
-            MaxSessionDuration: 3600
-            ManagedPolicyArns: 
-              - "arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess"
-              - "arn:aws:iam::aws:policy/AmazonVPCCrossAccountNetworkInterfaceOperations"
-              - "arn:aws:iam::aws:policy/CloudWatchFullAccess"
-              - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-              - "arn:aws:iam::aws:policy/service-role/AWSLambdaRole"
-              - "arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess"
-              - !Sub "arn:aws:iam::${AWS::AccountId}:policy/LiberarAcessoGetSecretManager"
-            Policies:
-              - PolicyName: !Sub "${ApplicationName}-s3-extrato-lifecycle"
-                PolicyDocument:
-                  Version: "2012-10-17"
-                  Statement:
-                    - Sid: S3ExtratoTemporarioLifecycleEObjetos
-                      Effect: Allow
-                      Action:
-                        - s3:GetLifecycleConfiguration
-                        - s3:PutLifecycleConfiguration
-                        - s3:GetBucketLocation
-                        - s3:ListBucket
-                        - s3:PutObject
-                        - s3:GetObject
-                        - s3:DeleteObject
-                      Resource: "*"
-
-
-    LogGroupLambda:
-        Type: "AWS::Logs::LogGroup"
-        DeletionPolicy: Delete
-        Properties:
-            LogGroupName: !Sub "/aws/lambda/${ApplicationName}"
-            RetentionInDays: 7
-
-    LogGroupApiGateway:
-        Type: "AWS::Logs::LogGroup"
-        DeletionPolicy: Delete
-        Properties:
-            LogGroupName: !Sub "/aws/ApiGateway/${ApplicationName}"
-            RetentionInDays: 7
-
-    LambdaFunction:
-        Type: "AWS::Serverless::Function"
-        DeletionPolicy: Delete
-        Properties:
-            Description: ""
-            Environment:
-                Variables: 
-                    TimeZoneId: "E. South America Standard Time"
-                    ASPNETCORE_ENVIRONMENT: "#{Environment}#"
-                    #Ativar em PRD, apos deploy
-                    PARAMETERS_SECRETS_EXTENSION_CACHE_ENABLED: false
-                    PARAMETERS_SECRETS_EXTENSION_LOG_LEVEL: debug
-                    PARAMETERS_SECRETS_EXTENSION_HTTP_PORT: 2773
-                    PARAMETERS_SECRETS_EXTENSION_CACHE_TTL: 300
-                    PARAMETERS_SECRETS_EXTENSION_MAX_CACHE_SIZE: 100
-                    PARAMETERS_SECRETS_EXTENSION_MAX_CONNECTIONS: 10
-                    PARAMETERS_SECRETS_EXTENSION_WAITING_MILISECONDS: 100
-                    SECRETS_MANAGER_TIMEOUT_MILLIS: 1000
-                    SECRETS_MANAGER_TTL: 300
-                    SECRETS_MANAGER_OBTER_APP_SETTINGS: true
-                    URL_MATRIZACESSO_API: !Ref MatrizAcessoUrlApi
-                    URL_CONTA_API: !Ref ContaUrlApi
-                    URL_AUTBANK_API: !Ref AutbankUrlApi
-                    FACHADA_VALKEY_ENDPOINT: !Ref FachadaValkeyURL
-                    URL_TRANSACOES_API: !Ref TransacoesUrlApi
-                    URL_AGENCIA_CC_API: !Ref AgenciaUrlApi
-                    URL_IBPIX_API: !Ref IBPixUrlApi
-                    URL_PAGAMENTOS_API: !Ref IBPagamentosUrlApi
-                    AbsoluteExpirationRelativeToNow: 1
-                    SlidingExpiration: 60
-            Layers:
-                # Layer ARN definido condicionalmente com base na região (São Paulo ou Ohio)
-                - !If 
-                  - IsSaoPaulo
-                  - arn:aws:lambda:sa-east-1:933737806257:layer:AWS-Parameters-and-Secrets-Lambda-Extension-Arm64:14
-                  - arn:aws:lambda:us-east-2:590474943231:layer:AWS-Parameters-and-Secrets-Lambda-Extension-Arm64:21
-            FunctionName: !Ref ApplicationName
-            Handler: "Fibra.IB.Fachada.Lambda.API::Fibra.IB.Fachada.Lambda.API.LambdaEntryPoint::FunctionHandlerAsync"
-            Architectures:
-                - "arm64"
-            CodeUri:
-                Bucket: !Sub "#{Environment}#-${AWS::Region}-#{ApplicationName}#"
-                Key: !Ref DeployFileName
-                Version: !Ref DeployVersion
-            MemorySize: 1024
-            Role: !GetAtt IAMRole.Arn
-            Runtime: "dotnet8"
-            Timeout: 120
-            Tracing: "PassThrough"
-            VpcConfig:
-                SubnetIds: !Ref SubnetIdsList
-                SecurityGroupIds: 
-                    - !Ref ApplSecurityGroup
-            EphemeralStorage:
-                Size: 512
-            SnapStart:
-                ApplyOn: !If [IsProd, PublishedVersions, None]
-            AutoPublishAlias: publicacao
-            AutoPublishAliasAllProperties: true
-
-    ApiGatewayRestApi:
-        Type: "AWS::ApiGateway::RestApi"
-        DeletionPolicy: Delete
-        Properties: 
-            Name: !Sub "${ApplicationName}-API"
-            Description: "API Gateway"
-            EndpointConfiguration:
-                Types: 
-                    - REGIONAL
-            BinaryMediaTypes:
-                - "*/*"
-                - "application/pdf"
-                - "application/octet-stream"
-
-    ApiGatewayResource:
-      Type: "AWS::ApiGateway::Resource"
-      DeletionPolicy: Delete
-      Properties: 
-        ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
-        PathPart: "{proxy+}"
-        RestApiId: !Ref ApiGatewayRestApi
-
-    ApiGatewayMethod:
-      Type: "AWS::ApiGateway::Method"
-      DeletionPolicy: Delete
-      Properties:
-        ApiKeyRequired: true #Apikey obrigatorio 
-        AuthorizationType: "NONE"
-        HttpMethod: "ANY"
-        ResourceId: !Ref ApiGatewayResource
-        RestApiId: !Ref ApiGatewayRestApi
-        Integration:
-            IntegrationHttpMethod: "POST"
-            Type: "AWS_PROXY"
-            Uri: 
-                Fn::Sub: 
-                - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAlias}/invocations"
-                - LambdaAlias: !Ref LambdaFunction.Alias
-
-    LambdaInvokePermission:
-        Type: "AWS::Lambda::Permission"
-        Properties:
-            Action: "lambda:InvokeFunction"
-            FunctionName: !Ref LambdaFunction.Alias
-            Principal: "apigateway.amazonaws.com"
-            SourceArn: 
-                Fn::Sub: 
-                - "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*"
-                - ApiGatewayRestApi: !Ref ApiGatewayRestApi
+  IAMRole:
+    Type: "AWS::IAM::Role"
+    DeletionPolicy: Delete
+    Properties:
+      Path: "/"
+      RoleName: !Ref BasicExecutionRole
+      AssumeRolePolicyDocument: !Sub "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"lambda.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"},{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"scheduler.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"},{\"Effect\":\"Allow\",\"Principal\":{\"Service\":[\"states.${AWS::Region}.amazonaws.com\",\"states.amazonaws.com\"]},\"Action\":\"sts:AssumeRole\"}]}"
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess"
+        - "arn:aws:iam::aws:policy/AmazonVPCCrossAccountNetworkInterfaceOperations"
+        - "arn:aws:iam::aws:policy/CloudWatchFullAccess"
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaRole"
+        - "arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess"
+        - !Sub "arn:aws:iam::${AWS::AccountId}:policy/LiberarAcessoGetSecretManager"
+      Policies:
+        - PolicyName: !Sub "${ApplicationName}-s3-extrato-lifecycle"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3ExtratoTemporarioLifecycleEObjetos
+                Effect: Allow
+                Action:
+                  - s3:GetLifecycleConfiguration
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: "*"
+        # Acesso ao secret da API key do Datadog (usado pela Datadog Extension)
+        - !If
+          - EnableDatadog
+          - PolicyName: !Sub "${ApplicationName}-datadog-secret"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Sid: DatadogApiKeySecretRead
+                  Effect: Allow
+                  Action:
+                    - secretsmanager:GetSecretValue
+                  Resource: !Ref DatadogApiKeySecretArn
+          - !Ref "AWS::NoValue"
 
 
-    ApiGatewayDeployment:
-      Type: "AWS::ApiGateway::Deployment"
-      DeletionPolicy: Delete
-      Properties: 
-        RestApiId: !Ref ApiGatewayRestApi
-        StageName: !Ref Environment
-        StageDescription:
-            LoggingLevel: INFO
-            AccessLogSetting:
-                DestinationArn: !GetAtt LogGroupApiGateway.Arn
-                Format: '{ "requestId": "$context.requestId", "path": "$context.path", "requestTime": "$context.requestTime", "httpMethod": "$context.httpMethod","statusCode": "$context.status", "errorMessage": "$context.error.message" }'
-      DependsOn: ApiGatewayMethod
+  LogGroupLambda:
+    Type: "AWS::Logs::LogGroup"
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ApplicationName}"
+      RetentionInDays: 7
 
-    # add apigateway to custon domain name:
-    ApiGatewayCustomDomainName:
-      Type: AWS::ApiGateway::BasePathMapping
-      DeletionPolicy: Delete
-      Properties:
-        BasePath: !Ref ApiBasePath
-        DomainName: !Ref DomainName
-        RestApiId: !Ref ApiGatewayRestApi
-        Stage: !Ref Environment
-      DependsOn: [LambdaFunction, ApiGatewayDeployment]
+  LogGroupApiGateway:
+    Type: "AWS::Logs::LogGroup"
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/ApiGateway/${ApplicationName}"
+      RetentionInDays: 7
 
-    # create usage plan
-    UsagePlan:
-      Type: 'AWS::ApiGateway::UsagePlan'
-      DeletionPolicy: Delete
-      Properties:
-        ApiStages:
-          - ApiId: !Ref ApiGatewayRestApi
-            Stage: !Ref Environment
-        Description: Usage plan
-        Throttle:
-          BurstLimit: 200
-          RateLimit: 100
-        UsagePlanName: !Sub "plan-${ApplicationName}-API"
-      DependsOn: [LambdaFunction, ApiGatewayDeployment]
+  LambdaFunction:
+    Type: "AWS::Serverless::Function"
+    DeletionPolicy: Delete
+    Properties:
+      Description: ""
+      Environment:
+        Variables:
+          TimeZoneId: "E. South America Standard Time"
+          ASPNETCORE_ENVIRONMENT: "#{Environment}#"
+          #Ativar em PRD, apos deploy
+          PARAMETERS_SECRETS_EXTENSION_CACHE_ENABLED: false
+          PARAMETERS_SECRETS_EXTENSION_LOG_LEVEL: debug
+          PARAMETERS_SECRETS_EXTENSION_HTTP_PORT: 2773
+          PARAMETERS_SECRETS_EXTENSION_CACHE_TTL: 300
+          PARAMETERS_SECRETS_EXTENSION_MAX_CACHE_SIZE: 100
+          PARAMETERS_SECRETS_EXTENSION_MAX_CONNECTIONS: 10
+          PARAMETERS_SECRETS_EXTENSION_WAITING_MILISECONDS: 100
+          SECRETS_MANAGER_TIMEOUT_MILLIS: 1000
+          SECRETS_MANAGER_TTL: 300
+          SECRETS_MANAGER_OBTER_APP_SETTINGS: true
+          URL_MATRIZACESSO_API: !Ref MatrizAcessoUrlApi
+          URL_CONTA_API: !Ref ContaUrlApi
+          URL_AUTBANK_API: !Ref AutbankUrlApi
+          FACHADA_VALKEY_ENDPOINT: !Ref FachadaValkeyURL
+          URL_TRANSACOES_API: !Ref TransacoesUrlApi
+          URL_AGENCIA_CC_API: !Ref AgenciaUrlApi
+          URL_IBPIX_API: !Ref IBPixUrlApi
+          URL_PAGAMENTOS_API: !Ref IBPagamentosUrlApi
+          AbsoluteExpirationRelativeToNow: 1
+          SlidingExpiration: 60
+          AWS_LAMBDA_EXEC_WRAPPER: !If [EnableDatadog, "/opt/datadog_wrapper", !Ref "AWS::NoValue"]
+          DD_SITE: !If [EnableDatadog, !Ref DatadogSite, !Ref "AWS::NoValue"]
+          DD_API_KEY_SECRET_ARN: !If [EnableDatadog, !Ref DatadogApiKeySecretArn, !Ref "AWS::NoValue"]
+          DD_TRACE_ENABLED: !If [EnableDatadog, "true", !Ref "AWS::NoValue"]
+          DD_ENHANCED_METRICS: !If [EnableDatadog, "false", !Ref "AWS::NoValue"]
+          DD_LOGS_ENABLED: !If [EnableDatadog, "false", !Ref "AWS::NoValue"]
+          DD_SERVERLESS_LOGS_ENABLED: !If [EnableDatadog, "false", !Ref "AWS::NoValue"]
+          DD_CAPTURE_LAMBDA_PAYLOAD: !If [EnableDatadog, "true", !Ref "AWS::NoValue"]
+          DD_ENV: !If [EnableDatadog, !Ref Environment, !Ref "AWS::NoValue"]
+          DD_SERVICE: !If [EnableDatadog, !Ref ApplicationName, !Ref "AWS::NoValue"]
+          DD_VERSION: !If [EnableDatadog, !Ref DatadogServiceVersion, !Ref "AWS::NoValue"]
+      Layers:
+        # Layer ARN definido condicionalmente com base na região (São Paulo ou Ohio)
+        - !If
+          - IsSaoPaulo
+          - arn:aws:lambda:sa-east-1:933737806257:layer:AWS-Parameters-and-Secrets-Lambda-Extension-Arm64:14
+          - arn:aws:lambda:us-east-2:590474943231:layer:AWS-Parameters-and-Secrets-Lambda-Extension-Arm64:21
+        # Layers Datadog (variantes ARM, pois a funcao roda em arm64)
+        - !If
+          - EnableDatadog
+          - !Sub "arn:aws:lambda:${AWS::Region}:464622532012:layer:Datadog-Extension-ARM:${DatadogExtensionLayerVersion}"
+          - !Ref "AWS::NoValue"
+        - !If
+          - EnableDatadog
+          - !Sub "arn:aws:lambda:${AWS::Region}:464622532012:layer:dd-trace-dotnet-ARM:${DatadogTraceLayerVersion}"
+          - !Ref "AWS::NoValue"
+      FunctionName: !Ref ApplicationName
+      Handler: "Fibra.IB.Fachada.Lambda.API::Fibra.IB.Fachada.Lambda.API.LambdaEntryPoint::FunctionHandlerAsync"
+      Architectures:
+        - "arm64"
+      CodeUri:
+        Bucket: !Sub "#{Environment}#-${AWS::Region}-#{ApplicationName}#"
+        Key: !Ref DeployFileName
+        Version: !Ref DeployVersion
+      MemorySize: 1024
+      Role: !GetAtt IAMRole.Arn
+      Runtime: "dotnet8"
+      Timeout: 120
+      Tracing: "PassThrough"
+      VpcConfig:
+        SubnetIds: !Ref SubnetIdsList
+        SecurityGroupIds:
+          - !Ref ApplSecurityGroup
+      EphemeralStorage:
+        Size: 512
+      SnapStart:
+        ApplyOn: !If [IsProd, PublishedVersions, None]
+      AutoPublishAlias: publicacao
+      AutoPublishAliasAllProperties: true
+
+  ApiGatewayRestApi:
+    Type: "AWS::ApiGateway::RestApi"
+    DeletionPolicy: Delete
+    Properties:
+      Name: !Sub "${ApplicationName}-API"
+      Description: "API Gateway"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      BinaryMediaTypes:
+        - "*/*"
+        - "application/pdf"
+        - "application/octet-stream"
+
+  ApiGatewayResource:
+    Type: "AWS::ApiGateway::Resource"
+    DeletionPolicy: Delete
+    Properties:
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: "{proxy+}"
+      RestApiId: !Ref ApiGatewayRestApi
+
+  ApiGatewayMethod:
+    Type: "AWS::ApiGateway::Method"
+    DeletionPolicy: Delete
+    Properties:
+      ApiKeyRequired: true #Apikey obrigatorio
+      AuthorizationType: "NONE"
+      HttpMethod: "ANY"
+      ResourceId: !Ref ApiGatewayResource
+      RestApiId: !Ref ApiGatewayRestApi
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri:
+          Fn::Sub:
+            - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAlias}/invocations"
+            - LambdaAlias: !Ref LambdaFunction.Alias
+
+  LambdaInvokePermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref LambdaFunction.Alias
+      Principal: "apigateway.amazonaws.com"
+      SourceArn:
+        Fn::Sub:
+          - "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*"
+          - ApiGatewayRestApi: !Ref ApiGatewayRestApi
 
 
+  ApiGatewayDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    DeletionPolicy: Delete
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      StageName: !Ref Environment
+      StageDescription:
+        LoggingLevel: INFO
+        AccessLogSetting:
+          DestinationArn: !GetAtt LogGroupApiGateway.Arn
+          Format: '{ "requestId": "$context.requestId", "path": "$context.path", "requestTime": "$context.requestTime", "httpMethod": "$context.httpMethod","statusCode": "$context.status", "errorMessage": "$context.error.message" }'
+    DependsOn: ApiGatewayMethod
+
+  # add apigateway to custon domain name:
+  ApiGatewayCustomDomainName:
+    Type: AWS::ApiGateway::BasePathMapping
+    DeletionPolicy: Delete
+    Properties:
+      BasePath: !Ref ApiBasePath
+      DomainName: !Ref DomainName
+      RestApiId: !Ref ApiGatewayRestApi
+      Stage: !Ref Environment
+    DependsOn: [LambdaFunction, ApiGatewayDeployment]
+
+  # create usage plan
+  UsagePlan:
+    Type: 'AWS::ApiGateway::UsagePlan'
+    DeletionPolicy: Delete
+    Properties:
+      ApiStages:
+        - ApiId: !Ref ApiGatewayRestApi
+          Stage: !Ref Environment
+      Description: Usage plan
+      Throttle:
+        BurstLimit: 200
+        RateLimit: 100
+      UsagePlanName: !Sub "plan-${ApplicationName}-API"
+    DependsOn: [LambdaFunction, ApiGatewayDeployment]
