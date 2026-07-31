@@ -1,0 +1,491 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Deploy de API
+
+Parameters:
+    FibraVpc: 
+        Type: AWS::EC2::VPC::Id
+        Description: "VPC do ambiente"
+    Subnets:
+        Type: List<AWS::EC2::Subnet::Id>
+        Description: "Lista das subnets que a api (container) deve rodar"
+    ECRAPIRepositoryName:
+        Type: String
+        Description: "Nome do repositorio da imagem do container."
+        Default: "ecr-tidigital-transacoes-api"
+    ECRAPIImageVersion:
+        Type: String
+        Description: "Versao da imagem."
+        Default: "latest"
+    APIName:
+        Type: String
+        Description: "Nome da API no API Gateway" 
+        Default : "tidigital-transacoes-api"
+    APIBasePath:
+        Type: String
+        Description: "Dominio/BasePath (DDD) da API. O /<nome> depois da url da API. Ex.: credito em  api.bancofibra.com.br/credito"
+        Default : "tidigital-transacoes"
+    APIPort:
+        Type: Number
+        Description: "Porta da API no load balancer"
+        Default: "5026"
+    DeployDate:
+        Type: String
+        Description: "Data do Deploy. Importante para forcar o deploy do API GAteway"
+        Default: "2020-10-28"
+    Environment:
+        Type: String
+        Description: "Ambiente da publicacao da versao."
+        Default: "hml"
+        AllowedValues:
+            - lab
+            - dev
+            - hml
+            - prod
+    S3StageBucketName:
+        Type: String
+        Default: "ibpjwebsite-fibra-stage"
+        Description: Name for the s3 bucket that will store the raw data.        
+    DllName:
+        Type: String
+        Description: "Dll gerada no dockerfile."
+        Default: "Transacoes.Web.API.dll"
+
+
+Conditions:
+    IsProd: !Equals 
+        - !Ref Environment
+        - "prod"
+    NotLab: !Not [ !Equals [ !Ref Environment,"lab" ] ]  
+
+Mappings: 
+    ClusterName: 
+        us-east-2: 
+            "lab": "poc"
+            "dev": "ecs-dev"
+            "hml": "ECS-CL-HOM-OHIO"
+            "prod": "ECS-CL-PRD-OHIO"
+    AspnetEnv: 
+        dev: 
+            Name: Development
+        hml: 
+            Name: Homol
+        prod: 
+            Name: Production
+    APIDomainName:
+        dev: 
+            Name: apidev.bancofibra.com.br
+        hml: 
+            Name: apihml.bancofibra.com.br
+        prod: 
+            Name: api.bancofibra.com.br
+Resources:
+    APITaskExecutionRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Statement:
+                - Effect: Allow
+                  Principal:
+                    Service: ecs-tasks.amazonaws.com
+                  Action: 'sts:AssumeRole'
+
+            Path: /
+            Policies:
+            - PolicyName: APIECSTaskExecutionRolePolicy
+              PolicyDocument:
+                Statement:
+                    - Effect: Allow
+                      Action:
+                        # Allow the ECS Tasks to download images from ECR
+                        - 'ecr:GetAuthorizationToken'
+                        - 'ecr:BatchCheckLayerAvailability'
+                        - 'ecr:GetDownloadUrlForLayer'
+                        - 'ecr:BatchGetImage'
+
+                        # Allow the ECS tasks to upload logs to CloudWatch
+                        - 'logs:CreateLogStream'
+                        - 'logs:CreateLogGroup'
+                        - 'logs:PutLogEvents'
+                      Resource: '*'
+                    - Effect: Allow
+                      Action: 
+                        - 'ssm:GetParameters'
+                      Resource: 
+                        - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/TiDig/Transfer-Api*'
+                    - Effect: Allow
+                      Action: 
+                        - 's3:*'
+                      Resource: 
+                        - !Sub 'arn:aws:s3:::${S3StageBucketName}'
+                        - !Sub 'arn:aws:s3:::${S3StageBucketName}/*'                        
+    APITargetGroup:
+        Type: AWS::ElasticLoadBalancingV2::TargetGroup
+        Properties:
+            Name: !Join [ "-", ["tg", !Ref APIBasePath, "api" ] ]
+            HealthCheckIntervalSeconds: 30
+            HealthCheckProtocol: TCP
+            HealthyThresholdCount: 3
+            UnhealthyThresholdCount: 3
+            TargetType: ip
+            Port: 80
+            Protocol: TCP
+            VpcId: !Ref FibraVpc
+
+    APILoadBalancerListener:
+        Type: AWS::ElasticLoadBalancingV2::Listener
+        Properties:
+            DefaultActions:
+            - TargetGroupArn: !Ref APITargetGroup
+              Type: 'forward'
+            LoadBalancerArn: !ImportValue 'nlb-api-01'
+            Port: !Ref APIPort
+            Protocol: TCP
+
+    APITaskDefinition:
+        Type: AWS::ECS::TaskDefinition
+        DependsOn: APITaskExecutionRole
+        Properties:
+            Family: !Join [ "-", ["tsk", !Ref ECRAPIRepositoryName ] ]
+            Cpu: !If [IsProd, 512, 256] 
+            Memory: !If [IsProd, 1024, 512] 
+            NetworkMode: awsvpc
+            RequiresCompatibilities:
+                - FARGATE
+            ExecutionRoleArn: !GetAtt APITaskExecutionRole.Arn
+            TaskRoleArn: !GetAtt APITaskExecutionRole.Arn
+            ContainerDefinitions:
+                - Name: !Join [ "-", ["ctn", !Ref ECRAPIRepositoryName ] ]
+                  Environment: 
+                    - Name: AWS_ACCOUNT_ID
+                      Value: !Sub "${AWS::AccountId}"
+                    - Name: AWS_REGION
+                      Value: !Sub "${AWS::Region}"
+                    - Name: ASPNETCORE_ENVIRONMENT
+                      Value: !FindInMap [AspnetEnv, !Ref Environment, Name]
+                    - Name: "IBPJ-REDIS-ENDPOINT"
+                      Value: !ImportValue ibpj-redis-address                      
+
+                  Image: 
+                    !Join
+                    - ''
+                    - - !Ref 'AWS::AccountId'
+                      - '.dkr.ecr.'
+                      - !Ref 'AWS::Region'
+                      - '.'
+                      - !Ref 'AWS::URLSuffix'
+                      - '/'
+                      - !Ref ECRAPIRepositoryName
+                      - ':'
+                      - !Ref ECRAPIImageVersion
+                  PortMappings:
+                      - ContainerPort: 80
+                  LogConfiguration:
+                      LogDriver: awslogs
+                      Options:
+                        awslogs-group: !Join [ "-", ["ecs/tsk-", !Ref ECRAPIRepositoryName ] ]
+                        awslogs-create-group: true
+                        awslogs-region: !Ref 'AWS::Region'
+                        awslogs-stream-prefix: ecs
+
+    APIPRDTaskDefinition:
+        Type: AWS::ECS::TaskDefinition
+        DependsOn: APITaskExecutionRole
+        Properties:
+            Family: !Join [ "-", ["tsk", !Ref ECRAPIRepositoryName ] ]
+            Cpu: !If [IsProd, 512, 256] 
+            Memory: !If [IsProd, 1024, 512] 
+            NetworkMode: awsvpc
+            RequiresCompatibilities:
+                - FARGATE
+            ExecutionRoleArn: !GetAtt APITaskExecutionRole.Arn
+            TaskRoleArn: !GetAtt APITaskExecutionRole.Arn
+            Volumes:
+                - Name: oneagent
+            ContainerDefinitions:
+                - Name: !Join [ "-", ["ctn", !Ref ECRAPIRepositoryName ] ]
+                  EntryPoint:
+                    - /var/lib/twistlock/fargate/fargate_defender.sh    #########################################
+                    - fargate                                           #      Do not modify those 3 lines      # 
+                    - entrypoint                                        ######################################### 
+                    - dotnet
+                    - !Ref DllName
+                  LinuxParameters:
+                    Capabilities:
+                      Add:
+                        - SYS_PTRACE
+                  Environment: 
+                    - Name: AWS_ACCOUNT_ID
+                      Value: !Sub "${AWS::AccountId}"
+                    - Name: AWS_REGION
+                      Value: !Sub "${AWS::Region}"
+                    - Name: ASPNETCORE_ENVIRONMENT
+                      Value: !FindInMap [AspnetEnv, !Ref Environment, Name]
+                    - Name: LD_PRELOAD
+                      Value: /opt/dynatrace/oneagent/agent/lib64/liboneagentproc.so
+                    - Name: "IBPJ-REDIS-ENDPOINT"
+                      Value: !ImportValue ibpj-redis-address                      
+                    - Name: DEFENDER_TYPE
+                      Value: fargate
+                    - Name: FARGATE_TASK
+                      Value: !Join [ "-", ["tsk-", !Ref ECRAPIRepositoryName ] ]                
+                    - Name: TW_CONTAINER_NAME
+                      Value: !Join [ "-", ["ctn", !Ref ECRAPIRepositoryName ] ]
+                    - Name: TW_IMAGE_NAME
+                      Value: !Join [ "-", ["ctn", !Ref ECRAPIRepositoryName ] ]
+                  VolumesFrom:
+                    - SourceContainer: TwistlockDefender
+                      ReadOnly: false
+                  DependsOn:
+                    - ContainerName: install-oneagent
+                      Condition: COMPLETE
+                    - ContainerName: TwistlockDefender
+                      Condition: START
+                  MountPoints:
+                    - ContainerPath: /opt/dynatrace/oneagent
+                      SourceVolume: oneagent
+                  Essential: true
+                  Image: 
+                    !Join
+                    - ''
+                    - - !Ref 'AWS::AccountId'
+                      - '.dkr.ecr.'
+                      - !Ref 'AWS::Region'
+                      - '.'
+                      - !Ref 'AWS::URLSuffix'
+                      - '/'
+                      - !Ref ECRAPIRepositoryName
+                      - ':'
+                      - !Ref ECRAPIImageVersion
+                  PortMappings:
+                      - ContainerPort: 80
+                  LogConfiguration:
+                      LogDriver: awslogs
+                      Options:
+                        awslogs-group: !Join [ "-", ["ecs/tsk-", !Ref ECRAPIRepositoryName ] ]
+                        awslogs-create-group: true
+                        awslogs-region: !Ref 'AWS::Region'
+                        awslogs-stream-prefix: ecs
+                -
+                  LogConfiguration:
+                    LogDriver: awslogs
+                    Options:
+                        awslogs-group: !Join [ "-", ["ecs/tsk-", !Ref ECRAPIRepositoryName ] ]
+                        awslogs-create-group: true
+                        awslogs-region: !Ref 'AWS::Region'
+                        awslogs-stream-prefix: ecs
+                  EntryPoint:
+                    - /bin/sh
+                    - -c
+                  Cpu: 0
+                  Environment:
+                  MountPoints:
+                    - ContainerPath: /opt/dynatrace/oneagent
+                      SourceVolume: oneagent
+                  VolumesFrom: []
+                  Image: !Ref DynatraceImage
+                  Essential: false
+                  Name: install-oneagent
+                  Command:
+                    - "ARCHIVE=$(mktemp) && wget -O $ARCHIVE \"$DT_API_URL/v1/deployment/installer/agent/unix/paas/latest?Api-Token=$DT_PAAS_TOKEN&$DT_ONEAGENT_OPTIONS\" && unzip -o -d /opt/dynatrace/oneagent $ARCHIVE && rm -f $ARCHIVE"
+                -
+                  LogConfiguration:
+                    LogDriver: awslogs
+                    Options:
+                        awslogs-group: !Join [ "-", ["ecs/tsk-", !Ref ECRAPIRepositoryName ] ]
+                        awslogs-create-group: true
+                        awslogs-region: !Ref 'AWS::Region'
+                        awslogs-stream-prefix: ecs
+
+                  EntryPoint:
+                    - /usr/local/bin/defender
+                    - fargate
+                    - sidecar
+                  Cpu: 0
+                  Environment:
+                    - Name: DEFENDER_TYPE
+                      Value: fargate
+                    - Name: FARGATE_TASK
+                      Value: !Join [ "-", ["tsk-", !Ref ECRAPIRepositoryName ] ]
+                    - Name: INSTALL_BUNDLE
+                      Value: eyJzZWNyZXRzIjp7InNlcnZpY2UtcGFyYW1ldGVyIjoiQUJtUkZkVDNPK3pnRHVYVWVjSWo1WkVlWlRPeG83VFZ0RkdjZlZQY3lHc3AzNEZmdXBjaEdFT0JMV3didjVzTXZjaUtEcHZFVjQ2OFBIQm5Hc2RBT3c9PSJ9LCJnbG9iYWxQcm94eU9wdCI6eyJodHRwUHJveHkiOiJwcm94eS5iYW5jb2ZpYnJhLmludDo4MDgwIiwibm9Qcm94eSI6IiIsImNhIjoiIiwidXNlciI6ImFyZWRvIiwicGFzc3dvcmQiOnsiZW5jcnlwdGVkIjoiM2pYczBtbHVMZ2ZNR2hkcmlqTCs2WHlqL3JLSnBYUXY2b2xSZEpIVHRIRT0ifX0sImN1c3RvbWVySUQiOiJ1cy0yLTE1ODI4Njc5NiIsImFwaUtleSI6ImlQcnpDNU1UZm1ONU5nSWVWMEM4RitXZ0dtdFl0SnV5K0lWSkt5UE1iK2Evdmk0Y25TQXFWL2Z2R1ZVOVJNQTZ4OStESFFtZVVpb0JJaXFCRFU2YURRPT0iLCJtaWNyb3NlZ0NvbXBhdGlibGUiOmZhbHNlfQ==
+                    - Name: WS_ADDRESS
+                      Value: 'wss://us-east1.cloud.twistlock.com:443'
+                  MountPoints: []
+                  VolumesFrom: []
+                  Image: !Ref DefenderImage
+                  Essential: true
+                  Name: TwistlockDefender      
+
+    APIContainerSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: Access to the Fargate containers
+            VpcId: !Ref FibraVpc
+            SecurityGroupIngress:
+                - CidrIp: 0.0.0.0/0
+                  IpProtocol: tcp
+                  FromPort: 80
+                  ToPort: 80
+
+    APIService:
+        Type: AWS::ECS::Service
+        DependsOn: APILoadBalancerListener
+        Properties:
+            ServiceName: !Join [ "-", ["svc", !Ref ECRAPIRepositoryName ] ]
+            Cluster: 
+                !Join
+                    - ''
+                    - - 'arn:aws:ecs:'
+                      - !Ref 'AWS::Region'
+                      - ':'
+                      - !Ref 'AWS::AccountId'
+                      - ':cluster/'
+                      - !FindInMap [ClusterName, !Ref 'AWS::Region', !Ref Environment]
+            LaunchType: FARGATE
+            DeploymentConfiguration:
+                MaximumPercent: 200
+                MinimumHealthyPercent: 100
+            DesiredCount: !If [IsProd, 2, 1]
+            NetworkConfiguration:
+                AwsvpcConfiguration:
+                    SecurityGroups:
+                    - !Ref APIContainerSecurityGroup
+                    Subnets: !Ref Subnets
+            TaskDefinition: !If [IsProd, !Ref APIPRDTaskDefinition, !Ref APIPRDTaskDefinition]
+            LoadBalancers:
+            - ContainerName: !Join [ "-", ["ctn", !Ref ECRAPIRepositoryName ] ]
+              ContainerPort: 80
+              TargetGroupArn: !Ref APITargetGroup
+
+    API:
+        Type: AWS::ApiGateway::RestApi
+        Properties:
+            Name: !Ref APIName
+            EndpointConfiguration:
+                Types:
+                    - REGIONAL
+
+    APIProxyResource: 
+        Type: AWS::ApiGateway::Resource
+        Properties:
+            RestApiId: !Ref API
+            PathPart: '{proxy+}'
+            ParentId: !GetAtt
+                - API
+                - RootResourceId
+
+    APIProxyAnyMethod: 
+        Type: AWS::ApiGateway::Method
+        Properties:
+            RestApiId: !Ref API
+            ResourceId: !Ref APIProxyResource
+            AuthorizationType: NONE
+            # AuthorizerId: !Ref CustomAuthorizer
+            ApiKeyRequired: true
+            HttpMethod: ANY
+            RequestParameters:
+                method.request.path.proxy: true
+            Integration:
+                ConnectionType: VPC_LINK
+                ConnectionId: !ImportValue 'vpclink-api-01'
+                IntegrationHttpMethod: ANY
+                Type: HTTP_PROXY
+                RequestParameters:
+                    integration.request.path.proxy: method.request.path.proxy
+                Uri: !Join
+                    - ''
+                    - - 'http://'
+                      - !FindInMap [APIDomainName, !Ref Environment, Name]
+                      - ':'
+                      - !Ref APIPort
+                      - '/{proxy}'
+
+    # CustomAuthorizer:
+    #     Type: AWS::ApiGateway::Authorizer
+    #     Properties:
+    #         AuthorizerResultTtlInSeconds: '0'
+    #         AuthorizerUri: !Join 
+    #           - ''
+    #           - - 'arn:aws:apigateway:'
+    #             - !Ref 'AWS::Region'
+    #             - ':lambda:path/2015-03-31/functions/'
+    #             - !ImportValue 'SSOLambdaAuthorizer'
+    #             - /invocations
+    #         Type: TOKEN
+    #         IdentitySource: method.request.header.Authorization
+    #         Name: SSOAuthorization
+    #         RestApiId: !Ref API
+    # 
+    # ConfigLambdaPermission:
+    #     Type: AWS::Lambda::Permission
+    #     DependsOn:
+    #         - API
+    #     Properties:
+    #         Action: lambda:InvokeFunction
+    #         FunctionName: !ImportValue 'SSOLambdaAuthorizer'
+    #         Principal: apigateway.amazonaws.com 
+
+
+    APIProxyOptionsMethod: 
+        Type: AWS::ApiGateway::Method
+        Properties:
+            RestApiId: !Ref API
+            ResourceId: !Ref APIProxyResource
+            AuthorizationType: NONE
+            ApiKeyRequired: false
+            HttpMethod: OPTIONS
+            RequestParameters:
+                method.request.path.proxy: true
+            Integration:
+                Type: MOCK
+                IntegrationResponses:
+                    - StatusCode: 200
+                      ResponseParameters:
+                        method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+                        method.response.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+                        method.response.header.Access-Control-Allow-Origin: "'*'"
+                      ResponseTemplates:
+                        application/json: ''
+                PassthroughBehavior: WHEN_NO_MATCH
+                RequestTemplates:
+                    application/json: '{"statusCode": 200}'
+            MethodResponses:
+                - StatusCode: 200
+                  ResponseModels:
+                      application/json: 'Empty'
+                  ResponseParameters:
+                      method.response.header.Access-Control-Allow-Headers: false
+                      method.response.header.Access-Control-Allow-Methods: false
+                      method.response.header.Access-Control-Allow-Origin: false
+
+    APIDeployment:
+        Type: AWS::ApiGateway::Deployment
+        DependsOn: 
+            - APIProxyAnyMethod
+            - APIProxyOptionsMethod
+        Properties:
+            RestApiId: !Ref API
+            Description: !Sub "Data de publicacao: ${DeployDate}"
+            StageName: !Join
+                - '-'
+                - - !Ref APIName
+                  - !Ref Environment
+            StageDescription:
+                LoggingLevel: INFO
+                DataTraceEnabled: true
+                TracingEnabled: true
+
+    APIBasePathDomainName:
+        Type: AWS::ApiGateway::BasePathMapping
+        DependsOn: 
+            - APIDeployment
+        Condition: NotLab
+        Properties:
+            RestApiId: !Ref API
+            BasePath: !Ref APIBasePath
+            DomainName: !FindInMap [APIDomainName, !Ref Environment, Name]
+            Stage: !Join
+                - '-'
+                - - !Ref APIName
+                  - !Ref Environment
