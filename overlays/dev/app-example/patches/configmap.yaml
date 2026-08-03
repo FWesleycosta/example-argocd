@@ -1,8 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: app-example-config
-data:
-  APP_NAME: "app-example-dev"
-  LOG_LEVEL: "debug"
-  ENVIRONMENT: "development"

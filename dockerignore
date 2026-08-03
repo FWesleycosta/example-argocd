@@ -1,6 +1,0 @@
-bin/
-obj/
-.git/
-.vs/
-*.md
-deploy.sh
