@@ -359,8 +359,8 @@ steps:
         echo "$HISTORY_ENTRY" | jq .
 
         # Registro em GIT no PRÓPRIO repo da aplicação — UM arquivo:
-        # DEPLOY-PRD.md (raiz) -> "Último deploy" (sobrescrito a cada deploy)
-        #                          + "Histórico" (linhas anteriores preservadas).
+        # DEPLOY-PRD.md (raiz), renderizado do history.jsonl -> "Último deploy"
+        # (última entrada prd) + "Histórico" (prd) + "Homologação" (hml).
         # O commit entra na branch deployada com [skip ci] e se propaga à main
         # pelo PR release->main que a esteira já abre. Se a branch tiver policy
         # (ex.: rollback rodado na main), cai pra branch de registro + PR.
@@ -387,7 +387,7 @@ steps:
           # clone -> escreve -> push, com retry (corrida entre runs E com pushes
           # de devs na branch — cada tentativa re-clona) e fallback de PR na
           # última tentativa (branch protegida por policy).
-          local ATTEMPT WORK MD HIST LEGACY_ROWS FALLBACK PR_RESP PR_ID
+          local ATTEMPT WORK MD HIST LEGACY_ROWS LAST_PRD FALLBACK PR_RESP PR_ID
           for ATTEMPT in 1 2 3; do
             WORK="$(mktemp -d)"
             if ! git -c "$AUTH_CFG" clone --quiet --depth 1 --branch "$BRANCH" "$REPO_URL" "$WORK" 2>/dev/null; then
@@ -410,10 +410,18 @@ steps:
               if [ -f "$MD" ]; then
                 if grep -q "pré-JSONL" "$MD"; then
                   LEGACY_ROWS="$(awk '/pré-JSONL/{h=1; next} h && /^\| [0-9]/{print}' "$MD")"
-                else
+                elif ! grep -q "Gerado pela esteira" "$MD"; then
+                  # Arquivo no formato ANTIGO (pré-2.1.0): preservar a tabela como
+                  # legado. Arquivo já no formato novo sem seção pré-JSONL não entra
+                  # aqui — raspar o "## Histórico" renderizado duplicaria os dados
+                  # que já estão no JSONL.
                   LEGACY_ROWS="$(awk '/^## Histórico/{h=1; next} h && /^\| [0-9]/{print}' "$MD")"
                 fi
               fi
+              # "Último deploy" vem do JSONL (última entrada de prd), NÃO das
+              # variáveis do run: um deploy de hml re-renderiza o arquivo sem
+              # sobrescrever os dados de produção.
+              LAST_PRD="$(jq -s '[.[] | select(.environment == "prd")] | last // empty' "$HIST" 2>/dev/null)"
               {
                 echo "# Produção — ${REPO}"
                 echo ""
@@ -421,24 +429,42 @@ steps:
                 echo ""
                 echo "## Último deploy"
                 echo ""
-                echo "| Campo | Valor |"
-                echo "|---|---|"
-                echo "| Situação | $TYPE_LABEL |"
-                echo "| Data (UTC) | $DEPLOYED_AT |"
-                echo "| Imagem (tag ECR) | \`$TAG\` |"
-                echo "| Digest | \`${DIGEST:--}\` |"
-                echo "| Commit | \`${COMMIT:--}\` |"
-                echo "| Mensagem | ${MSG_SAFE:--} |"
-                echo "| Branch | \`$(Build.SourceBranch)\` |"
-                echo "| Pipeline | [#$(Build.BuildId)]($PIPELINE_URL) |"
-                echo "| Por | $(Build.RequestedFor) |"
+                echo "_O que está em **produção** agora, segundo o último registro da esteira._"
                 echo ""
-                echo "## Histórico"
+                if [ -n "$LAST_PRD" ]; then
+                  echo "$LAST_PRD" | jq -r '
+                    "| Campo | Valor |",
+                    "|---|---|",
+                    "| Situação | \(.deploy_type) |",
+                    "| Data (UTC) | \(.deployed_at) |",
+                    "| Imagem (tag ECR) | `\(.image.tag)` |",
+                    "| Digest | `\(.image.digest // "-")` |",
+                    "| Commit | `\(.source.commit // "-")` |",
+                    "| Mensagem | \((.source.commit_message // "-") | gsub("[|\r\n]"; " ") | .[0:80]) |",
+                    "| Branch | `\(.source.branch)` |",
+                    "| Pipeline | [#\(.pipeline.build_id)](\(.pipeline.url)) |",
+                    "| Por | \(.pipeline.triggered_by) |"' 2>/dev/null
+                else
+                  echo "_Nenhum deploy de produção registrado no JSONL ainda._"
+                fi
+                echo ""
+                echo "## Histórico de produção (últimos 50)"
+                echo ""
+                echo "_Mais recente primeiro. **Tipo**: \`deploy\` = release via GMUD · \`hotfix\` = correção expressa · \`rollback\` = retorno a versão anterior._"
                 echo ""
                 echo "| Data (UTC) | Tipo | Tag | Commit | Mensagem | Build | Por |"
                 echo "|---|---|---|---|---|---|---|"
                 awk '{a[NR]=$0} END{for(i=NR;i>=1;i--) print a[i]}' "$HIST" 2>/dev/null | jq -r 'select(.environment == "prd")
                   | "| \(.deployed_at) | \(.deploy_type) | `\(.image.tag)` | `\((.source.commit // "-")[0:8])` | \((.source.commit_message // "-") | gsub("[|\r\n]"; " ") | .[0:80]) | [#\(.pipeline.build_id)](\(.pipeline.url)) | \(.pipeline.triggered_by) |"' 2>/dev/null | head -50
+                echo ""
+                echo "## Homologação (últimos 20)"
+                echo ""
+                echo "_O que subiu em **HML** a cada merge na release — validação da QA; **ainda não está em produção**._"
+                echo ""
+                echo "| Data (UTC) | Tag | Commit | Mensagem | Build | Por |"
+                echo "|---|---|---|---|---|---|"
+                awk '{a[NR]=$0} END{for(i=NR;i>=1;i--) print a[i]}' "$HIST" 2>/dev/null | jq -r 'select(.environment == "hml")
+                  | "| \(.deployed_at) | `\(.image.tag)` | `\((.source.commit // "-")[0:8])` | \((.source.commit_message // "-") | gsub("[|\r\n]"; " ") | .[0:80]) | [#\(.pipeline.build_id)](\(.pipeline.url)) | \(.pipeline.triggered_by) |"' 2>/dev/null | head -20
                 if [ -n "$LEGACY_ROWS" ]; then
                   echo ""
                   echo "## Histórico anterior (pré-JSONL)"
@@ -469,8 +495,6 @@ steps:
               rm -rf "$WORK"; sleep $((ATTEMPT * 2)); continue
             fi
 
-            # Última tentativa falhou: provável branch policy (push direto proibido,
-            # ex.: main). Publica o registro numa branch própria e abre PR.
             FALLBACK="release-record/$(Build.BuildId)"
             if git -C "$WORK" -c "$AUTH_CFG" push --quiet origin "HEAD:refs/heads/${FALLBACK}" 2>/dev/null; then
               PR_RESP=$(curl -sS -X POST \
