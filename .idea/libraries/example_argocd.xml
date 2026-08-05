@@ -1,0 +1,10 @@
+<component name="libraryTable">
+  <library name="example-argocd">
+    <CLASSES>
+      <root url="jar://$PROJECT_DIR$/files.zip!/" />
+      <root url="jar://$PROJECT_DIR$/Terraform.zip!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>
