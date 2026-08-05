@@ -160,10 +160,6 @@ flowchart TD
 
 ## [2.1.0] - 2026-08-03
 
-Histórico consolidado de deploys para métricas DORA. **Compatível**: parâmetros novos são
-opcionais e os defaults preservam o comportamento de `2.0.0`; a única mudança observável para
-quem adota é o registro passar a cobrir também a HML.
-
 ### Adicionado
 
 - **`.deploy/history.jsonl` no repositório da aplicação** — histórico acumulativo de deploys,
@@ -272,26 +268,6 @@ Aplicações precisam de ajuste ao adotar (ver Notas de adoção).
   `hotfix/*` com **`batch: true`** — serializa runs de CI por branch (proteção principal contra
   `terraform apply` concorrente no mesmo state, que segue sem locking — débito registrado no
   `CLAUDE.md`).
-
-### Adicionado
-
-- **`PROMOCAO-PRD.md`** (raiz): runbook do dev (pré-condições, passo a passo, gate, deferred
-  approval, expiração, pós-promoção, tabela "stage vermelho × produção afetada?") + checklist do
-  portal do ADO (approval de `prd` com timeout 7d, self-approval off, qualquer-um-do-grupo;
-  Exclusive Lock em `hml` sem approval; queue liberada para devs — o controle é o approval, não o
-  botão; *Bypass policies when completing pull requests* para o Build Service em `main`;
-  notificação de approval expirado; roteiro de verificação do setup).
-
-### Notas de adoção
-
-- **Toda aplicação precisa, ao adotar a tag `2.0.0`**: (1) remover o bloco `hotfix:` do
-  `extends`, se declarado; (2) atualizar o `trigger` para o padrão com `batch: true` e
-  `release/*`; (3) executar o checklist de portal do `PROMOCAO-PRD.md` — **sem o approval
-  configurado no Environment `prd`, `Deploy_prd` sobe sem gate** num run manual.
-- A promoção manual re-executa Build e HML no próprio run (imagem nova, homologada nesse mesmo
-  run) — o princípio de build único vale **dentro** do run.
-- Runs de CI em `release/*` mostram `Deploy_prd`/`PR_Main` como *skipped* — é o esperado, não é
-  erro.
 
 ---
 
