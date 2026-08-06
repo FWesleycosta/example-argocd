@@ -66,6 +66,10 @@ steps:
           except Exception:
               return default
 
+      def tf_escape(s):
+          # Escapa aspas e barras invertidas para string HCL
+          return s.replace('\\', '\\\\').replace('"', '\\"')
+
       # — function_name_prefix: usa campo do config ou fallback pro repo —
       fn_prefix = yq('.function_name_prefix // ""')
       if not fn_prefix or fn_prefix == 'null':
@@ -95,6 +99,22 @@ steps:
       subnets_list = [f'"{s.strip()}"' for s in subnets_privates.split(',') if s.strip()]
       subnets_tf = '[' + ', '.join(subnets_list) + ']'
 
+      env_vars = {}
+      for scope in ('common', env):
+          count = int(yq_safe(f'.environment_variables.{scope} | length', '0'))
+          for i in range(count):
+              k = yq_safe(f'.environment_variables.{scope} | keys | .[{i}]')
+              v = yq_safe(f'.environment_variables.{scope}["{k}"]')
+              if k:
+                  env_vars[k] = v  # env-specific sobrescreve common
+
+      if env_vars:
+          print(f"##[section] Environment variables para [{env}]: {len(env_vars)} encontrada(s)")
+          for k in env_vars:
+              print(f"##[section]   -> {k}")
+      else:
+          print(f"##[section] Environment variables para [{env}]: nenhuma definida")
+
       # — SSM Parameters por ambiente —
       ssm_count = int(yq_safe(f'.ssm_parameters.{env} | length', '0'))
 
@@ -116,7 +136,7 @@ steps:
       lines = [
           f'environment          = "{env}"',
           f'function_name_prefix = "{fn_prefix}"',
-          f'description          = "{desc}"',
+          f'description          = "{tf_escape(desc)}"',
           f'lambda_memory_size   = {memory}',
           f'lambda_timeout       = {timeout}',
           f'lambda_tracing_config = "{tracing}"',
@@ -134,11 +154,17 @@ steps:
       lines.append('}')
 
       lines.append('')
+      lines.append('environment_variables = {')
+      for k, v in env_vars.items():
+          lines.append(f'  "{k}" = "{tf_escape(v)}"')
+      lines.append('}')
+
+      lines.append('')
       lines.append('ssm_parameters = {')
       for idx, p in enumerate(ssm_params):
           lines.append(f'  param_{idx} = {{')
           lines.append(f'    name  = "{p["name"]}"')
-          lines.append(f'    value = "{p["value"]}"')
+          lines.append(f'    value = "{tf_escape(p["value"])}"')
           lines.append(f'  }}')
       lines.append('}')
 
