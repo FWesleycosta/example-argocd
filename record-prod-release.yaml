@@ -1,253 +1,557 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Transform: 
-    - AWS::LanguageExtensions
-    - AWS::Serverless-2016-10-31
 
-Description: "Fibra.Produtos.Conta.Adapter.API"
+Description: Deploy de API
+
 Parameters:
-    ApplicationName:
-        Type: "String"
-        Description: "The application name"
-        Default: "#{ApplicationName}#"
+    # regiao Ohio ------------------------------------------------------------
+    #FibraVpc: 
+    #    Type: AWS::EC2::VPC::Id
+    #    Description: "VPC do ambiente"
+    #    Default: "vpc-06521360824a75b7f"
+    #Subnets:
+    #    Type: List<AWS::EC2::Subnet::Id>
+    #    Description: "Lista das subnets que a api (container) deve rodar"
+    #    Default: "subnet-0314be150c75e0ed7"
+    #-------------------------------------------------------------------------
 
-    SecurityGroupVpcId:
-        Type: "String"
-        Description: "The security group VPC Id"
-        Default: "#{SecurityGroupVpcId}#"
+    # regiao SP --------------------------------------------------------------
+    FibraVpc: 
+        Type: AWS::EC2::VPC::Id
+        Description: "VPC do ambiente"
+        Default: "@@vpcID@@"
+    Subnets:
+        Type: List<AWS::EC2::Subnet::Id>
+        Description: "Lista das subnets que a api (container) deve rodar"
+        Default: "@@subnetsID@@"
+    #-------------------------------------------------------------------------
 
-    BasicExecutionRole:
-        Type: "String"
-        Description: "The role used to execute the services"
-        Default: "#{BasicExecutionRole}#"
-
-    DeployVersion:
+    ECRAPIRepositoryName:
         Type: String
-        Description: "The version file"
-        Default: "#{DeployVersion}#"
-
-    DeployBucketName:
+        Description: "Nome do repositorio da imagem do container."
+        Default: "ecr-si-matrizacessos-api"
+    ECRAPIImageVersion:
         Type: String
-        Description: "The bucket environment name"
-        Default: "#{DeployBucketName}#"
-        AllowedValues:
-            - "fibradevdeploy"
-            - "fibrahomdeploy"
-            - "fibraproddeploy"
-
-    DeployFileName:
+        Description: "Versao da imagem."
+        Default: "latest"
+    APIName:
         Type: String
-        Description: "File name for deployment"
-        Default: "#{DeployFileName}#"
-
-    SubnetIdsList:
-        Type: CommaDelimitedList
-        Description: Select at least two subnets in your selected VPC.   
-        Default: "#{SubnetIds}#"
-
+        Description: "Nome da API no API Gateway" 
+        Default : "si-matrizacessos-api"
+    APIBasePath:
+        Type: String
+        Description: "Dominio/BasePath (DDD) da API. O /<nome> depois da url da API. Ex.: credito em  api.bancofibra.com.br/credito"
+        Default : "si-matrizacessos"
+    APIPort:
+        Type: Number
+        Description: "Porta da API no load balancer"
+        Default: "5029"
+    DeployDate:
+        Type: String
+        Description: "Data do Deploy. Importante para forcar o deploy do API GAteway"
+        Default: "2020-10-28"
     Environment:
         Type: String
-        Description: Environment application. ("prod" or "dev" or "hom" )  
-        Default: "#{Environment}#" #Use "prod" para Producao   
+        Description: "Ambiente da publicacao da versao."
+        Default: "hml"
+        AllowedValues:
+            - dev
+            - hml
+            - prod
+    DllName:
+        Type: String
+        Description: "Dll gerada no dockerfile."
+        Default: "ControleAcesso.IBPJ.Api.dll"
 
+
+    # ---------------------------------------------------------------
+    # Datadog APM
+    # ---------------------------------------------------------------
     DatadogEnabled:
-      Type: String
-      Description: "Habilita a instrumentacao Datadog (true/false)"
-      Default: "true"
-      AllowedValues:
-        - "true"
-        - "false"
+        Type: String
+        Description: "Habilita a instrumentacao Datadog (true/false). Default: true"
+        Default: "true"
+        AllowedValues:
+            - "true"
+            - "false"
 
-    DatadogApiKeySecretArn:
-      Type: String
-      Description: "ARN do secret no Secrets Manager com a API key do Datadog"
-      Default: "#{DatadogApiKeySecretArn}#"
+
+    DatadogApiKeySecretName:
+        Type: String
+        Description: "Nome do secret no Secrets Manager com a API key do Datadog (plaintext). Deve existir na mesma conta/regiao do deploy."
+        Default: "@@DatadogApiKeySecretArn@@"
 
     DatadogSite:
-      Type: String
-      Description: "Site do Datadog"
-      Default: "datadoghq.com"
+        Type: String
+        Description: "Site do Datadog"
+        Default: "datadoghq.com"
 
-    DatadogExtensionLayerVersion:
-      Type: String
-      Description: "Versao da layer Datadog-Extension-ARM (v98 lancada em 23/06/2026)"
-      Default: "98"
+    DatadogAgentImage:
+        Type: String
+        Description: "Imagem do Datadog Agent (sidecar)"
+        Default: "public.ecr.aws/datadog/agent:7"
 
-    DatadogTraceLayerVersion:
-      Type: String
-      Description: "Versao da layer dd-trace-dotnet-ARM (v24, versao atual na doc oficial)"
-      Default: "24"
-
-    DatadogServiceVersion:
-      Type: String
-      Description: "Versao semantica do servico para DD_VERSION (deployment tracking)"
-      Default: "#{DatadogServiceVersion}#"
+    DatadogTracerInitImage:
+        Type: String
+        Description: "Imagem do init container com o tracer .NET (dd-lib-dotnet-init)"
+        Default: "datadog/dd-lib-dotnet-init:v3"
 
 Conditions:
-  IsProd: !Equals [ !Ref Environment, prod ]  
-  IsDev: !Equals [ !Ref Environment, dev ] 
-  IsHom: !Equals [ !Ref Environment, hom ] 
-  EnableDatadog: !Equals [ !Ref DatadogEnabled, "true" ]
+    IsProd: !Equals 
+        - !Ref Environment
+        - "prod"
+    NotLab: !Not [ !Equals [ !Ref Environment,"lab" ] ]  
+    EnableDatadog: !Equals [ !Ref DatadogEnabled, "true" ]
 
+Mappings: 
+    ClusterName: 
+        sa-east-1:
+            "dev": "ecs-dev"
+            "hml": "ECS-CL-HOM-SP"
+            "prod": "ECS-CL-PRD-SP"
+        us-east-2: 
+            "lab": "poc"
+            "dev": "ecs-dev"
+            "hml": "ECS-CL-HOM-OHIO"
+            "prod": "ECS-CL-PRD-OHIO"
+    AspnetEnv: 
+        dev: 
+            Name: Development
+        hml: 
+            Name: Homol
+        prod: 
+            Name: Production
+    APIDomainName:
+        dev: 
+            Name: apidev.bancofibra.com.br
+        hml: 
+            Name: apiinternalhml.bancofibra.com.br
+        prod: 
+            Name: api.bancofibra.com.br
 Resources:
-
-    ApplSecurityGroup:
-        Type: "AWS::EC2::SecurityGroup"
-        DeletionPolicy: Delete
+    APITaskExecutionRole:
+        Type: AWS::IAM::Role
         Properties:
-            GroupDescription: "Allow access to protected resources from outside a perimeter"
-            GroupName: !Sub "${ApplicationName}-security-group"  
-            VpcId: !Ref SecurityGroupVpcId
-            SecurityGroupIngress: 
-              - 
-                CidrIp: "10.140.0.0/1"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.20.0.0/16"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.22.0.0/16"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.30.0.0/16"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.32.0.0/16"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.44.16.0/20"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "10.61.0.0/16"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "172.30.16.0/20"
-                IpProtocol: "-1"
-              - 
-                CidrIp: "192.168.240.0/20"
-                IpProtocol: "-1"
-              - !If 
-                - IsProd
-                - 
-                  CidrIp: "128.1.0.0/16"  # CidrIp10 para Prod
-                  IpProtocol: "-1"
-                - !Ref "AWS::NoValue"
-            SecurityGroupEgress: 
-                - 
-                    CidrIp: "0.0.0.0/0"
-                    IpProtocol: "-1"
-
-    IAMRole:
-        Type: "AWS::IAM::Role"
-        DeletionPolicy: Delete
-        Properties:
-            Path: "/"
-            RoleName: !Ref BasicExecutionRole
-            AssumeRolePolicyDocument: !Sub "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"lambda.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"},{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"scheduler.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"},{\"Effect\":\"Allow\",\"Principal\":{\"Service\":[\"states.${AWS::Region}.amazonaws.com\",\"states.amazonaws.com\"]},\"Action\":\"sts:AssumeRole\"}]}"
-            MaxSessionDuration: 3600
-            ManagedPolicyArns: 
-              - "arn:aws:iam::aws:policy/AWSXrayFullAccess"
-              - "arn:aws:iam::aws:policy/AmazonVPCCrossAccountNetworkInterfaceOperations"
-              - "arn:aws:iam::aws:policy/CloudWatchFullAccess"
-              - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-              - "arn:aws:iam::aws:policy/service-role/AWSLambdaRole"
-              - "arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess"
-              - !Sub "arn:aws:iam::${AWS::AccountId}:policy/LiberarAcessoGetSecretManager"
-        Policies:
-          # Acesso ao secret da API key do Datadog (usado pela Datadog Extension)
-          - !If
-            - EnableDatadog
-            - PolicyName: !Sub "${ApplicationName}-datadog-secret"
-              PolicyDocument:
-                Version: "2012-10-17"
+            AssumeRolePolicyDocument:
                 Statement:
-                  - Sid: DatadogApiKeySecretRead
-                    Effect: Allow
-                    Action:
-                      - secretsmanager:GetSecretValue
-                    Resource: !Ref DatadogApiKeySecretArn
-            - !Ref "AWS::NoValue"
+                - Effect: Allow
+                  Principal:
+                    Service: ecs-tasks.amazonaws.com
+                  Action: 'sts:AssumeRole'
 
-    LogGroupLambda:
-        Type: "AWS::Logs::LogGroup"
-        DeletionPolicy: Delete
-        Properties:
-            LogGroupName: !Sub "/aws/lambda/${ApplicationName}"
-            RetentionInDays: 7
+            Path: /
+            Policies:
+            - PolicyName: APIECSTaskExecutionRolePolicy
+              PolicyDocument:
+                Statement:
+                    - Effect: Allow
+                      Action:
+                        # Allow the ECS Tasks to download images from ECR
+                        - 'ecr:GetAuthorizationToken'
+                        - 'ecr:BatchCheckLayerAvailability'
+                        - 'ecr:GetDownloadUrlForLayer'
+                        - 'ecr:BatchGetImage'
 
-    LambdaFunction:
-        Type: "AWS::Serverless::Function"
-        DeletionPolicy: Delete
+                        # Allow the ECS tasks to upload logs to CloudWatch
+                        - 'logs:CreateLogStream'
+                        - 'logs:CreateLogGroup'
+                        - 'logs:PutLogEvents'
+                      Resource: '*'
+                    - Effect: Allow
+                      Action: 
+                        - 'ssm:GetParameter*'
+                      Resource: 
+                        - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/MatrizAcesso*'
+
+            # Acesso ao secret da API key do Datadog (usado pela Datadog Extension)
+            - !If
+              - EnableDatadog
+              - PolicyName: DatadogApiKeySecretRead
+                PolicyDocument:
+                  Statement:
+                      # Permite ao ECS injetar a API key do Datadog no sidecar via Secrets.
+                      # Wildcard no final cobre o sufixo aleatorio que o Secrets Manager
+                      # adiciona ao ARN (ex.: datadog-api-key-AbC123).
+                      - Effect: Allow
+                        Action:
+                          - 'secretsmanager:GetSecretValue'
+                          - 'secretsmanager:DescribeSecret'
+                        Resource: !Ref DatadogApiKeySecretName
+              - !Ref 'AWS::NoValue'       
+    APITargetGroup:
+        Type: AWS::ElasticLoadBalancingV2::TargetGroup
         Properties:
-            Description: "Fibra.Produtos.Conta.Adapter.API"
+            Name: !Join [ "-", ["tg", !Ref APIBasePath, "api" ] ]
+            HealthCheckIntervalSeconds: 30
+            HealthCheckProtocol: TCP
+            HealthyThresholdCount: 3
+            UnhealthyThresholdCount: 3
+            TargetType: ip
+            Port: 80
+            Protocol: TCP
+            VpcId: !Ref FibraVpc
+
+    APILoadBalancerListener:
+        Type: AWS::ElasticLoadBalancingV2::Listener
+        Properties:
+            DefaultActions:
+            - TargetGroupArn: !Ref APITargetGroup
+              Type: 'forward'
+            LoadBalancerArn: !ImportValue 'nlb-api-01'
+            Port: !Ref APIPort
+            Protocol: TCP
+
+    APITaskDefinition:
+      Type: AWS::ECS::TaskDefinition
+      DependsOn: APITaskExecutionRole
+
+      Properties:
+        Family: !Join [ "-", ["tsk", !Ref ECRAPIRepositoryName ] ]
+
+        Cpu: !If [ IsProd, 512, 256 ]
+        Memory: !If [ IsProd, 1024, 512 ]
+
+        NetworkMode: awsvpc
+
+        RequiresCompatibilities:
+          - FARGATE
+
+        ExecutionRoleArn: !GetAtt APITaskExecutionRole.Arn
+        TaskRoleArn: !GetAtt APITaskExecutionRole.Arn
+
+        Volumes:
+          - Name: datadog-tracer
+
+        ContainerDefinitions:
+
+          #################################################################
+          # DATADOG TRACER INIT
+          #################################################################
+
+          - Name: datadog-tracer-init
+            Image: !Ref DatadogTracerInitImage
+            Essential: false
+            Cpu: 0
+
+            Command:
+              - "/copy-lib.sh"
+              - "/datadog"
+
+            MountPoints:
+              - ContainerPath: /datadog
+                SourceVolume: datadog-tracer
+
+            LogConfiguration:
+              LogDriver: awslogs
+              Options:
+                awslogs-group: !Join [ "-", ["ecs/tsk-", !Ref ECRAPIRepositoryName ] ]
+                awslogs-create-group: true
+                awslogs-region: !Ref AWS::Region
+                awslogs-stream-prefix: tracer-init
+
+          #################################################################
+          # DATADOG AGENT
+          #################################################################
+
+          - Name: datadog-agent
+            Image: !Ref DatadogAgentImage
+            Essential: false
+            Cpu: 0
+
             Environment:
-                Variables:
-                    TZ: "America/Sao_Paulo"
-                    TimeZoneId: "E. South America Standard Time"
-                    ASPNETCORE_ENVIRONMENT: "#{Environment}#"
-                    PARAMETERS_SECRETS_EXTENSION_CACHE_ENABLED: false
-                    PARAMETERS_SECRETS_EXTENSION_LOG_LEVEL: debug
-                    PARAMETERS_SECRETS_EXTENSION_HTTP_PORT: 2773
-                    PARAMETERS_SECRETS_EXTENSION_CACHE_TTL: 300
-                    PARAMETERS_SECRETS_EXTENSION_MAX_CACHE_SIZE: 100
-                    PARAMETERS_SECRETS_EXTENSION_MAX_CONNECTIONS: 10
-                    PARAMETERS_SECRETS_EXTENSION_WAITING_MILISECONDS: 50
-                    SECRETS_MANAGER_TIMEOUT_MILLIS: 500
-                    DD_SITE: !If [EnableDatadog, !Ref DatadogSite, !Ref "AWS::NoValue"]
-                    DD_API_KEY_SECRET_ARN: !If [EnableDatadog, !Ref DatadogApiKeySecretArn, !Ref "AWS::NoValue"]
-                    DD_TRACE_ENABLED: !If [EnableDatadog, "true", !Ref "AWS::NoValue"]
-                    DD_ENHANCED_METRICS: !If [EnableDatadog, "false", !Ref "AWS::NoValue"]
-                    DD_LOGS_ENABLED: !If [EnableDatadog, "false", !Ref "AWS::NoValue"]
-                    DD_SERVERLESS_LOGS_ENABLED: !If [EnableDatadog, "false", !Ref "AWS::NoValue"]
-                    DD_CAPTURE_LAMBDA_PAYLOAD: !If [EnableDatadog, "true", !Ref "AWS::NoValue"]
-                    DD_ENV: !If [EnableDatadog, !Ref Environment, !Ref "AWS::NoValue"]
-                    DD_SERVICE: !If [EnableDatadog, !Ref ApplicationName, !Ref "AWS::NoValue"]
-                    DD_VERSION: !If [EnableDatadog, !Ref DatadogServiceVersion, !Ref "AWS::NoValue"]
-                    SECRETS_MANAGER_TTL: 300
-                    SECRETS_MANAGER_OBTER_APP_SETTINGS: false
-                    TamanhoMaximoMensagemRecebida: 20000000
-                    TamanhoMaximoBuffer: 20000000 
-                    TamanhoMaximoPoolBuffer: 20000000
-                    ProfundidadeMaxima: 32
-                    TamanhoMaximoArray: 200000000
-                    TamanhoMaximoConteudoString: 200000000
-                    UrlSoapAutBank: !If [
-                        IsProd,
-                        "http://bfwsrwbautprd01:8080/ABEBWS/services/EBServicesBar",
-                        !If [
-                            IsHom,
-                            "http://bfwebhom15:9090/ABEBWS/services/EBServicesBar",
-                            "http://bfwebhom15:9090/ABEBWS/services/EBServicesBar" # Valor padrão (Dev)
-                        ]
-                    ]
-            FunctionName: !Ref ApplicationName
-            Layers:
-              - !If
-                - EnableDatadog
-                - !Sub "arn:aws:lambda:${AWS::Region}:464622532012:layer:Datadog-Extension-ARM:${DatadogExtensionLayerVersion}"
-                - !Ref "AWS::NoValue"
-              - !If
-                - EnableDatadog
-                - !Sub "arn:aws:lambda:${AWS::Region}:464622532012:layer:dd-trace-dotnet-ARM:${DatadogTraceLayerVersion}"
-                - !Ref "AWS::NoValue"
-            Handler: "Fibra.Produtos.Conta.Adapter.API::Fibra.Produtos.Conta.Adapter.API.LambdaEntryPoint::FunctionHandlerAsync"
-            Architectures: 
-                - "arm64"
-            CodeUri:
-                Bucket: !Sub "#{Environment}#-${AWS::Region}-#{ApplicationName}#"
-                Key: !Ref DeployFileName
-                Version: !Ref DeployVersion
-            MemorySize: 1024
-            Role: !GetAtt IAMRole.Arn
-            Runtime: "dotnet8"
-            Timeout: 30
-            Tracing: "PassThrough"
-            VpcConfig:
-                SubnetIds: !Ref SubnetIdsList
-                SecurityGroupIds: 
-                    - !Ref ApplSecurityGroup
-            EphemeralStorage:
-                Size: 512
-            SnapStart:
-                ApplyOn: !If [IsDev, None, PublishedVersions]
-            AutoPublishAlias: publicada
-            AutoPublishAliasAllProperties: true
+              - Name: DD_SITE
+                Value: !Ref DatadogSite
+
+              - Name: ECS_FARGATE
+                Value: "true"
+
+              - Name: DD_APM_ENABLED
+                Value: "true"
+
+              - Name: DD_APM_NON_LOCAL_TRAFFIC
+                Value: "true"
+
+              - Name: DD_LOGS_ENABLED
+                Value: "false"
+
+              - Name: DD_PROCESS_CONFIG_PROCESS_COLLECTION_ENABLED
+                Value: "false"
+
+              - Name: DD_ENV
+                Value: !Ref Environment
+
+            Secrets:
+              - Name: DD_API_KEY
+                ValueFrom: !Ref DatadogApiKeySecretName
+
+            PortMappings:
+              - ContainerPort: 8126
+                Protocol: tcp
+
+            LogConfiguration:
+              LogDriver: awslogs
+              Options:
+                awslogs-group: !Join [ "-", ["ecs/tsk-", !Ref ECRAPIRepositoryName ] ]
+                awslogs-create-group: true
+                awslogs-region: !Ref AWS::Region
+                awslogs-stream-prefix: datadog
+
+          #################################################################
+          # API
+          #################################################################
+
+          - Name: !Join [ "-", ["ctn", !Ref ECRAPIRepositoryName ] ]
+
+            Essential: true
+
+            DependsOn:
+              - ContainerName: datadog-tracer-init
+                Condition: SUCCESS
+              - ContainerName: datadog-agent
+                Condition: START
+
+            Image:
+              !Join
+              - ''
+              - - !Ref AWS::AccountId
+                - '.dkr.ecr.'
+                - !Ref AWS::Region
+                - '.'
+                - !Ref AWS::URLSuffix
+                - '/'
+                - !Ref ECRAPIRepositoryName
+                - ':'
+                - !Ref ECRAPIImageVersion
+
+            PortMappings:
+              - ContainerPort: 80
+
+            MountPoints:
+              - ContainerPath: /datadog
+                SourceVolume: datadog-tracer
+                ReadOnly: true
+
+            Environment:
+
+              - Name: AWS_ACCOUNT_ID
+                Value: !Sub "${AWS::AccountId}"
+
+              - Name: AWS_REGION
+                Value: !Sub "${AWS::Region}"
+
+              - Name: ASPNETCORE_ENVIRONMENT
+                Value: !FindInMap [ AspnetEnv, !Ref Environment, Name ]
+
+              - Name: IBPJ-REDIS-ENDPOINT
+                Value: !ImportValue ibpj-redis-address
+
+              #############################################################
+              # Datadog .NET Profiler
+              #############################################################
+
+              - Name: CORECLR_ENABLE_PROFILING
+                Value: "1"
+
+              - Name: CORECLR_PROFILER
+                Value: "{846F5F1C-F9AE-4B07-969E-05C26BC060D8}"
+
+              - Name: CORECLR_PROFILER_PATH
+                Value: "/datadog/linux-x64/Datadog.Trace.ClrProfiler.Native.so"
+
+              - Name: DD_DOTNET_TRACER_HOME
+                Value: "/datadog"
+
+              - Name: DD_TRACE_ENABLED
+                Value: "true"
+
+              - Name: DD_TRACE_AGENT_URL
+                Value: "http://127.0.0.1:8126"
+
+              - Name: DD_ENV
+                Value: !Ref Environment
+
+              - Name: DD_SERVICE
+                Value: !Ref APIName
+
+              - Name: DD_VERSION
+                Value: !Ref ECRAPIImageVersion
+
+            LogConfiguration:
+              LogDriver: awslogs
+              Options:
+                awslogs-group: !Join [ "-", ["ecs/tsk-", !Ref ECRAPIRepositoryName ] ]
+                awslogs-create-group: true
+                awslogs-region: !Ref AWS::Region
+                awslogs-stream-prefix: api              
+
+    APIContainerSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: Access to the Fargate containers
+            VpcId: !Ref FibraVpc
+            SecurityGroupIngress:
+                - CidrIp: 0.0.0.0/0
+                  IpProtocol: tcp
+                  FromPort: 80
+                  ToPort: 80
+
+    APIService:
+        Type: AWS::ECS::Service
+        DependsOn: APILoadBalancerListener
+        Properties:
+            ServiceName: !Join [ "-", ["svc", !Ref APIBasePath, "api" ] ]
+            Cluster: 
+                !Join
+                    - ''
+                    - - 'arn:aws:ecs:'
+                      - !Ref 'AWS::Region'
+                      - ':'
+                      - !Ref 'AWS::AccountId'
+                      - ':cluster/'
+                      - !FindInMap [ClusterName, !Ref 'AWS::Region', !Ref Environment]
+            LaunchType: FARGATE
+            DeploymentConfiguration:
+                MaximumPercent: 200
+                MinimumHealthyPercent: 100
+            DesiredCount: !If [IsProd, 2, 1]
+            NetworkConfiguration:
+                AwsvpcConfiguration:
+                    SecurityGroups:
+                    - !Ref APIContainerSecurityGroup
+                    Subnets: !Ref Subnets
+            TaskDefinition: !Ref APITaskDefinition
+            LoadBalancers:
+            - ContainerName: !Join [ "-", ["ctn", !Ref ECRAPIRepositoryName ] ]
+              ContainerPort: 80
+              TargetGroupArn: !Ref APITargetGroup
+
+    API:
+        Type: AWS::ApiGateway::RestApi
+        Properties:
+            Name: !Ref APIName
+            EndpointConfiguration:
+                Types:
+                    - REGIONAL
+
+    APIProxyResource: 
+        Type: AWS::ApiGateway::Resource
+        Properties:
+            RestApiId: !Ref API
+            PathPart: '{proxy+}'
+            ParentId: !GetAtt
+                - API
+                - RootResourceId
+
+    APIProxyAnyMethod: 
+        Type: AWS::ApiGateway::Method
+        Properties:
+            RestApiId: !Ref API
+            ResourceId: !Ref APIProxyResource
+            AuthorizationType: NONE
+            # AuthorizerId: !Ref CustomAuthorizer
+            ApiKeyRequired: true
+            HttpMethod: ANY
+            RequestParameters:
+                method.request.path.proxy: true
+            Integration:
+                ConnectionType: VPC_LINK
+                ConnectionId: !ImportValue 'vpclink-api-01'
+                IntegrationHttpMethod: ANY
+                Type: HTTP_PROXY
+                RequestParameters:
+                    integration.request.path.proxy: method.request.path.proxy
+                Uri: !Join
+                    - ''
+                    - - 'http://'
+                      - !FindInMap [APIDomainName, !Ref Environment, Name]
+                      - ':'
+                      - !Ref APIPort
+                      - '/{proxy}'
+
+    # CustomAuthorizer:
+    #     Type: AWS::ApiGateway::Authorizer
+    #     Properties:
+    #         AuthorizerResultTtlInSeconds: '0'
+    #         AuthorizerUri: !Join 
+    #           - ''
+    #           - - 'arn:aws:apigateway:'
+    #             - !Ref 'AWS::Region'
+    #             - ':lambda:path/2015-03-31/functions/'
+    #             - !ImportValue 'SSOLambdaAuthorizer'
+    #             - /invocations
+    #         Type: TOKEN
+    #         IdentitySource: method.request.header.Authorization
+    #         Name: SSOAuthorization
+    #         RestApiId: !Ref API
+    # 
+    # ConfigLambdaPermission:
+    #     Type: AWS::Lambda::Permission
+    #     DependsOn:
+    #         - API
+    #     Properties:
+    #         Action: lambda:InvokeFunction
+    #         FunctionName: !ImportValue 'SSOLambdaAuthorizer'
+    #         Principal: apigateway.amazonaws.com 
+
+
+    APIProxyOptionsMethod: 
+        Type: AWS::ApiGateway::Method
+        Properties:
+            RestApiId: !Ref API
+            ResourceId: !Ref APIProxyResource
+            AuthorizationType: NONE
+            ApiKeyRequired: false
+            HttpMethod: OPTIONS
+            RequestParameters:
+                method.request.path.proxy: true
+            Integration:
+                Type: MOCK
+                IntegrationResponses:
+                    - StatusCode: 200
+                      ResponseParameters:
+                        method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+                        method.response.header.Access-Control-Allow-Methods: "'DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT'"
+                        method.response.header.Access-Control-Allow-Origin: "'*'"
+                      ResponseTemplates:
+                        application/json: ''
+                PassthroughBehavior: WHEN_NO_MATCH
+                RequestTemplates:
+                    application/json: '{"statusCode": 200}'
+            MethodResponses:
+                - StatusCode: 200
+                  ResponseModels:
+                      application/json: 'Empty'
+                  ResponseParameters:
+                      method.response.header.Access-Control-Allow-Headers: false
+                      method.response.header.Access-Control-Allow-Methods: false
+                      method.response.header.Access-Control-Allow-Origin: false
+
+    APIDeployment:
+        Type: AWS::ApiGateway::Deployment
+        DependsOn: 
+            - APIProxyAnyMethod
+            - APIProxyOptionsMethod
+        Properties:
+            RestApiId: !Ref API
+            Description: !Sub "Data de publicacao: ${DeployDate}"
+            StageName: !Join
+                - '-'
+                - - !Ref APIName
+                  - !Ref Environment
+            StageDescription:
+                LoggingLevel: INFO
+                DataTraceEnabled: true
+                TracingEnabled: true
+
+    APIBasePathDomainName:
+        Type: AWS::ApiGateway::BasePathMapping
+        DependsOn: 
+            - APIDeployment
+        Condition: NotLab
+        Properties:
+            RestApiId: !Ref API
+            BasePath: !Ref APIBasePath
+            DomainName: !FindInMap [APIDomainName, !Ref Environment, Name]
+            Stage: !Join
+                - '-'
+                - - !Ref APIName
+                  - !Ref Environment
