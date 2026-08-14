@@ -72,8 +72,8 @@ Parameters:
     Default: datadog/dd-lib-dotnet-init:v3
   DatadogFluentBitImage:
     Type: String
-    Description: "Imagem do Fluent Bit (FireLens) para roteamento de logs"
-    Default: "public.ecr.aws/aws-observability/aws-for-fluent-bit:stable"
+    Description: Imagem do Fluent Bit (FireLens) para roteamento de logs
+    Default: public.ecr.aws/aws-observability/aws-for-fluent-bit:stable
 Conditions:
   IsProd:
     Fn::Equals:
@@ -227,6 +227,10 @@ Resources:
         - - Name: datadog-tracer
         - Ref: AWS::NoValue
       ContainerDefinitions:
+
+      #################################################################
+      # DATADOG TRACER INIT (copia o tracer .NET para o volume)
+      #################################################################
       - Fn::If:
         - EnableDatadog
         - Name: datadog-tracer-init
@@ -253,8 +257,40 @@ Resources:
               awslogs-create-group: true
               awslogs-region:
                 Ref: AWS::Region
-              awslogs-stream-prefix: ecs
+              awslogs-stream-prefix: tracer-init
         - Ref: AWS::NoValue
+
+      #################################################################
+      # FIRELENS LOG ROUTER (Fluent Bit -> Datadog Logs)
+      #################################################################
+      - Fn::If:
+        - EnableDatadog
+        - Name: log-router
+          Image:
+            Ref: DatadogFluentBitImage
+          Essential: true
+          Cpu: 0
+          FirelensConfiguration:
+            Type: fluentbit
+            Options:
+              enable-ecs-log-metadata: 'true'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group:
+                Fn::Join:
+                - '-'
+                - - ecs/tsk-
+                  - Ref: ECRAPIRepositoryName
+              awslogs-create-group: true
+              awslogs-region:
+                Ref: AWS::Region
+              awslogs-stream-prefix: firelens
+        - Ref: AWS::NoValue
+
+      #################################################################
+      # API
+      #################################################################
       - Name:
           Fn::Join:
           - '-'
@@ -267,6 +303,8 @@ Resources:
           - - ContainerName: datadog-tracer-init
               Condition: COMPLETE
             - ContainerName: datadog-agent
+              Condition: START
+            - ContainerName: log-router
               Condition: START
           - Ref: AWS::NoValue
         MountPoints:
@@ -329,11 +367,6 @@ Resources:
           - Ref: AWS::NoValue
         - Fn::If:
           - EnableDatadog
-          - Name: DD_LOGS_ENABLED
-            Value: 'true'
-          - Ref: AWS::NoValue
-        - Fn::If:
-          - EnableDatadog
           - Name: DD_ENV
             Value:
               Ref: Environment
@@ -365,17 +398,41 @@ Resources:
         PortMappings:
         - ContainerPort: 80
         LogConfiguration:
-          LogDriver: awslogs
-          Options:
-            awslogs-group:
-              Fn::Join:
-              - '-'
-              - - ecs/tsk-
-                - Ref: ECRAPIRepositoryName
-            awslogs-create-group: true
-            awslogs-region:
-              Ref: AWS::Region
-            awslogs-stream-prefix: datadog
+          Fn::If:
+          - EnableDatadog
+          - LogDriver: awsfirelens
+            Options:
+              Name: datadog
+              Host:
+                Fn::Sub: http-intake.logs.${DatadogSite}
+              TLS: 'on'
+              provider: ecs
+              compress: gzip
+              dd_service:
+                Ref: APIName
+              dd_source: csharp
+              dd_tags:
+                Fn::Sub: env:${Environment},version:${ECRAPIImageVersion}
+              dd_message_key: log
+            SecretOptions:
+            - Name: apikey
+              ValueFrom:
+                Ref: DatadogApiKeySecretName
+          - LogDriver: awslogs
+            Options:
+              awslogs-group:
+                Fn::Join:
+                - '-'
+                - - ecs/tsk-
+                  - Ref: ECRAPIRepositoryName
+              awslogs-create-group: true
+              awslogs-region:
+                Ref: AWS::Region
+              awslogs-stream-prefix: api
+
+      #################################################################
+      # DATADOG AGENT (metricas + APM)
+      #################################################################
       - Fn::If:
         - EnableDatadog
         - Name: datadog-agent
@@ -394,7 +451,7 @@ Resources:
           - Name: DD_APM_NON_LOCAL_TRAFFIC
             Value: 'false'
           - Name: DD_LOGS_ENABLED
-            Value: 'true'
+            Value: 'false'
           - Name: DD_PROCESS_CONFIG_PROCESS_COLLECTION_ENABLED
             Value: 'false'
           - Name: DD_ENV
@@ -415,7 +472,7 @@ Resources:
               awslogs-create-group: true
               awslogs-region:
                 Ref: AWS::Region
-              awslogs-stream-prefix: ecs
+              awslogs-stream-prefix: datadog
         - Ref: AWS::NoValue
     Metadata:
       SamResourceId: APITaskDefinition
