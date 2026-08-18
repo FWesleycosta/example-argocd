@@ -26,15 +26,18 @@ parameters:
         prd: []
 
   # --- qualidade (stage SonarQube; roda ANTES do Build, como no backend) ---
+  # mode: 'warn'  = lint, testes e Quality Gate rodam e REPORTAM (job fica amarelo), mas nunca
+  #                 bloqueiam — default para adoção sem quebrar pipelines existentes.
+  #       'block' = tudo vira gate (recomendado depois que o app estabilizar lint/testes/Sonar).
   # ATENÇÃO: objeto passado parcialmente SUBSTITUI o default inteiro (não há merge) — se
   # sobrescrever, informe todas as chaves. lint_command/test_command vazios = pular.
   - name: quality
     type: object
     default:
+      mode: 'warn'
       lint_command: 'npm run lint --if-present'
-      test_command: 'npm test -- --coverage'
+      test_command: 'npm test --if-present -- --coverage'
       coverage_report: 'coverage/lcov.info'
-      break_on_quality_gate: true
 
   - name: veracode
     type: object
@@ -82,6 +85,10 @@ stages:
               - script: |
                   echo "##[warning]Parametro 'owner' nao informado. A tag 'Owner' dos recursos AWS ficara vazia."
                 displayName: 'Alertar owner nao informado'
+          - ${{ if ne(parameters.quality.mode, 'block') }}:
+              - script: |
+                  echo "##[warning]quality.mode='${{ parameters.quality.mode }}': lint, testes e Quality Gate do Sonar SO REPORTAM (nao bloqueiam). Use quality.mode: block para transformar em gate."
+                displayName: 'Alertar gates de qualidade em modo aviso'
 
   - stage: SonarQube
     displayName: 'Analisar qualidade com SonarQube'
@@ -103,10 +110,13 @@ stages:
               lintCommand: ${{ parameters.quality.lint_command }}
               testCommand: ${{ parameters.quality.test_command }}
               coverageReport: ${{ coalesce(parameters.quality.coverage_report, 'coverage/lcov.info') }}
-              ${{ if or(eq(parameters.quality.break_on_quality_gate, false), eq(parameters.quality.break_on_quality_gate, 'false'), eq(parameters.quality.break_on_quality_gate, 'False')) }}:
-                breakOnQualityGate: false
-              ${{ else }}:
+              # mode=block -> lint/testes/gate bloqueiam; qualquer outro valor (warn/ausente) -> só reportam
+              ${{ if eq(parameters.quality.mode, 'block') }}:
+                enforce: true
                 breakOnQualityGate: true
+              ${{ else }}:
+                enforce: false
+                breakOnQualityGate: false
 
   - stage: Build
     displayName: 'Compilar frontend e publicar artefato'

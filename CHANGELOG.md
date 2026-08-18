@@ -180,12 +180,18 @@ no backend é a extração do job de exclusão de branch para `utils/delete-bran
   fica para versão futura.
 - **Stage `SonarQube` no stack de frontend** (Validate → **SonarQube** → Build, como no backend)
   com o novo **`templates/sonarqube/qa-sonar-node.yaml`**: `npm ci` → lint (`npm run lint
-  --if-present`) → testes com cobertura (`npm test -- --coverage`, `CI=true`) → scanner **CLI**
-  (`sonar.javascript/typescript.lcov.reportPaths`, exclusões de `node_modules/dist/build/
-  coverage/testes/config`, `sonar.test.inclusions`) → `SonarQubePublish` → **Quality Gate como
-  build breaker**. Publica JUnit (`junit*.xml`) na aba Tests quando existir. Parâmetro novo
-  no stack: `quality` (`lint_command`, `test_command`, `coverage_report`,
-  `break_on_quality_gate`; vazio nos comandos = pular; objeto parcial substitui o default).
+  --if-present`) → testes com cobertura (`npm test --if-present -- --coverage`, `CI=true`) →
+  scanner **CLI** (`sonar.javascript/typescript.lcov.reportPaths`, exclusões de
+  `node_modules/dist/build/coverage/testes/config`, `sonar.test.inclusions`) →
+  `SonarQubePublish` → Quality Gate. Publica JUnit (`junit*.xml`) na aba Tests quando existir.
+  Parâmetro novo no stack: `quality` (`mode`, `lint_command`, `test_command`,
+  `coverage_report`; vazio nos comandos = pular; objeto parcial substitui o default).
+  **`quality.mode`**: `warn` (**default**, adoção) — lint, testes e Quality Gate rodam e
+  **reportam** (`##vso[task.logissue type=warning]`, job `SucceededWithIssues`) mas **não
+  bloqueiam**; o `Validate` emite warning lembrando que os gates estão em modo aviso.
+  `block` — lint/testes/gate viram build breaker (comportamento do backend). Decisão
+  deliberada: os fronts existentes não têm lint/teste/Sonar estabilizados; default bloqueante
+  quebraria toda pipeline nova. Novo parâmetro `enforce` (bool) em `qa-sonar-node.yaml`.
   Cobertura ausente vira `##[warning]` (Sonar reporta 0%), não erro.
 - **`templates/sonarqube/quality-gate.yaml`** — step "Avaliar Quality Gate" extraído de
   `qa-sonar-dotnet.yaml` (script idêntico; o `.NET` agora o referencia) e compartilhado com o
