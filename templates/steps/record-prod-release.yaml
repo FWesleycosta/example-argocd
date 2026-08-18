@@ -83,7 +83,6 @@ steps:
         TAG="${{ parameters.imageTag }}"
         PROD_TAG="${{ parameters.prodTag }}"
         ENVIRONMENT="${{ parameters.environment }}"
-        # ADO emite booleanos de parâmetro como True/False — normalizar.
         UPDATE_MARKDOWN="$(printf '%s' "${UPDATE_MARKDOWN:-true}" | tr '[:upper:]' '[:lower:]')"
         CAPTURE_APPROVAL="$(printf '%s' "${CAPTURE_APPROVAL:-true}" | tr '[:upper:]' '[:lower:]')"
         REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
@@ -108,11 +107,8 @@ steps:
           COMMIT=""
           COMMIT_MSG="Rollback para a imagem ${TAG}"
         fi
-        # Versão segura p/ células de tabela markdown (sem '|' nem quebras de linha).
         MSG_SAFE="$(printf '%s' "$COMMIT_MSG" | tr '\n\r|' '  /' | cut -c1-80)"
 
-        # 1) Digest imutável da imagem que acabou de ser promovida para prod.
-        #    A tag é mutável; o digest (sha256) é a identidade real da imagem.
         resolve_digest() {
           aws ecr describe-images \
             --repository-name "$REPO" \
@@ -138,16 +134,11 @@ steps:
         echo "  URI (tag):    $IMAGE_URI"
         echo "  Digest:       ${DIGEST:-<não resolvido>}"
 
-        # Sem digest não existe referência por digest — vazio é mais honesto que
-        # "registry/repo@", que parece válido e não é.
         IMAGE_REF_BY_DIGEST=""
         if [ -n "$DIGEST" ]; then
           IMAGE_REF_BY_DIGEST="${REGISTRY}/${REPO}@${DIGEST}"
         fi
 
-        # Tag móvel: reaponta '$PROD_TAG' para o manifesto recém-promovido.
-        #   rc 1|2 -> não consegui LER o manifesto (permissão / imagem ausente).
-        #   rc 3   -> put-image recusou: ou a tag já está correta, ou faltou permissão.
         promote_moving_tag() {
           local manifest
           manifest="$(aws ecr batch-get-image \
@@ -279,12 +270,7 @@ steps:
         echo "##[section]Registro gerado"
         cat "$OUT_DIR/latest.txt"
 
-        # ---------- Entrada do histórico DORA (schema_version 1) ----------
-        # Tudo best-effort: campo que não resolver vira null, nunca aborta.
-
-        # committed_at: sem a data do commit não há lead time (deployed_at −
-        # committed_at). Vem da REST de Git do ADO; rollback não tem commit.
-        COMMITTED_AT=""
+         COMMITTED_AT=""
         resolve_committed_at() {
           [ -n "$COMMIT" ] || return 0
           [ -n "${SYSTEM_ACCESSTOKEN:-}" ] || { warn "committed_at: SYSTEM_ACCESSTOKEN vazio — lead time ficará null."; return 0; }
@@ -358,13 +344,6 @@ steps:
         echo "##[section]Entrada do histórico (${ENVIRONMENT}):"
         echo "$HISTORY_ENTRY" | jq .
 
-        # Registro em GIT no PRÓPRIO repo da aplicação — UM arquivo:
-        # DEPLOY-PRD.md (raiz), renderizado do history.jsonl -> "Último deploy"
-        # (última entrada prd) + "Histórico" (prd) + "Homologação" (hml).
-        # O commit entra na branch deployada com [skip ci] e se propaga à main
-        # pelo PR release->main que a esteira já abre. Se a branch tiver policy
-        # (ex.: rollback rodado na main), cai pra branch de registro + PR.
-        # Best-effort: qualquer falha vira warning e NÃO derruba o deploy.
         update_release_log() {
           local ENABLED
           ENABLED="$(printf '%s' "${UPDATE_RELEASE_LOG:-true}" | tr '[:upper:]' '[:lower:]')"
@@ -384,9 +363,6 @@ steps:
           REPO_URL="$(Build.Repository.Uri)"
           AUTH_CFG="http.extraHeader=Authorization: Bearer ${SYSTEM_ACCESSTOKEN}"
 
-          # clone -> escreve -> push, com retry (corrida entre runs E com pushes
-          # de devs na branch — cada tentativa re-clona) e fallback de PR na
-          # última tentativa (branch protegida por policy).
           local ATTEMPT WORK MD HIST LEGACY_ROWS LAST_PRD FALLBACK PR_RESP PR_ID
           for ATTEMPT in 1 2 3; do
             WORK="$(mktemp -d)"
@@ -411,16 +387,11 @@ steps:
                 if grep -q "pré-JSONL" "$MD"; then
                   LEGACY_ROWS="$(awk '/pré-JSONL/{h=1; next} h && /^\| [0-9]/{print}' "$MD")"
                 elif ! grep -q "Gerado pela esteira" "$MD"; then
-                  # Arquivo no formato ANTIGO (pré-2.1.0): preservar a tabela como
-                  # legado. Arquivo já no formato novo sem seção pré-JSONL não entra
-                  # aqui — raspar o "## Histórico" renderizado duplicaria os dados
-                  # que já estão no JSONL.
+
                   LEGACY_ROWS="$(awk '/^## Histórico/{h=1; next} h && /^\| [0-9]/{print}' "$MD")"
                 fi
               fi
-              # "Último deploy" vem do JSONL (última entrada de prd), NÃO das
-              # variáveis do run: um deploy de hml re-renderiza o arquivo sem
-              # sobrescrever os dados de produção.
+
               LAST_PRD="$(jq -s '[.[] | select(.environment == "prd")] | last // empty' "$HIST" 2>/dev/null)"
               {
                 echo "# Produção — ${REPO}"
