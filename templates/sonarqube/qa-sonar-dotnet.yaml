@@ -72,7 +72,6 @@ steps:
       projectKey: '${{ parameters.projectKey }}'
       projectName: '${{ parameters.projectName }}'
       extraProperties: |
-        sonar.scm.disabled=true
         sonar.branch.name=${{ coalesce(parameters.branchName, replace(variables['Build.SourceBranch'], 'refs/heads/', '')) }}
         sonar.cs.vscoveragexml.reportsPaths=${{ parameters.coverageFile }}
         ${{ parameters.extraProperties }}
