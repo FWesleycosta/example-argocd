@@ -18,6 +18,12 @@ parameters:
   - name: veracode
     type: object
     default: {}
+  - name: sistema
+    type: string
+    default: ''
+  - name: owner
+    type: string
+    default: ''
 
 stages:
   - template: ../stages/veracode.yaml
@@ -35,6 +41,8 @@ stages:
       observability: ${{ parameters.observability }}
       env_vars: ${{ parameters.config.env_vars }}
       ssm_parameters: ${{ parameters.config.ssm_parameters.prd }}
+      sistema: ${{ parameters.sistema }}
+      owner: ${{ parameters.owner }}
 
   - stage: Approve_PR_Main
     displayName: 'Approve PR hotfix -> main'
