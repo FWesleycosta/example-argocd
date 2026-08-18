@@ -1,0 +1,80 @@
+parameters:
+  - name: environment
+    type: string
+  - name: dependsOn
+    type: object
+    default: [Build]
+  - name: condition
+    type: string
+    default: succeeded()
+  - name: cdn
+    type: object
+  - name: runtime_vars
+    type: object
+    default: []
+  - name: sistema
+    type: string
+    default: ''
+  - name: owner
+    type: string
+    default: ''
+  - name: resourceSuffix
+    type: string
+    default: ''
+  - name: artifactName
+    type: string
+    default: 'frontend-dist'
+
+stages:
+  - stage: Deploy_${{ parameters.environment }}
+    displayName: 'Deploy ${{ parameters.environment }}'
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    jobs:
+      - deployment: deploy
+        displayName: 'Deploy ${{ parameters.environment }}'
+        environment: ${{ parameters.environment }}
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          - template: ../variables/env/${{ parameters.environment }}.yaml
+            parameters:
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: templates
+                  persistCredentials: true
+                  path: s/templates
+
+                - download: current
+                  artifact: ${{ parameters.artifactName }}
+                  displayName: 'Baixar artefato ${{ parameters.artifactName }}'
+
+                # O root manifests/terraform-frontend consome módulos privados do
+                # Fibra.DevOps.Terraform via git:: — o init precisa do GIT_PAT (grupo git-credentials).
+                - template: ../infra/setup-git-auth.yaml
+
+                - template: ../deploy-frontend.yaml
+                  parameters:
+                    environment: ${{ parameters.environment }}
+                    resourceSuffix: ${{ variables.resourceSuffix }}
+                    sistema: ${{ parameters.sistema }}
+                    owner: ${{ parameters.owner }}
+                    serviceAccount: ${{ variables.serviceAccount }}
+                    serviceAccountTerraform: ${{ variables.serviceAccountTerraform }}
+                    awsRegion: ${{ variables.awsRegion }}
+                    awsAccID: ${{ variables.awsAccID }}
+                    accessLoggingBucket: ${{ variables.accessLoggingWorkloads }}
+                    dns_name: ${{ parameters.cdn.dns_name }}
+                    ${{ if or(eq(parameters.cdn.cloudfront, false), eq(parameters.cdn.cloudfront, 'false'), eq(parameters.cdn.cloudfront, 'False')) }}:
+                      cloudfront: 'false'
+                    ${{ else }}:
+                      cloudfront: 'true'
+                    ${{ if or(eq(parameters.cdn.prune_stale_files, true), eq(parameters.cdn.prune_stale_files, 'true'), eq(parameters.cdn.prune_stale_files, 'True')) }}:
+                      pruneStaleFiles: 'true'
+                    ${{ else }}:
+                      pruneStaleFiles: 'false'
+                    runtime_vars: ${{ parameters.runtime_vars }}
+                    distDir: '$(Pipeline.Workspace)/${{ parameters.artifactName }}'

@@ -1,0 +1,83 @@
+# examples/azure-pipelines-frontend.yml
+# ============================================================================
+# COPIE este arquivo para a RAIZ do repositório do FRONTEND como `azure-pipelines.yml`.
+#
+# Antes: cada frontend copiava a esteira inteira (azure-pipelines-fibra-frontend.yaml),
+# com 3 builds (um por ambiente) e PRs develop→homolog→main dentro do mesmo run.
+# Agora: o app só declara DADOS. Toda a esteira vem da plataforma, pinada por tag, com o
+# MESMO roteamento por branch do backend (develop→DEV, release/*→HML→GMUD→PRD, hotfix/*).
+#
+# BUILD ÚNICO: `npm run build` roda UMA vez. O `dist` é publicado como artefato e o mesmo
+# artefato sobe em DEV/HML/PRD. O que muda por ambiente é SÓ o `env-config.js`
+# (window.env), gerado no deploy a partir de `config.runtime_vars.<env>`.
+#
+#   -> No index.html do app:   <script src="/env-config.js"></script>
+#   -> No código:              window.env.API_URL   (em vez de import.meta.env.VITE_API_URL)
+#   -> `config.env_vars` (build-time, .env) só para valores IGUAIS em todos os ambientes.
+# ============================================================================
+trigger:
+  batch: true
+  branches:
+    include:
+      - develop
+      - sandbox/*
+      - release/*
+      - hotfix/*
+
+resources:
+  repositories:
+    - repository: templates              # o alias PRECISA ser `templates`
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Pipelines
+      ref: refs/tags/v2.3.0              # PINE numa TAG — nunca refs/heads/main
+
+extends:
+  template: templates/stacks/spa-frontend.yaml@templates
+  parameters:
+    sistema: internet-banking
+    owner: squad-canais
+    # Sandbox (branch sandbox/*): deploya em SDX (conta de DEV) como <repo>-sdx /
+    # internet-banking-sdx.bancofibra.com.br. Para um SEGUNDO sandbox isolado do mesmo app,
+    # informe um sufixo próprio (bucket/domínio/state separados): resourceSuffix: '-wesley'
+    # resourceSuffix: ''
+
+    frontend:
+      node_version: '20.x'
+      install_command: ''                # vazio = npm ci (exige package-lock.json versionado)
+      build_command: 'npm run build'
+      output_dir: 'dist'                 # CRA: build | Angular: dist/<nome-do-app>
+
+    cdn:
+      dns_name: internet-banking         # -> internet-banking-dev / -hml / .bancofibra.com.br (prd)
+      cloudfront: true
+      prune_stale_files: false           # true = remove do bucket arquivos que não estão mais no dist
+
+    config:
+      # BUILD-TIME (.env) — iguais em todos os ambientes
+      env_vars:
+        - name: GENERATE_SOURCEMAP
+          value: 'false'
+      # RUNTIME (window.env) — por ambiente; a esteira seleciona o do ambiente do stage
+      runtime_vars:
+        dev:
+          - name: API_URL
+            value: https://dev-api-int.bancofibra.com.br
+        hml:
+          - name: API_URL
+            value: https://hml-api-int.bancofibra.com.br
+        prd:
+          - name: API_URL
+            value: https://api-int.bancofibra.com.br
+
+    # Qualidade (stage SonarQube, antes do Build). Se sobrescrever, informe TODAS as chaves.
+    # lint_command/test_command vazios = pular. O runner precisa gerar lcov (jest: coverageReporters
+    # ["lcov"]; vitest: coverage.reporter ["lcov"]) e, opcionalmente, JUnit (junit*.xml) para a aba Tests.
+    quality:
+      lint_command: 'npm run lint --if-present'
+      test_command: 'npm test -- --coverage'
+      coverage_report: 'coverage/lcov.info'
+      break_on_quality_gate: true
+
+    # Veracode SAST (release/* e hotfix/*). A esteira já exclui node_modules/dist/build/coverage/*.map;
+    # para mudar: veracode: { excludePatterns: "!**/node_modules/**\n!**/vendor/**" }
+    veracode: {}

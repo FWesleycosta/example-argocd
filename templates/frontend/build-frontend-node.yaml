@@ -1,0 +1,92 @@
+parameters:
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-latest
+  - name: nodeVersion
+    type: string
+    default: '20.x'
+  - name: installCommand
+    type: string
+    default: ''
+  - name: buildCommand
+    type: string
+    default: 'npm run build'
+  - name: outputDir
+    type: string
+    default: 'dist'
+  - name: envVars
+    type: object
+    default: []
+  - name: artifactName
+    type: string
+    default: 'frontend-dist'
+
+jobs:
+  - job: Build
+    displayName: 'Compilar frontend (Node ${{ parameters.nodeVersion }})'
+    pool: ${{ parameters.pool }}
+    steps:
+      - checkout: self
+        displayName: 'Checkout do repositório Git'
+
+      - task: NodeTool@0
+        displayName: 'Usar Node ${{ parameters.nodeVersion }}'
+        inputs:
+          versionSpec: ${{ parameters.nodeVersion }}
+
+      - bash: |
+          set -euo pipefail
+          CMD="${{ parameters.installCommand }}"
+          if [ -z "$CMD" ]; then
+            if [ -f package-lock.json ]; then CMD="npm ci"; else
+              echo "##[warning]package-lock.json nao encontrado — usando 'npm install' (build nao reprodutivel). Versione o lockfile."
+              CMD="npm install"
+            fi
+          fi
+          echo "Instalando dependencias: $CMD"
+          $CMD
+        displayName: 'Instalar dependências'
+        workingDirectory: $(Build.SourcesDirectory)
+
+      - bash: |
+          set -euo pipefail
+          ENV_VARS_JSON='${{ convertToJson(parameters.envVars) }}'
+          COUNT=$(echo "$ENV_VARS_JSON" | jq 'length')
+          ENV_FILE="$(Build.SourcesDirectory)/.env"
+
+          echo "##[section]Variaveis de BUILD-TIME recebidas: $COUNT"
+          : > "$ENV_FILE"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "$ENV_VARS_JSON" | jq -r '.[] | "\(.name)=\(.value)"' >> "$ENV_FILE"
+          else
+            echo "Nenhuma env_var de build definida (config.env_vars vazio)."
+          fi
+          echo "##[section].env gerado (valores com secret/password/token/key mascarados):"
+          sed -E 's/^([^=]*(SECRET|PASSWORD|TOKEN|KEY)[^=]*=).*/\1***/I' "$ENV_FILE"
+        displayName: 'Gerar .env de build (config.env_vars)'
+
+      - bash: |
+          set -euo pipefail
+          echo "Build: ${{ parameters.buildCommand }}"
+          ${{ parameters.buildCommand }}
+
+          OUT="$(Build.SourcesDirectory)/${{ parameters.outputDir }}"
+          if [ ! -d "$OUT" ]; then
+            echo "##[error]Pasta de saida '${{ parameters.outputDir }}' nao encontrada apos o build. Ajuste frontend.output_dir."
+            exit 1
+          fi
+          if [ ! -f "$OUT/index.html" ]; then
+            echo "##[error]'${{ parameters.outputDir }}/index.html' nao encontrado — a saida nao parece uma SPA."
+            exit 1
+          fi
+          echo "##[section]Saida do build ($OUT):"
+          du -sh "$OUT"; ls -la "$OUT"
+        displayName: 'Compilar aplicação'
+        workingDirectory: $(Build.SourcesDirectory)
+        env:
+          CI: 'true'
+
+      - publish: $(Build.SourcesDirectory)/${{ parameters.outputDir }}
+        artifact: ${{ parameters.artifactName }}
+        displayName: 'Publicar artefato ${{ parameters.artifactName }}'

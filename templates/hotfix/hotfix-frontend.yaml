@@ -1,0 +1,75 @@
+parameters:
+  - name: cdn
+    type: object
+  - name: config
+    type: object
+    default:
+      env_vars: []
+      runtime_vars:
+        dev: []
+        hml: []
+        prd: []
+  - name: veracode
+    type: object
+    default: {}
+  - name: sistema
+    type: string
+    default: ''
+  - name: owner
+    type: string
+    default: ''
+
+stages:
+  - template: ../stages/veracode.yaml
+    parameters:
+      dependsOn: [Build]
+      veracode: ${{ parameters.veracode }}
+      defaultExcludePatterns: |
+        !**/node_modules/**
+        !**/dist/**
+        !**/build/**
+        !**/coverage/**
+        !**/*.map
+        !**/.git/**
+
+  - template: ../stages/deploy-frontend.yaml
+    parameters:
+      environment: prd
+      dependsOn: [Veracode]
+      cdn: ${{ parameters.cdn }}
+      runtime_vars: ${{ parameters.config.runtime_vars.prd }}
+      sistema: ${{ parameters.sistema }}
+      owner: ${{ parameters.owner }}
+
+  - stage: Approve_PR_Main
+    displayName: 'Approve PR hotfix -> main'
+    dependsOn: Deploy_prd
+    condition: succeeded()
+    jobs:
+      - deployment: Approve_PR_Main
+        displayName: 'Aguardando aprovacao do PR'
+        environment: prd
+        pool:
+          vmImage: ubuntu-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - bash: echo "Aprovação concedida. Liberando PR hotfix -> main"
+
+  - stage: PR_PRD
+    displayName: 'PR hotfix -> main'
+    dependsOn: Approve_PR_Main
+    condition: succeeded()
+    jobs:
+      - template: ../utils/create-pullrequest.yaml
+        parameters:
+          sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
+          targetBranch: main
+
+  - stage: Delete_Hotfix_Branch
+    displayName: 'Delete hotfix branch'
+    dependsOn: PR_PRD
+    condition: succeeded()
+    jobs:
+      - template: ../utils/delete-branch.yaml

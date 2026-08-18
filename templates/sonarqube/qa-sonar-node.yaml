@@ -1,0 +1,157 @@
+# templates/sonarqube/qa-sonar-node.yaml
+# Steps de qualidade para frontend Node (JS/TS): instala dependências, lint, testes com
+# cobertura (lcov), análise SonarQube (scanner CLI) e Quality Gate como build breaker —
+# equivalente do qa-sonar-dotnet.yaml para o stack spa-frontend.
+parameters:
+  - name: sonarServiceConnection
+    type: string
+    default: 'SonarQube'
+  - name: projectKey
+    type: string
+    default: '$(Build.Repository.Name)-key'
+  - name: projectName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: branchName
+    type: string
+    default: ''
+  - name: extraProperties
+    type: string
+    default: ''
+  - name: nodeVersion
+    type: string
+    default: '20.x'
+  - name: installCommand
+    type: string
+    default: ''                       # vazio = npm ci (ou npm install sem lockfile, com warning)
+  - name: lintCommand
+    type: string
+    default: 'npm run lint --if-present'   # '' = pular
+  - name: testCommand
+    type: string
+    default: 'npm test -- --coverage'      # '' = pular (sem cobertura no Sonar). CI=true evita watch mode (jest/vitest)
+  - name: coverageReport
+    type: string
+    default: 'coverage/lcov.info'          # relativo à raiz do repo
+  - name: testResultsPattern
+    type: string
+    default: 'junit*.xml'                  # JUnit gerado pelo runner (jest-junit / vitest --reporter=junit); vazio = não publicar
+  - name: sources
+    type: string
+    default: '.'
+  - name: exclusions
+    type: string
+    default: '**/node_modules/**,**/dist/**,**/build/**,**/coverage/**,**/*.spec.*,**/*.test.*,**/__tests__/**,**/*.config.*,**/public/**'
+  - name: testInclusions
+    type: string
+    default: '**/*.spec.*,**/*.test.*,**/__tests__/**'
+  - name: pollingTimeoutSec
+    type: string
+    default: '300'
+  - name: gateWaitAttempts
+    type: number
+    default: 30
+  - name: gateWaitIntervalSeconds
+    type: number
+    default: 5
+  - name: breakOnQualityGate
+    type: boolean
+    default: true
+
+steps:
+  - task: NodeTool@0
+    displayName: 'Usar Node ${{ parameters.nodeVersion }}'
+    inputs:
+      versionSpec: ${{ parameters.nodeVersion }}
+
+  - task: SonarSource.sonarqube.15B84CA1-B62F-4A2A-A403-89B77A063157.SonarQubePrepare@7
+    displayName: 'Configurar SonarQube (JS/TS)'
+    inputs:
+      SonarQube: ${{ parameters.sonarServiceConnection }}
+      scannerMode: 'CLI'
+      configMode: 'manual'
+      cliProjectKey: '${{ parameters.projectKey }}'
+      cliProjectName: '${{ parameters.projectName }}'
+      cliSources: '${{ parameters.sources }}'
+      extraProperties: |
+        sonar.branch.name=${{ coalesce(parameters.branchName, replace(variables['Build.SourceBranch'], 'refs/heads/', '')) }}
+        sonar.sourceEncoding=UTF-8
+        sonar.exclusions=${{ parameters.exclusions }}
+        sonar.test.inclusions=${{ parameters.testInclusions }}
+        sonar.javascript.lcov.reportPaths=${{ parameters.coverageReport }}
+        sonar.typescript.lcov.reportPaths=${{ parameters.coverageReport }}
+        sonar.coverage.exclusions=${{ parameters.testInclusions }}
+        ${{ parameters.extraProperties }}
+    continueOnError: false
+
+  - bash: |
+      set -euo pipefail
+      CMD="${{ parameters.installCommand }}"
+      if [ -z "$CMD" ]; then
+        if [ -f package-lock.json ]; then CMD="npm ci"; else
+          echo "##[warning]package-lock.json nao encontrado — usando 'npm install' (build nao reprodutivel). Versione o lockfile."
+          CMD="npm install"
+        fi
+      fi
+      echo "Instalando dependencias: $CMD"
+      $CMD
+    displayName: 'Instalar dependências'
+    workingDirectory: $(Build.SourcesDirectory)
+    env:
+      CI: 'true'
+
+  - ${{ if ne(parameters.lintCommand, '') }}:
+      - bash: |
+          set -euo pipefail
+          echo "Lint: ${{ parameters.lintCommand }}"
+          ${{ parameters.lintCommand }}
+        displayName: 'Lint'
+        workingDirectory: $(Build.SourcesDirectory)
+        env:
+          CI: 'true'
+
+  - ${{ if ne(parameters.testCommand, '') }}:
+      - bash: |
+          set -euo pipefail
+          echo "Testes: ${{ parameters.testCommand }}"
+          ${{ parameters.testCommand }}
+
+          REPORT="$(Build.SourcesDirectory)/${{ parameters.coverageReport }}"
+          if [ -f "$REPORT" ]; then
+            echo "##[section]Cobertura: $REPORT ($(wc -l < "$REPORT") linhas)"
+          else
+            echo "##[warning]Relatorio de cobertura '${{ parameters.coverageReport }}' nao encontrado — o Sonar vai reportar 0% de cobertura. Configure o runner para gerar lcov (jest: coverageReporters lcov; vitest: coverage.reporter lcov)."
+          fi
+        displayName: 'Testes + cobertura'
+        workingDirectory: $(Build.SourcesDirectory)
+        env:
+          CI: 'true'
+
+      - ${{ if ne(parameters.testResultsPattern, '') }}:
+          - task: PublishTestResults@2
+            displayName: 'Publicar resultados de teste'
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: '**/${{ parameters.testResultsPattern }}'
+              searchFolder: '$(Build.SourcesDirectory)'
+              failTaskOnMissingResultsFile: false
+              testRunTitle: '$(Build.Repository.Name) - $(Build.BuildId)'
+
+  - task: SonarSource.sonarqube.6D01813A-9589-4B15-8491-8164AEB38055.SonarQubeAnalyze@7
+    displayName: 'Analisar código'
+    inputs:
+      jdkversion: 'JAVA_HOME'
+    continueOnError: false
+
+  - task: SonarSource.sonarqube.291ed61f-1ee4-45d3-b1b0-bf822d9095ef.SonarQubePublish@7
+    displayName: 'Publicar resultado do Quality Gate'
+    inputs:
+      pollingTimeoutSec: '${{ parameters.pollingTimeoutSec }}'
+    continueOnError: false
+
+  - template: quality-gate.yaml
+    parameters:
+      breakOnQualityGate: ${{ parameters.breakOnQualityGate }}
+      gateWaitAttempts: ${{ parameters.gateWaitAttempts }}
+      gateWaitIntervalSeconds: ${{ parameters.gateWaitIntervalSeconds }}
