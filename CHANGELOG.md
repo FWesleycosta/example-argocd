@@ -218,6 +218,17 @@ no backend é a extração do job de exclusão de branch para `utils/delete-bran
   Terraform usa `serviceAccountTerraform`; upload/invalidation usam `serviceAccount`
   (separação herdada do legado — menor privilégio).
 - **`templates/hotfix/hotfix-frontend.yaml`** — fluxo `hotfix/*` do frontend.
+- **Security headers do CloudFront via policy compartilhada** (módulo
+  `aws_cloudfront_distribution` + root + esteira). O módulo **não cria mais** uma response
+  headers policy por distribuição por default (quota de **20 por conta**; conflito de nome em
+  migração). Precedência: `response_headers_policy_id` > `response_headers_policy_name`
+  (policy compartilhada da conta, data source por nome) > `create_response_headers_policy =
+  true` (própria, opt-in — comportamento anterior) > managed AWS
+  `Managed-CORS-and-SecurityHeadersPolicy`. Novo `cdn.response_headers_policy_name` no stack
+  (default `''` = managed) → tfvar `response_headers_policy_name`. Output
+  `Response_Headers_Policy_ID` passa a refletir a policy efetiva. Apps que já aplicaram a
+  versão anterior terão a `headers-<bucket>` própria destruída no próximo apply (a
+  distribuição é atualizada antes). **Requer republicar o módulo** no `Fibra.DevOps.Terraform`.
 - **Caminhos do motor de frontend ancorados em `$(Pipeline.Workspace)`** (`terraformSourceDir`
   = `$(Pipeline.Workspace)/s/templates/manifests/terraform-frontend`, `terraformWorkDir` =
   `$(Pipeline.Workspace)/terraform`). O job de deploy do frontend faz checkout **só** do repo

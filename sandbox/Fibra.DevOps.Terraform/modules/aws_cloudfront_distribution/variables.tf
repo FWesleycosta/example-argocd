@@ -103,9 +103,27 @@ variable "origin_request_policy_id" {
   default     = "88a5eaf4-2fd4-4709-b370-b4c650ea3fcf"
 }
 
+variable "response_headers_policy_id" {
+  type        = string
+  description = "ID de uma response headers policy existente (custom ou managed da AWS). Tem precedência sobre response_headers_policy_name e create_response_headers_policy."
+  default     = ""
+}
+
+variable "response_headers_policy_name" {
+  type        = string
+  description = "Nome de uma response headers policy COMPARTILHADA já existente na conta (resolvida por data source). Recomendado: uma policy de security headers da plataforma, reutilizada por todas as distribuições — a conta tem quota de 20 policies."
+  default     = ""
+}
+
+variable "create_response_headers_policy" {
+  type        = bool
+  description = "true = cria uma response headers policy própria (headers-<name>) com as variáveis cors_*/security headers abaixo. Default false: sem id/nome informados, usa a managed da AWS Managed-CORS-and-SecurityHeadersPolicy (HSTS, nosniff, X-Frame-Options SAMEORIGIN, Referrer-Policy, CORS *)."
+  default     = false
+}
+
 variable "cors_allowed_origins" {
   type        = list(string)
-  description = "Origens permitidas na response headers policy (CORS). [\"*\"] libera qualquer origem — adequado para assets estáticos públicos."
+  description = "Origens permitidas na response headers policy (CORS). Só usado com create_response_headers_policy = true. [\"*\"] libera qualquer origem — adequado para assets estáticos públicos."
   default     = ["*"]
 }
 
@@ -129,7 +147,7 @@ variable "cors_max_age_sec" {
 
 variable "enable_security_headers" {
   type        = bool
-  description = "Adiciona HSTS, X-Content-Type-Options, X-Frame-Options e Referrer-Policy na response headers policy."
+  description = "Adiciona HSTS, X-Content-Type-Options, X-Frame-Options e Referrer-Policy na response headers policy criada pelo módulo (create_response_headers_policy = true)."
   default     = true
 }
 

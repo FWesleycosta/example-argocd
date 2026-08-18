@@ -95,6 +95,12 @@ variable "price_class" {
   }
 }
 
+variable "response_headers_policy_name" {
+  description = "Nome da response headers policy COMPARTILHADA da conta (security headers da plataforma), resolvida por nome pelo módulo. Vazio = managed da AWS Managed-CORS-and-SecurityHeadersPolicy. O módulo NÃO cria policy por distribuição (quota de 20/conta)."
+  type        = string
+  default     = ""
+}
+
 variable "cors_allowed_origins" {
   description = "Origens permitidas na response headers policy (CORS) aplicada a *.js"
   type        = list(string)

@@ -18,7 +18,7 @@ o certificado — o resto vem certo (e seguro) por padrão.
 | O que é criado | Em linguagem simples | Quando |
 |---|---|---|
 | `aws_cloudfront_origin_access_control` (OAC) | A "credencial" com que o CloudFront lê o bucket privado. Ninguém mais lê o bucket direto. | Sempre (com o módulo ligado). |
-| `aws_cloudfront_response_headers_policy` | Regras de CORS + cabeçalhos de segurança (HSTS, nosniff, X-Frame-Options, Referrer-Policy) que o CloudFront adiciona a toda resposta. | Sempre; os cabeçalhos de segurança podem ser desligados (`enable_security_headers = false`). |
+| `aws_cloudfront_response_headers_policy` | Regras de CORS + cabeçalhos de segurança (HSTS, nosniff, X-Frame-Options, Referrer-Policy) que o CloudFront adiciona a toda resposta. | **Só com `create_response_headers_policy = true`.** Por default a distribuição usa uma policy **compartilhada** (`response_headers_policy_name`/`_id`) ou a managed da AWS `Managed-CORS-and-SecurityHeadersPolicy` — a conta tem quota de **20** policies, uma por app não escala. |
 | `aws_cloudfront_distribution` | A distribuição em si: origem S3 via OAC, cache policy gerenciada, HTTP/2+3, redirect para HTTPS, aliases + certificado ACM, fallback SPA (403/404 → `/index.html`). | Sempre (com o módulo ligado). |
 
 ### O que o módulo não faz
@@ -82,6 +82,14 @@ Depois do `apply`: crie o CNAME `meu-app-dev.bancofibra.com.br → module.cloudf
 - **Fallback SPA em 403 *e* 404.** Com OAC e sem `s3:ListBucket`, o S3 responde **403** para
   chave inexistente (não 404). Uma SPA com rotas no cliente (`/conta/extrato`) precisa que ambos
   virem `200 /index.html`. Desligue com `spa_fallback = false` para sites que não são SPA.
+- **Security headers compartilhados, não por app.** Quota de 20 response headers policies por
+  conta e conflito de nomes em migração levaram ao default: `response_headers_policy_id` (ID) >
+  `response_headers_policy_name` (policy compartilhada da conta, resolvida por data source) >
+  `create_response_headers_policy = true` (própria, opt-in) > managed da AWS
+  `Managed-CORS-and-SecurityHeadersPolicy` (`e61eb60c-…`: HSTS 1 ano, nosniff, X-Frame-Options
+  SAMEORIGIN, Referrer-Policy strict-origin-when-cross-origin, X-XSS-Protection, CORS `*`
+  GET/HEAD/OPTIONS). Para CSP ou headers específicos da casa, crie **uma** policy na conta e
+  aponte por nome.
 - **Managed policies.** `CachingOptimized` (compressão, TTL 24h, ignora cookies/query string) e
   `CORS-S3Origin` (repassa `Origin` ao S3). O controle fino de cache fica nos **objetos**: assets
   com hash sobem com `Cache-Control: immutable`; `index.html`/`env-config.js` com `no-cache` +
@@ -131,6 +139,9 @@ nada ao S3, `origin_request_policy_id = ""`.
 | `allowed_methods` / `cached_methods` | list(string) | `GET,HEAD,OPTIONS` / `GET,HEAD` | Default cache behavior. |
 | `cache_policy_id` | string | `658327ea-…` (CachingOptimized) | Cache policy. |
 | `origin_request_policy_id` | string | `88a5eaf4-…` (CORS-S3Origin) | Origin request policy; `""` = nenhuma. |
+| `response_headers_policy_id` | string | `""` | ID de policy existente (custom/managed). Precedência máxima. |
+| `response_headers_policy_name` | string | `""` | Nome de policy **compartilhada** da conta (data source). |
+| `create_response_headers_policy` | bool | `false` | Cria `headers-<name>` própria com os `cors_*`/security headers abaixo. |
 | `cors_allowed_origins` / `_headers` / `_methods` / `cors_max_age_sec` | list / number | `["*"]` / lista comum / `GET,HEAD,OPTIONS` / `3600` | CORS da response headers policy. |
 | `enable_security_headers` | bool | `true` | HSTS + nosniff + X-Frame-Options + Referrer-Policy. |
 | `hsts_max_age_sec` | number | `31536000` | HSTS max-age. |
@@ -174,7 +185,7 @@ terraform test                                   # Terraform >= 1.6
 terraform test -filter=tests/preconditions.tftest.hcl
 ```
 
-`tests/setup.tftest.hcl` (defaults, sem security headers/SPA, sem alias, desligado),
+`tests/setup.tftest.hcl` (defaults com policy managed, policy própria opt-in, ID explícito, sem security headers/SPA, sem alias, desligado),
 `tests/validations.tftest.hcl` (price_class, http_version, frame_option, referrer_policy,
 geo_restriction, TLS) e `tests/preconditions.tftest.hcl` (as 4 preconditions + desligado
 ignora obrigatórios). Todos com `command = plan`, credenciais falsas e `skip_*` — rodam offline.
