@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: PLACEHOLDER_APP_NAME-service
-  namespace: PLACEHOLDER_APP_NAME-PLACEHOLDER_ENVIRONMENT
+  namespace: PLACEHOLDER_NAMESPACE
 spec:
   selector:
     app: PLACEHOLDER_APP_NAME
