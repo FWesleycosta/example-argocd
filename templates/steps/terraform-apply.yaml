@@ -35,13 +35,13 @@ parameters:
 
 steps:
   - task: TerraformInstaller@1
-    displayName: 'Install Terraform ${{ parameters.terraformVersion }}'
+    displayName: 'Instalar Terraform (${{ parameters.terraformVersion }})'
     inputs:
       terraformVersion: ${{ parameters.terraformVersion }}
 
   - ${{ if eq(parameters.ensureBackend, true) }}:
       - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-        displayName: 'TF: provisionar state backend (S3 endurecido)'
+        displayName: 'Provisionar bucket S3 do state'
         inputs:
           awsCredentials: ${{ parameters.serviceAccount }}
           regionName: ${{ parameters.awsRegion }}
@@ -95,7 +95,7 @@ steps:
       EOF
       echo "backend.tf gerado:"; cat backend.tf
     workingDirectory: ${{ parameters.workingDirectory }}
-    displayName: 'TF: configurar remote state (S3)'
+    displayName: 'Configurar backend remoto no S3'
 
   - bash: |
       set -euo pipefail
@@ -105,7 +105,7 @@ steps:
       echo "Outros *.auto.tfvars.json no diretório (do chamador) também serão carregados:"
       ls -1 *.auto.tfvars.json
     workingDirectory: ${{ parameters.workingDirectory }}
-    displayName: 'TF: gerar _pipeline.auto.tfvars.json'
+    displayName: 'Gerar variáveis do Terraform (tfvars)'
 
   - template: terraform/init.yaml
     parameters:

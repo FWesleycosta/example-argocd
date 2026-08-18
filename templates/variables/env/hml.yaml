@@ -1,9 +1,14 @@
-# templates/variables/env/hml.yaml
-# Variáveis ESPECÍFICAS do ambiente HOMOLOG (backend .NET / EKS).
-# Mesmos NOMES de dev.yaml/prd.yaml; só os VALORES mudam. Ver cabeçalho de dev.yaml.
+parameters:
+  - name: resourceSuffix
+    type: string
+    default: ''
+
 variables:
   - name: deployment_aspnetcore_environment
     value: homolog
+
+  - name: resourceSuffix
+    value: ''
 
   # --- consumidas por stages/deploy.yaml + steps/rollout-verify.yaml ---
   - name: serviceAccount

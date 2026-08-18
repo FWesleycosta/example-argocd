@@ -1,4 +1,3 @@
-
 parameters:
   - name: serviceAccount
     type: string
@@ -22,7 +21,7 @@ parameters:
 
 steps:
   - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'TF: apply'
+    displayName: 'Aplicar Terraform'
     condition: and(succeeded(), ne(variables['${{ parameters.hasChangesVariable }}'], 'false'))
     inputs:
       awsCredentials: ${{ parameters.serviceAccount }}

@@ -26,7 +26,7 @@ A esteira falha se sobrar qualquer `PLACEHOLDER_` após a substituição. Tokens
 |---|---|
 | `PLACEHOLDER_APP_NAME` | `Build.Repository.Name` |
 | `PLACEHOLDER_ECR_IMAGE` | `<awsAccID>.dkr.ecr.<region>.amazonaws.com/<app>:<BuildId>` |
-| `PLACEHOLDER_ENVIRONMENT` | `environment` (dev/hml/prd) |
+| `PLACEHOLDER_ENVIRONMENT` | `environment` (dev/hml/prd/sdx) — em `sdx`, o `group.name` do ingress vira `sdx-eks-shared-alb`: ALB próprio do sandbox, criado no primeiro deploy |
 | `PLACEHOLDER_AWS_REGION` | `awsRegion` |
 | `PLACEHOLDER_DEPLOYMENT_ASPNETCORE_URLS` | `networking.deployment_aspnetcore_urls` |
 | `PLACEHOLDER_DEPLOYMENT_ASPNETCORE_ENVIRONMENT` | `deployment_aspnetcore_environment` |

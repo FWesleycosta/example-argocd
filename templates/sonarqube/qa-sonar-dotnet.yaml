@@ -1,73 +1,195 @@
+parameters:
+  - name: sonarServiceConnection
+    type: string
+    default: 'SonarQube'
+  - name: projectKey
+    type: string
+    default: '$(Build.Repository.Name)-key'
+  - name: projectName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: branchName
+    type: string
+    default: ''
+  - name: extraProperties
+    type: string
+    default: ''
+  - name: dotnetVersion
+    type: string
+    default: '10.x'
+  - name: includePreviewVersions
+    type: boolean
+    default: true
+  - name: solutionPattern
+    type: string
+    default: '*.slnx'
+  - name: nugetFeedId
+    type: string
+    default: 'fe426c42-a2f6-4500-bfe3-a01db2340d0b'
+  - name: buildConfiguration
+    type: string
+    default: 'Release'
+  - name: coverageFile
+    type: string
+    default: '$(Agent.TempDirectory)/coverage.xml'
+  - name: coverageToolVersion
+    type: string
+    default: ''
+  - name: publishTestResults
+    type: boolean
+    default: true
+  - name: relaxNugetSignatureChecks
+    type: boolean
+    default: true
+  - name: pollingTimeoutSec
+    type: string
+    default: '300'
+  - name: gateWaitAttempts
+    type: number
+    default: 30
+  - name: gateWaitIntervalSeconds
+    type: number
+    default: 5
+  - name: breakOnQualityGate
+    type: boolean
+    default: true
+  - name: debugCoverage
+    type: boolean
+    default: false
+
 steps:
-  - task: SonarSource.sonarqube.15B84CA1-B62F-4A2A-A403-89B77A063157.SonarQubePrepare@7
-    displayName: 'Configuration SonarQube (.NET)'
-    inputs:
-      SonarQube: SonarQube
-      scannerMode: 'dotnet'
-      projectKey: '$(Build.Repository.Name)-key'
-      projectName: '$(Build.Repository.Name)'
-      extraProperties: |
-        sonar.scm.disabled=true
-        sonar.branch.name=develop
-        # Apontamos para uma pasta temporária fora da raiz do projeto
-        sonar.cs.vscoveragexml.reportsPaths=$(Agent.TempDirectory)/coverage.xml
-        # Cobertura: excluir código gerado, DTOs e caminhos sem valor de métrica
-        sonar.coverage.exclusions=**/obj/**,**/*.generated.cs,**/Program.cs,**/DTOs/**,**/Domain/**,**/Configuration/**,**/HealthController.cs,**/Services/Rest/**/Contracts/**,**/Services/Rest/**/Configuration/**
-        # Análise: excluir testes, gerados e terceiros
-        sonar.exclusions=**/obj/**,**/*.generated.cs,test/**,**/HealthController.cs
-        # CPD: excluir duplicações em DTOs, domain e contratos REST
-        sonar.cpd.exclusions=**/DTOs/**,**/Domain/**,**/Services/Rest/**/Contracts/**
-    continueOnError: true
-
   - task: UseDotNet@2
-    displayName: 'Use .NET Core sdk 10.x'
+    displayName: 'Instalar .NET SDK ${{ parameters.dotnetVersion }}'
     inputs:
-      version: 10.x
-      includePreviewVersions: true
+      version: ${{ parameters.dotnetVersion }}
+      includePreviewVersions: ${{ parameters.includePreviewVersions }}
 
-  - script: dotnet tool install --global dotnet-coverage
-    displayName: 'Install dotnet-coverage'
-
-  - task: DotNetCoreCLI@2
-    displayName: Restore
+  - task: SonarSource.sonarqube.15B84CA1-B62F-4A2A-A403-89B77A063157.SonarQubePrepare@7
+    displayName: 'Configurar SonarQube (.NET)'
     inputs:
-      command: restore
-      projects: '**/*.slnx'
-      vstsFeed: 'fe426c42-a2f6-4500-bfe3-a01db2340d0b'
-    # TEMPORÁRIO: contorna NU3012 (ex.: assinatura/revogação de certificado em pacotes NuGet, ex. Refit).
-    # Remover quando os pacotes estiverem republicados com assinatura válida.
-    env:
-      NUGET_CERT_REVOCATION_MODE: no
-      DOTNET_NUGET_SIGNATURE_VERIFICATION: false
+      SonarQube: ${{ parameters.sonarServiceConnection }}
+      scannerMode: 'dotnet'
+      projectKey: '${{ parameters.projectKey }}'
+      projectName: '${{ parameters.projectName }}'
+      extraProperties: |
+        sonar.branch.name=${{ coalesce(parameters.branchName, replace(variables['Build.SourceBranch'], 'refs/heads/', '')) }}
+        sonar.cs.vscoveragexml.reportsPaths=${{ parameters.coverageFile }}
+        ${{ parameters.extraProperties }}
+    continueOnError: false
 
   - script: |
-      # Localiza a solução de forma segura no Linux
-      SOLUTION=$(find . -maxdepth 2 -name "*.slnx" | head -n 1)
-      
+      set -euo pipefail
+      VERSION="${{ parameters.coverageToolVersion }}"
+      if [ -n "$VERSION" ]; then
+        dotnet tool update --global dotnet-coverage --version "$VERSION"
+      else
+        echo "##[warning]dotnet-coverage sem versao pinada. Defina 'coverageToolVersion' para builds reprodutiveis."
+        dotnet tool update --global dotnet-coverage
+      fi
+    displayName: 'Instalar dotnet-coverage'
+
+  - task: DotNetCoreCLI@2
+    displayName: 'Restaurar pacotes'
+    inputs:
+      command: restore
+      projects: '**/${{ parameters.solutionPattern }}'
+      vstsFeed: '${{ parameters.nugetFeedId }}'
+    ${{ if parameters.relaxNugetSignatureChecks }}:
+      env:
+        NUGET_CERT_REVOCATION_MODE: 'no'
+        DOTNET_NUGET_SIGNATURE_VERIFICATION: 'false'
+
+  - script: |
+      set -euo pipefail
+      export PATH="$PATH:$HOME/.dotnet/tools"
+
+      TRX_DIR="$(Agent.TempDirectory)/testresults"
+      mkdir -p "$TRX_DIR"
+
+      # -print -quit: para no primeiro match sem pipe. Com 'find | head' o find
+      # leva SIGPIPE e o pipefail derruba o step de forma intermitente.
+      SOLUTION=$(find . -maxdepth 2 -name "${{ parameters.solutionPattern }}" -print -quit)
+      if [ -z "$SOLUTION" ]; then
+        echo "##[error]Nenhuma solução '${{ parameters.solutionPattern }}' encontrada até 2 níveis a partir da raiz."
+        exit 1
+      fi
+
       echo "Building: $SOLUTION"
-      dotnet build "$SOLUTION" --configuration Release --no-incremental
-      
-      echo "Generating coverage at $(Agent.TempDirectory)/coverage.xml"
-      # Geramos o arquivo na pasta TEMP do Agente, longe dos fontes
-      dotnet-coverage collect "dotnet test --configuration Release --no-build" -f xml -o "$(Agent.TempDirectory)/coverage.xml"
-    displayName: 'Build and Collect Coverage'
-    env:
-      PATH: $(PATH):$(HOME)/.dotnet/tools
-      NUGET_CERT_REVOCATION_MODE: no
-      DOTNET_NUGET_SIGNATURE_VERIFICATION: false
+      # -p:ContinuousIntegrationBuild=false  -> evita a normalizacao deterministica
+      #   de caminhos (/_/src/...), que impede o Sonar de casar o coverage.xml com
+      #   os arquivos indexados e resulta em cobertura 0%.
+      # -p:DebugType=portable / DebugSymbols -> o dotnet-coverage precisa de PDB
+      #   para instrumentar. Sem PDB o XML sai vazio e os testes passam mesmo assim.
+      dotnet build "$SOLUTION" \
+        --configuration ${{ parameters.buildConfiguration }} \
+        --no-incremental \
+        -p:ContinuousIntegrationBuild=false \
+        -p:DebugType=portable \
+        -p:DebugSymbols=true
+
+      echo "Generating coverage at ${{ parameters.coverageFile }}"
+      dotnet-coverage collect \
+        "dotnet test \"$SOLUTION\" --configuration ${{ parameters.buildConfiguration }} --no-build --logger trx --results-directory $TRX_DIR" \
+        -f xml -o "${{ parameters.coverageFile }}"
+    displayName: 'Compilar e coletar cobertura'
+    ${{ if parameters.relaxNugetSignatureChecks }}:
+      env:
+        NUGET_CERT_REVOCATION_MODE: 'no'
+        DOTNET_NUGET_SIGNATURE_VERIFICATION: 'false'
+
+  - ${{ if parameters.debugCoverage }}:
+      - script: |
+          set +e
+          F="${{ parameters.coverageFile }}"
+
+          echo "##[group]Arquivo de cobertura"
+          ls -la "$F" 2>/dev/null || echo "NAO EXISTE"
+          printf 'bytes: '
+          wc -c < "$F" 2>/dev/null || echo 0
+          echo "##[endgroup]"
+
+          echo "##[group]Modulos instrumentados"
+          grep -o 'module name="[^"]*"' "$F" 2>/dev/null | sort -u || echo "NENHUM"
+          echo "##[endgroup]"
+
+          echo "##[group]Caminhos de fonte (amostra)"
+          grep -o 'path="[^"]*"' "$F" 2>/dev/null | head -15 || echo "NENHUM"
+          echo "##[endgroup]"
+
+          echo "##[group]TRX gerados"
+          ls -la "$(Agent.TempDirectory)/testresults/" 2>/dev/null || echo "NENHUM"
+          echo "##[endgroup]"
+
+          echo "##[group]ProjectInfo.xml gerados pelo scanner"
+          find . -name "ProjectInfo.xml" -path "*.sonarqube*" | wc -l
+          echo "##[endgroup]"
+        displayName: 'DEBUG: cobertura'
+        condition: always()
+
+  - ${{ if parameters.publishTestResults }}:
+      - task: PublishTestResults@2
+        displayName: 'Publicar resultados de teste'
+        condition: succeededOrFailed()
+        inputs:
+          testResultsFormat: VSTest
+          testResultsFiles: '$(Agent.TempDirectory)/testresults/*.trx'
+          failTaskOnMissingResultsFile: false
+          testRunTitle: '$(Build.Repository.Name) - $(Build.BuildId)'
 
   - task: SonarSource.sonarqube.6D01813A-9589-4B15-8491-8164AEB38055.SonarQubeAnalyze@7
-    displayName: 'Code Analysis'
+    displayName: 'Analisar código'
     inputs:
       jdkversion: 'JAVA_HOME'
-    continueOnError: true
+    continueOnError: false
 
   - task: SonarSource.sonarqube.291ed61f-1ee4-45d3-b1b0-bf822d9095ef.SonarQubePublish@7
-    displayName: 'Publish Quality Gate Result'
-    continueOnError: true
-
-  - task: SimondeLang.sonar-buildbreaker.sonar-buildbreaker.sonar-buildbreaker@8
-    displayName: 'Break build on quality gate failure'
+    displayName: 'Publicar resultado do Quality Gate'
     inputs:
-      SonarQube: SonarQube
-    continueOnError: true
+      pollingTimeoutSec: '${{ parameters.pollingTimeoutSec }}'
+    continueOnError: false
+
+  - template: quality-gate.yaml
+    parameters:
+      breakOnQualityGate: ${{ parameters.breakOnQualityGate }}
+      gateWaitAttempts: ${{ parameters.gateWaitAttempts }}
+      gateWaitIntervalSeconds: ${{ parameters.gateWaitIntervalSeconds }}

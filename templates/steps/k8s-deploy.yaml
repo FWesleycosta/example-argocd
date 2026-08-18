@@ -22,7 +22,7 @@ parameters:
 
 steps:
   - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'K8s: configurar kubeconfig'
+    displayName: 'Atualizar kubeconfig'
     inputs:
       awsCredentials: ${{ parameters.serviceAccount }}
       regionName: ${{ parameters.awsRegion }}
@@ -33,7 +33,7 @@ steps:
 
   - ${{ if eq(parameters.createNamespace, true) }}:
       - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-        displayName: 'K8s: garantir namespace'
+        displayName: 'Criar namespace'
         inputs:
           awsCredentials: ${{ parameters.serviceAccount }}
           regionName: ${{ parameters.awsRegion }}
@@ -43,7 +43,7 @@ steps:
             kubectl create namespace "${{ parameters.namespace }}" --dry-run=client -o yaml | kubectl apply -f -
 
   - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'K8s: aplicar manifests'
+    displayName: 'Aplicar manifests no EKS'
     inputs:
       awsCredentials: ${{ parameters.serviceAccount }}
       regionName: ${{ parameters.awsRegion }}
@@ -57,7 +57,7 @@ steps:
 
   - ${{ if eq(parameters.annotate, true) }}:
       - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-        displayName: 'K8s: anotar deployment (rastreabilidade)'
+        displayName: 'Anotar deployment com dados do build'
         inputs:
           awsCredentials: ${{ parameters.serviceAccount }}
           regionName: ${{ parameters.awsRegion }}

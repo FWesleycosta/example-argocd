@@ -1,28 +1,11 @@
-# templates/stages/rollback.yaml
-# ----------------------------------------------------------------------------
-# Rollback RASTREADO de um ambiente. Re-aponta o Deployment para uma imagem JÁ
-# EXISTENTE no ECR (uma versão anterior) — SEM rebuild — passando pelo Environment
-# do Azure DevOps.
-#
-# Por que assim (e não `kubectl rollout undo` solto): o undo reverte no cluster
-# mas o Azure DevOps não fica sabendo → o Environment continua mostrando o deploy
-# que falhou e você perde o controle visual. Aqui o rollback É um deployment:
-#   - registra no histórico do Environment (Pipelines → Environments → <env>);
-#   - passa pelo MESMO gate (ex.: GMUD no Environment prd);
-#   - carimba o run (build number + tags) com a versão restaurada;
-#   - anota o Deployment no cluster (deploy.fibra.io/*).
-#
-# NÃO faz undo automático: se a versão escolhida também não subir, falha alto
-# (não queremos voltar para a imagem ruim mais nova).
-# ----------------------------------------------------------------------------
 parameters:
   - name: environment
     type: string
     default: prd
   - name: imageTag
-    type: string                 # tag/versão existente no ECR a restaurar
+    type: string
   - name: containerName
-    type: string                 # nome do container no Deployment (default = nome do app)
+    type: string
     default: '$(Build.Repository.Name)'
   - name: rolloutTimeoutSeconds
     type: string
@@ -34,7 +17,7 @@ stages:
     jobs:
       - deployment: rollback
         displayName: 'Rollback ${{ parameters.environment }} -> ${{ parameters.imageTag }}'
-        environment: ${{ parameters.environment }}   # registro + gate do Environment
+        environment: ${{ parameters.environment }}
         pool:
           vmImage: ubuntu-latest
         variables:
@@ -81,3 +64,13 @@ stages:
                         exit 1
                       fi
                       echo "##[section]✔ Rollback concluído. '$NS' rodando $IMAGE."
+
+                - template: ../steps/record-prod-release.yaml
+                  parameters:
+                    environment: ${{ parameters.environment }}
+                    serviceAccount: ${{ variables.serviceAccount }}
+                    awsRegion: ${{ variables.awsRegion }}
+                    awsAccID: ${{ variables.awsAccID }}
+                    imageTag: ${{ parameters.imageTag }}
+                    deployType: rollback
+                    stampRun: false

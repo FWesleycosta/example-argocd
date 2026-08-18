@@ -18,7 +18,7 @@ parameters:
 
 jobs:
   - job: CreateAndCompletePR
-    displayName: 'Criar e concluir PR via Azure CLI'
+    displayName: 'Promover branch (${{ parameters.sourceBranch }} → ${{ parameters.targetBranch }})'
     ${{ if eq(parameters.requireManualApproval, true) }}:
       timeoutInMinutes: ${{ parameters.waitTimeoutMinutes }}
     steps:
@@ -166,4 +166,4 @@ jobs:
           SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $(System.TeamFoundationCollectionUri)
           SYSTEM_TEAMPROJECT: $(System.TeamProject)
           BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
-        displayName: 'Executar PR via Azure CLI'
+        displayName: 'Criar e concluir o PR'

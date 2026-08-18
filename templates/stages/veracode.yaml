@@ -1,11 +1,3 @@
-# templates/stages/veracode.yaml
-# ----------------------------------------------------------------------------
-# Stage de SAST (Veracode) ÚNICO e reutilizável. Antes estava replicado em dois
-# lugares (caminho release/* do stack e fluxo de hotfix). Agora vive aqui uma vez
-# e os dois fluxos consomem via `template:`.
-#
-# Nome do stage gerado: Veracode  (use-o como dependsOn dos stages seguintes).
-# ----------------------------------------------------------------------------
 parameters:
   - name: dependsOn
     type: object
@@ -13,6 +5,19 @@ parameters:
   - name: condition
     type: string
     default: succeeded()
+  - name: veracode
+    type: object
+    default: {}
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-latest
+  - name: timeoutInMinutes
+    type: number
+    default: 120
+  - name: defaultExcludePatterns
+    type: string
+    default: ''      # usado só se o app não informar veracode.excludePatterns (ex.: stack de frontend exclui node_modules/dist)
 
 stages:
   - stage: Veracode
@@ -22,10 +27,12 @@ stages:
     jobs:
       - job: SecurityScan
         displayName: Veracode SAST
-        timeoutInMinutes: 120
-        pool:
-          vmImage: ubuntu-latest
+        timeoutInMinutes: ${{ parameters.timeoutInMinutes }}
+        pool: ${{ parameters.pool }}
         steps:
           - template: ../veracode/scanner-veracode.yaml
             parameters:
-              appName: $(Build.Repository.Name)
+              excludePatterns: ${{ coalesce(parameters.veracode.excludePatterns, parameters.defaultExcludePatterns) }}
+              ${{ each par in parameters.veracode }}:
+                ${{ if ne(par.key, 'excludePatterns') }}:
+                  ${{ par.key }}: ${{ par.value }}

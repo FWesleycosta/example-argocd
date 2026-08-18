@@ -1,0 +1,19 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: PLACEHOLDER_APP_NAME-hpa
+  namespace: PLACEHOLDER_NAMESPACE
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: PLACEHOLDER_APP_NAME
+  minReplicas: PLACEHOLDER_MIN_REPLICAS
+  maxReplicas: PLACEHOLDER_MAX_REPLICAS
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: PLACEHOLDER_CPU_UTILIZATION

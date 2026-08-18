@@ -1,6 +1,14 @@
+parameters:
+  - name: resourceSuffix
+    type: string
+    default: ''
+
 variables:
   - name: deployment_aspnetcore_environment
     value: development
+
+  - name: resourceSuffix
+    value: ''
 
   - name: serviceAccount
     value: 'AWS-Workloads-Dev'

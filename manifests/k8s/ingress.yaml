@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: PLACEHOLDER_APP_NAME-ingress
+  namespace: PLACEHOLDER_NAMESPACE
+  labels:
+    app: PLACEHOLDER_APP_NAME
+  annotations:
+    # Compartilhar o MESMO ALB do Ingress "shared"
+    alb.ingress.kubernetes.io/group.name: PLACEHOLDER_ENVIRONMENT-eks-shared-alb
+
+    # Usa o ALB já existente (mesmos atributos do shared)
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: PLACEHOLDER_INGRESS_PATH
+            pathType: Prefix
+            backend:
+              service:
+                name: PLACEHOLDER_APP_NAME-service
+                port:
+                  number: 80

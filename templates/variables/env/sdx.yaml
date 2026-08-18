@@ -1,46 +1,47 @@
 parameters:
   - name: resourceSuffix
     type: string
-    default: ''
+    default: '-sdx'
 
 variables:
+
   - name: deployment_aspnetcore_environment
-    value: production
+    value: development
 
   - name: resourceSuffix
-    value: ''
+    value: ${{ coalesce(parameters.resourceSuffix, '-sdx') }}
 
-  # --- consumidas por stages/deploy.yaml + steps/rollout-verify.yaml ---
   - name: serviceAccount
-    value: 'AWS-Workloads-Prd'
+    value: 'AWS-Workloads-Dev'
   - name: clusterName
     value: 'eks-'
   - name: awsRegion
-    value: 'sa-east-1'
+    value: 'us-east-2'
   - name: awsAccID
     value: ''
   - name: albSharedDns
-    value: 'internal-'
+    value: 'internal'   # BOOTSTRAP: trocar pelo DNS do ALB sdx-eks-shared-alb
   - name: certificate_arn
-    value: 'arn:aws:a'
+    value: 'arn:aws:acm'
   - name: apiGatewayVpcLink
     value: ''
   - name: albSharedListener
-    value: 'arn:aws:'
+    value: 'arn:aws'    # BOOTSTRAP: trocar pelo listener do ALB sdx-eks-shared-alb
   - name: vpc_endpoint_apigw
     value: 'vpce-'
   - name: domain_internal_name
-    value: 'prd--..com.br'
+    value: 'dev--int..com.br'
   - name: domain_name_id
     value: ''
 
   # --- infra adicional do ambiente (Terraform / observabilidade) ---
+  # Não consumida hoje pelo deploy.yaml; mantida aqui por ser dado de ambiente.
   - name: serviceAccountTerraform
-    value: 'AWS-Workloads-Prd-Terraform'
+    value: 'AWS-Workloads-Dev-Terraform'
   - name: tfstatesBucket
     value: 'tfstates-'
   - name: accessLoggingWorkloads
-    value: 'access-logging-workloads-prd'
+    value: 'access-logging-workloads-dev'
   - name: subnetsPrivate
     value: 'subnet-,subnet-'
   - name: vpcId

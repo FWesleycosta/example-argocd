@@ -44,7 +44,7 @@ steps:
         [ -f "$OUT/$m" ] || { echo "##[error]Manifest obrigatório ausente: $OUT/$m"; MISSING=1; }
       done < <(echo '${{ convertToJson(parameters.requiredManifests) }}' | jq -r '.[]')
       [ "$MISSING" -eq 0 ] || exit 1
-    displayName: 'K8s render: copiar manifests'
+    displayName: 'Copiar manifests Kubernetes'
 
   - bash: |
       set -euo pipefail
@@ -76,7 +76,7 @@ steps:
         exit 1
       fi
       echo "##[section]Manifests renderizados com sucesso"
-    displayName: 'K8s render: substituir placeholders'
+    displayName: 'Preencher manifests Kubernetes'
 
   - ${{ if eq(parameters.generateConfigMap, true) }}:
       - bash: |
@@ -101,4 +101,4 @@ steps:
             echo "$ENV_JSON" | jq -r '.[] | "  \(.name): \"\(.value)\""' >> "$CM"
           fi
           echo "ConfigMap gerado:"; cat "$CM"
-        displayName: 'K8s render: gerar ConfigMap (env_vars)'
+        displayName: 'Gerar ConfigMap'
