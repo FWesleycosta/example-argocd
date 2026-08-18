@@ -159,6 +159,140 @@ flowchart TD
 
 ---
 
+## [2.3.0] - 2026-08-18
+
+Novo stack **`stacks/spa-frontend.yaml`**: esteira de **frontend SPA** (React/Vite/Angular) em
+**S3 + CloudFront**, no mesmo formato do backend EKS — o app declara dados via `extends`, o
+roteamento por branch é o mesmo (`develop`→DEV, `sandbox/*`→SDX, `release/*`→HML→gate
+GMUD→PRD→PR main, `hotfix/*`→Veracode→PRD→PR→delete). Substitui o pipeline copiado por app
+(`azure-pipelines-fibra-frontend.yaml`, que buildava 3× e abria PRs `develop→homolog→main` no
+mesmo run). **Compatível (MINOR)**: nada do stack de backend mudou de contrato; o único toque
+no backend é a extração do job de exclusão de branch para `utils/delete-branch.yaml`
+(script idêntico, comportamento inalterado).
+
+### Adicionado
+
+- **`templates/stacks/spa-frontend.yaml`** (entrypoint). Parâmetros: `frontend`
+  (`node_version`, `install_command`, `build_command`, `output_dir`), `cdn` (`dns_name`
+  **obrigatório**, `cloudfront`, `prune_stale_files`), `config` (`env_vars` build-time +
+  `runtime_vars.{dev,hml,prd}`), `veracode`, `sistema`, `owner`, `resourceSuffix`. Stage
+  `Validate` falha se `cdn.dns_name` estiver vazio. Sem `rollbackImageTag` — rollback de frontend (re-sync de artefato de run anterior)
+  fica para versão futura.
+- **Stage `SonarQube` no stack de frontend** (Validate → **SonarQube** → Build, como no backend)
+  com o novo **`templates/sonarqube/qa-sonar-node.yaml`**: `npm ci` → lint (`npm run lint
+  --if-present`) → testes com cobertura (`npm test -- --coverage`, `CI=true`) → scanner **CLI**
+  (`sonar.javascript/typescript.lcov.reportPaths`, exclusões de `node_modules/dist/build/
+  coverage/testes/config`, `sonar.test.inclusions`) → `SonarQubePublish` → **Quality Gate como
+  build breaker**. Publica JUnit (`junit*.xml`) na aba Tests quando existir. Parâmetro novo
+  no stack: `quality` (`lint_command`, `test_command`, `coverage_report`,
+  `break_on_quality_gate`; vazio nos comandos = pular; objeto parcial substitui o default).
+  Cobertura ausente vira `##[warning]` (Sonar reporta 0%), não erro.
+- **`templates/sonarqube/quality-gate.yaml`** — step "Avaliar Quality Gate" extraído de
+  `qa-sonar-dotnet.yaml` (script idêntico; o `.NET` agora o referencia) e compartilhado com o
+  `qa-sonar-node.yaml`.
+- **Veracode no frontend**: já roteado em `release/*`/`hotfix/*` (mesmo `stages/veracode.yaml`);
+  agora o stack envia exclusões de empacotamento adequadas a JS (`node_modules`, `dist`,
+  `build`, `coverage`, `*.map`, `.git`) via novo parâmetro opcional
+  **`defaultExcludePatterns`** em `stages/veracode.yaml` — usado só quando o app não informa
+  `veracode.excludePatterns` (backend inalterado: default `''`).
+- **`templates/frontend/build-frontend-node.yaml`** — job `Build`: `npm ci` (ou `npm install`
+  com warning se não houver lockfile), `.env` gerado de `config.env_vars`, `build_command`,
+  valida `output_dir/index.html` e publica o artefato **`frontend-dist`**.
+- **`templates/stages/deploy-frontend.yaml`** — stage `Deploy_<env>` (deployment job no
+  Environment `<env>`, carrega `variables/env/<env>.yaml`), consome o artefato do Build
+  (`download: current`) e delega para o motor.
+- **`templates/deploy-frontend.yaml`** — motor: copia `manifests/terraform-frontend/` →
+  `_app.auto.tfvars.json` (`app_name`, `bucket_name`, `project_name`) → `steps/terraform-apply`
+  (state `tfstate-<repo>-<env>` / `<repo>/terraform.tfstate`, mesma convenção do backend; tfvars
+  `environment`, `aws_region`, `resource_suffix`, `sistema`, `owner`, `dns_name`, `cloudfront_enabled`,
+  `access_logging_bucket`) → lê outputs (`bucket_name`, `cloudfront_distribution_id`,
+  `site_url`) → gera **`env-config.js`** (`window.env = {...}` + `APP_ENVIRONMENT`) no
+  artefato → `aws s3 sync` (assets com `max-age=31536000, immutable`; `index.html` e
+  `env-config.js` com `no-cache`) → invalidation `/*` com `wait` (só se `cdn.cloudfront`).
+  Terraform usa `serviceAccountTerraform`; upload/invalidation usam `serviceAccount`
+  (separação herdada do legado — menor privilégio).
+- **`templates/hotfix/hotfix-frontend.yaml`** — fluxo `hotfix/*` do frontend.
+- **`templates/utils/delete-branch.yaml`** — job de exclusão da branch do run (extraído de
+  `hotfix/hotfix-backend-dotnet.yaml`, que agora o referencia).
+- **`examples/azure-pipelines-frontend.yml`** — app fino de exemplo.
+- **`sandbox/Fibra.DevOps.Terraform/modules/aws_cloudfront_distribution`** — novo módulo
+  reutilizável (cópia de trabalho a replicar no repositório `Fibra.DevOps.Terraform`), no padrão
+  do `aws_lambda_function`: `create_cloudfront_distribution` (+`count`), outputs PascalCase
+  (`ID`, `ARN`, `Domain_Name`, `Hosted_Zone_ID`, `Origin_Access_Control_ID`,
+  `Response_Headers_Policy_ID`), 4 preconditions (`name`/`origin_domain_name` obrigatórios,
+  `aliases` exige ACM, recusa endpoint `s3-website-*`), validations (`price_class`,
+  `http_version`, `frame_option`, `referrer_policy`, `geo_restriction`, TLS), README e suíte
+  `tests/` offline (setup/validations/preconditions). Escopo deliberado: distribuição + OAC +
+  headers policy para **uma origem S3**; bucket, bucket policy, DNS, certificado e invalidation
+  ficam com o chamador. Piso `>= 1.3.0`, provider `>= 5.0`.
+
+### Removido
+
+- Arquivos legados do frontend na raiz do repositório (`azure-pipelines-fibra-frontend.yaml`,
+  `build-frontend-fibra.yaml`, `deploy-frontend.yaml`, `terraform-for-front.yaml`,
+  `datasource.tf`, `locals.tf`, `output.tf`, `provider.tf`, `variables.tf`) — substituídos
+  pelo stack e pelo root acima. Histórico: `git show <commit-anterior>:<arquivo>`.
+
+### Decisões de design (e o que muda para o app)
+
+- **Build único.** O legado rodava `npm run build` por ambiente com `.env` diferente
+  (`env_vars.dev/hml/prd`) — o que subia em PRD não era o que foi homologado. Agora o
+  `dist` é construído uma vez e promovido; **valores por ambiente saem do `.env` e vão para
+  `config.runtime_vars.<env>` (`window.env`)**. O app precisa: (1) `<script
+  src="/env-config.js"></script>` no `index.html` (a esteira avisa se não achar a referência);
+  (2) ler `window.env.X` em vez de `import.meta.env.VITE_X` / `process.env.REACT_APP_X` para
+  o que varia por ambiente. `config.env_vars` continua existindo, mas é uma lista só (igual
+  nos três ambientes).
+- **Nomes derivados**: bucket do site `<repo>-<env>`, domínio
+  `<dns_name>-<env>.bancofibra.com.br` (prd: `<dns_name>.bancofibra.com.br`).
+- **Sandbox (`sandbox/*` → `Deploy_sdx`) com a mesma semântica do EKS**: usa
+  `variables/env/sdx.yaml` (conta/SC de DEV, `resourceSuffix: '-sdx'`), `runtime_vars.dev`,
+  Environment `sdx`; sem Veracode/GMUD. O `resourceSuffix` é **efetivo** como no backend:
+  bucket `<repo><suffix>` (default `<repo>-sdx`), domínio `<dns_name><suffix>.bancofibra.com.br`
+  e, para sufixo customizado (≠ `''`/`-sdx`), state key `<repo><suffix>/terraform.tfstate` —
+  isto é, `resourceSuffix: '-wesley'` no app cria **outro sandbox isolado** do mesmo app
+  (bucket, distribuição, domínio e state próprios). Mesma limitação do EKS: um sandbox por
+  sufixo, sem teardown automático.
+- **`prune_stale_files: false`** por default: `--delete` no sync removeria chunks antigos que
+  usuários com `index.html` em cache ainda podem pedir (404 até o reload). Ligue só se o app
+  aceitar isso.
+
+- **`manifests/terraform-frontend/`** — root module do frontend (S3 + CloudFront), copiado em
+  runtime pelo motor. Bucket `var.bucket_name` privado (public access block, versioning,
+  SSE-S3, `BucketOwnerEnforced`, logging em `access_logging_bucket`, policy *deny* sem TLS +
+  leitura por OAC restrita ao ARN da distribuição); CloudFront opcional (`cloudfront_enabled`,
+  case-insensitive) **via módulo reutilizável** `Fibra.DevOps.Terraform//modules/aws_cloudfront_distribution`
+  (`source = "git::https://..."`, mesmo padrão do `manifests/terraform/`) — por isso o stage de
+  deploy do frontend também roda `infra/setup-git-auth.yaml` e o stack declara o variable group
+  **`git-credentials`** (pré-requisito igual ao backend). Defaults do módulo: OAC, response
+  headers policy (CORS + HSTS/nosniff/frame/referrer), managed policies
+  `CachingOptimized`/`CORS-S3Origin`, `http2and3`, fallback SPA 403/404 → `/index.html`,
+  TLS 1.2+, `PriceClass_All` (o `_100` não tem edge no Brasil). Domínio
+  `<dns_name>-<env>.<base_domain>` (prd sem env). Certificado: `acm_certificate_arn` ou lookup
+  do wildcard em **us-east-1** (provider alias). Outputs `bucket_name`,
+  `cloudfront_distribution_id`, `cloudfront_domain_name`, `domain_name`, `site_url`. **Não**
+  cria DNS. `resource_suffix` (sandbox) substitui `-<env>` no domínio; o bucket já chega
+  sufixado pela esteira. Suíte `tests/*.tftest.hcl` offline (`command = plan`, TF ≥ 1.6):
+  domínio por env, sdx default e com sufixo customizado, sem CloudFront, validações de
+  `dns_name`/`price_class`. Substitui os dois roots do legado
+  (`terraform-front/s3` + `terraform-front/cloudfront`, dois states) por um root/um state.
+
+### Pendências desta versão (próximos passos)
+
+- Validar via **Preview API** com um frontend piloto e, no primeiro deploy, criar o
+  CNAME/alias `domain_name` → `cloudfront_domain_name` (DNS fora deste root).
+- Publicar o módulo `aws_cloudfront_distribution` no repositório `Fibra.DevOps.Terraform`
+  (o `source` do root já aponta para lá) — até então o `terraform init` do frontend falha.
+- `record-prod-release` para frontend (hoje é ECR-cêntrico), rollback por artefato de run
+  anterior, SCA de dependências JS (`npm audit`/Veracode SCA), bloqueio de segredos em
+  `runtime_vars`/`env_vars`, smoke test pós-deploy e `npmAuthenticate` para feed privado.
+- Pré-requisitos de portal para o Sonar do frontend: service connection `SonarQube` e o
+  projeto `<repo>-key` (criado no primeiro run se o token tiver permissão), iguais ao backend.
+- Migração de apps existentes: bucket `<repo>-<env>` já existente precisa de `terraform
+  import` (`aws_s3_bucket.site`) — o root agora é dono do bucket, não mais `data`.
+
+---
+
 ## [2.2.0] - 2026-08-10
 
 Ambiente **sandbox isolado (`sdx`)** para branches `sandbox/*`: deploy igual ao de DEV, na

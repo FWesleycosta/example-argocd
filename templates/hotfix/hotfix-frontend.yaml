@@ -1,17 +1,11 @@
 parameters:
-  - name: pod
-    type: object
-  - name: networking
-    type: object
-  - name: resources
-    type: object
-  - name: observability
+  - name: cdn
     type: object
   - name: config
     type: object
     default:
       env_vars: []
-      ssm_parameters:
+      runtime_vars:
         dev: []
         hml: []
         prd: []
@@ -30,17 +24,20 @@ stages:
     parameters:
       dependsOn: [Build]
       veracode: ${{ parameters.veracode }}
+      defaultExcludePatterns: |
+        !**/node_modules/**
+        !**/dist/**
+        !**/build/**
+        !**/coverage/**
+        !**/*.map
+        !**/.git/**
 
-  - template: ../stages/deploy.yaml
+  - template: ../stages/deploy-frontend.yaml
     parameters:
       environment: prd
       dependsOn: [Veracode]
-      pod: ${{ parameters.pod }}
-      networking: ${{ parameters.networking }}
-      resources: ${{ parameters.resources }}
-      observability: ${{ parameters.observability }}
-      env_vars: ${{ parameters.config.env_vars }}
-      ssm_parameters: ${{ parameters.config.ssm_parameters.prd }}
+      cdn: ${{ parameters.cdn }}
+      runtime_vars: ${{ parameters.config.runtime_vars.prd }}
       sistema: ${{ parameters.sistema }}
       owner: ${{ parameters.owner }}
 

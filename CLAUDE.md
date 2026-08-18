@@ -135,6 +135,42 @@ image-promote  →  copiar manifests/terraform  →  tfvars de runtime  →  ter
 Consequência prática: mudanças de comportamento de deploy quase sempre pertencem a um `steps/*`,
 não ao stack nem ao stage.
 
+## Stack de frontend (`stacks/spa-frontend.yaml`) — mesmo modelo, outro alvo
+
+SPA estática em **S3 + CloudFront**, entrando em `2.3.0`. Mesmo roteamento por branch e os
+mesmos stages reutilizados (`stages/veracode.yaml` — com `defaultExcludePatterns` para JS —,
+`utils/create-pullrequest.yaml`, `utils/delete-branch.yaml`, `steps/terraform-apply.yaml`,
+`sonarqube/quality-gate.yaml`); o que muda é o motor:
+
+```
+SonarQube (sonarqube/qa-sonar-node.yaml: npm ci → lint → testes+lcov → scanner CLI → Quality Gate breaker)
+Build (frontend/build-frontend-node.yaml: npm ci → .env de config.env_vars → build → artefato frontend-dist)
+Deploy_<env> (stages/deploy-frontend.yaml → deploy-frontend.yaml):
+  copiar manifests/terraform-frontend → tfvars → terraform-apply → ler outputs (distribution id)
+  → gerar env-config.js (window.env ← config.runtime_vars.<env>) no artefato
+  → aws s3 sync <repo>-<env> (assets immutable; index/env-config no-cache) → invalidation /* [se cdn.cloudfront]
+```
+
+- **Build único** também aqui: o `dist` é construído uma vez; o que varia por ambiente vai em
+  `config.runtime_vars.{dev,hml,prd}` (`window.env`), **não** no `.env`. `config.env_vars` é
+  uma lista só (build-time, igual nos três).
+- Nomes derivados: bucket `<repo>-<env>`, domínio `<dns_name>-<env>.bancofibra.com.br` (prd
+  sem sufixo). **Sandbox** igual ao EKS: `sandbox/*` → `Deploy_sdx` com `sdx.yaml`,
+  `runtime_vars.dev`, e `resourceSuffix` efetivo — bucket `<repo><suffix>`, domínio
+  `<dns_name><suffix>`, state key `<repo><suffix>/…` se sufixo customizado (outro sandbox
+  isolado do mesmo app). Terraform usa
+  `serviceAccountTerraform`; upload/invalidation usam `serviceAccount` (ambos já existem nos 4
+  `variables/env/*.yaml`).
+- **`manifests/terraform-frontend/`** é o root (S3 privado + bucket policy + CloudFront
+  opcional via módulo `Fibra.DevOps.Terraform//modules/aws_cloudfront_distribution`, um state
+  só; outputs `bucket_name`, `cloudfront_distribution_id`, `site_url` lidos pelo motor). Por
+  usar módulo git privado, o stage roda `infra/setup-git-auth.yaml` e o stack exige o grupo
+  `git-credentials` (igual ao backend). Certificado ACM sempre em **us-east-1** (provider
+  alias). Não cria DNS. A cópia de trabalho do módulo está em
+  `sandbox/Fibra.DevOps.Terraform/modules/aws_cloudfront_distribution` (validar local com
+  override de `source`, ver README do root). Suítes `tests/*.tftest.hcl` offline (TF ≥ 1.6).
+  Detalhes na entrada `2.3.0` do `CHANGELOG.md`.
+
 ## Contratos que quebram silenciosamente
 
 - **O alias do repositório precisa ser `templates`.** `stages/deploy.yaml` faz
@@ -243,7 +279,7 @@ por `source = "git::https://..."`. Recursos públicos/privados usam `count` sobr
 `local.is_public` / `local.is_private`.
 
 `sandbox/` é cópia local de trabalho de módulos daquele outro repositório (hoje
-`aws_lambda_function`, com suíte `terraform test` e README extenso). **Não é consumido pela
+`aws_lambda_function` e `aws_cloudfront_distribution`, com suíte `terraform test` e README). **Não é consumido pela
 esteira** — o `source` aponta para o repositório remoto. O `.gitignore` bloqueia
 `sandbox/.validate/` e `**/*override.tf` justamente para que o override que troca `source` por
 caminho local nunca vaze para `manifests/terraform/` e quebre PRD.

@@ -1,0 +1,132 @@
+# templates/sonarqube/quality-gate.yaml
+# Steps: aguarda o processamento da análise no servidor SonarQube (report-task.txt gerado
+# pelo SonarQubeAnalyze), imprime a tabela do Quality Gate e falha o job se o gate reprovar
+# (breakOnQualityGate=true). Compartilhado por qa-sonar-dotnet.yaml e qa-sonar-node.yaml.
+parameters:
+  - name: breakOnQualityGate
+    type: boolean
+    default: true
+  - name: gateWaitAttempts
+    type: number
+    default: 30
+  - name: gateWaitIntervalSeconds
+    type: number
+    default: 5
+
+steps:
+  - task: Bash@3
+    displayName: 'Avaliar Quality Gate'
+    env:
+      BREAK_ON_GATE: ${{ parameters.breakOnQualityGate }}
+    inputs:
+      targetType: 'inline'
+      script: |
+        set -euo pipefail
+
+        BREAK=$(printf '%s' "${BREAK_ON_GATE:-true}" | tr '[:upper:]' '[:lower:]')
+
+        REPORT_TASK="${SONAR_SCANNER_REPORTTASKFILE:-}"
+        if [ -z "$REPORT_TASK" ] || [ ! -f "$REPORT_TASK" ]; then
+          REPORT_TASK=$(find "$(Agent.WorkFolder)" -name "report-task.txt" -print -quit 2>/dev/null)
+        fi
+        if [ -z "$REPORT_TASK" ] || [ ! -f "$REPORT_TASK" ]; then
+          echo "##[error]report-task.txt nao encontrado. A analise do Sonar rodou?"
+          exit 1
+        fi
+
+        CE_TASK_ID=$(grep '^ceTaskId=' "$REPORT_TASK" | cut -d'=' -f2-)
+        SONAR_URL=$(grep '^serverUrl=' "$REPORT_TASK" | cut -d'=' -f2-)
+        DASHBOARD_URL=$(grep '^dashboardUrl=' "$REPORT_TASK" | cut -d'=' -f2- || true)
+
+        echo "##[group]Detalhes da analise"
+        echo "report-task.txt : $REPORT_TASK"
+        echo "Servidor        : $SONAR_URL"
+        echo "Task de analise : $CE_TASK_ID"
+        echo "##[endgroup]"
+
+        TOKEN=$(echo "${SONARQUBE_SCANNER_PARAMS:-}" | grep -o '"sonar.token":"[^"]*"' | cut -d'"' -f4)
+        if [ -z "$TOKEN" ]; then
+          echo "##[error]Nao consegui extrair o token do Sonar (SONARQUBE_SCANNER_PARAMS)."
+          exit 1
+        fi
+        # Registra o token para mascaramento no log a partir daqui.
+        echo "##vso[task.setsecret]$TOKEN"
+        AUTH="${TOKEN}:"
+
+        if ! command -v jq >/dev/null 2>&1; then
+          echo "##[error]jq nao encontrado no agente. Ele ja vem no 'ubuntu-latest';"
+          echo "##[error]em agente self-hosted, instale-o na imagem do agente."
+          exit 1
+        fi
+
+        ANALYSIS_ID=""
+        for i in $(seq 1 ${{ parameters.gateWaitAttempts }}); do
+          RESP=$(curl -s -u "$AUTH" "$SONAR_URL/api/ce/task?id=$CE_TASK_ID")
+          CE_STATUS=$(echo "$RESP" | jq -r '.task.status // empty')
+          echo "Tentativa $i - status do processamento: $CE_STATUS"
+          if [ "$CE_STATUS" = "SUCCESS" ]; then
+            ANALYSIS_ID=$(echo "$RESP" | jq -r '.task.analysisId // empty')
+            break
+          elif [ "$CE_STATUS" = "FAILED" ] || [ "$CE_STATUS" = "CANCELED" ]; then
+            echo "##[error]Processamento da analise falhou no servidor: $CE_STATUS"
+            exit 1
+          fi
+          sleep ${{ parameters.gateWaitIntervalSeconds }}
+        done
+
+        if [ -z "$ANALYSIS_ID" ]; then
+          echo "##[error]Timeout aguardando o processamento da analise no Sonar."
+          exit 1
+        fi
+
+        GATE_JSON=$(curl -s -u "$AUTH" "$SONAR_URL/api/qualitygates/project_status?analysisId=$ANALYSIS_ID")
+        GATE_STATUS=$(echo "$GATE_JSON" | jq -r '.projectStatus.status // empty')
+
+        echo ""
+        echo "##[section]===================== QUALITY GATE ====================="
+        echo ""
+        printf "  %-28s %12s %12s %10s\n" "METRICA" "ATUAL" "LIMITE" "STATUS"
+        printf "  %-28s %12s %12s %10s\n" "----------------------------" "------------" "------------" "----------"
+
+        echo "$GATE_JSON" | jq -r '
+          .projectStatus.conditions[]
+          | [ .metricKey,
+              (.actualValue    // "-"),
+              (.errorThreshold // "-"),
+              .status ]
+          | @tsv' \
+        | while IFS=$'\t' read -r METRIC ACTUAL THRESH CSTATUS; do
+            printf "  %-28s %12s %12s %10s\n" "$METRIC" "$ACTUAL" "$THRESH" "$CSTATUS"
+          done
+
+        echo ""
+
+        # test("coverage") casa com 'coverage' E 'new_coverage'. Com condicoes nas
+        # duas dimensoes do gate, o startswith diferencia qual linha e qual.
+        COV=$(echo "$GATE_JSON" | jq -r '
+          .projectStatus.conditions[]
+          | select(.metricKey | test("coverage"))
+          | "  COBERTURA (\(if (.metricKey | startswith("new_")) then "novo código" else "base completa" end)): \(.actualValue)% (minimo exigido: \(.errorThreshold)%) -> \(.status)"' || true)
+        if [ -n "$COV" ]; then
+          echo "$COV"
+          echo ""
+        fi
+
+        echo "  RESULTADO GERAL: $GATE_STATUS"
+        if [ -n "${DASHBOARD_URL:-}" ]; then
+          echo "  Dashboard: $DASHBOARD_URL"
+        fi
+        echo ""
+        echo "##[section]========================================================"
+        echo ""
+
+        if [ "$GATE_STATUS" != "OK" ]; then
+          if [ "$BREAK" = "true" ]; then
+            echo "##vso[task.logissue type=error]Quality Gate falhou (status: $GATE_STATUS)."
+            echo "##[error]Bloqueando o build."
+            exit 1
+          fi
+          echo "##vso[task.logissue type=warning]Quality Gate falhou (status: $GATE_STATUS), mas breakOnQualityGate=false."
+          exit 0
+        fi
+        echo "Quality Gate aprovado."

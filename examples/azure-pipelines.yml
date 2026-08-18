@@ -1,0 +1,101 @@
+# examples/azure-pipelines.yml
+# ============================================================================
+# COPIE este arquivo para a RAIZ do repositório da APLICAÇÃO como `azure-pipelines.yml`.
+#
+# Antes: cada app copiava ~375 linhas de esteira (azure-pipeline-dotnet.yaml).
+# Agora: o app só declara DADOS. Toda a esteira vem da plataforma, pinada por tag.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# ROLLBACK (mesmo arquivo, sem segundo pipeline):
+#   - Push/CI normal  -> rollbackImageTag fica vazio -> fluxo normal de build/deploy.
+#   - Rollback de PRD -> no Azure DevOps clique "Run pipeline" e preencha o campo
+#                        "Rollback PRD: tag/versão a restaurar".
+#
+#   EXEMPLO: a última versão boa em PRD é a imagem de tag 48180 (no ECR).
+#     1) Run pipeline  ->  Rollback PRD: tag/versão a restaurar = 48180
+#     2) Aprove o gate de GMUD do Environment prd
+#     3) A esteira PULA Sonar/Build e roda só o stage Rollback_prd:
+#          kubectl set image deployment/<app> <app>=<ecr>/<app>:48180
+#        O run aparece como "<app>-rollback-48180" (tags: rollback, image-48180)
+#        e fica registrado em Pipelines -> Environments -> prd.
+#   (a imagem 48180 precisa ainda existir no ECR — ver lifecycle policy)
+# ----------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
+# PROMOÇÃO DA RELEASE (CI até HML + promoção MANUAL para PRD):
+#   - Push/merge em release/X.Y.Z  -> CI roda Sonar -> Build -> Deploy HML ->
+#     Veracode. O run TERMINA aí: o Deploy_prd exige Build.Reason = Manual.
+#   - Ao FECHAR a versão  -> "Run pipeline" selecionando a branch release/X.Y.Z.
+#     Esse run vai até PRD, passando pelo approval do Environment prd (GMUD).
+#   - Mudança expressa/emergencial  -> hotfix/*, que sobe em PRD no run de CI.
+#
+#   `batch: true` serializa o CI POR BRANCH: enquanto um run estiver em andamento,
+#   novos pushes se acumulam num único run seguinte, em vez de disparar execuções
+#   concorrentes — que colidiriam no state do Terraform (que não tem locking).
+# ----------------------------------------------------------------------------
+trigger:
+  batch: true
+  branches:
+    include:
+      - develop
+      # git não permite "sandbox" (fixa) e "sandbox/*" ao mesmo tempo no repo
+      # (conflito de ref). Escolha UM modelo; a esteira suporta os dois:
+      - sandbox      # branch fixa legada: deploya em DEV (mesmo caminho do develop)
+      - sandbox/*    # sandbox isolado: deploya no ambiente sdx (infra de DEV, nomes -sdx)
+      - release/*
+      - hotfix/*
+
+parameters:
+  - name: rollbackImageTag
+    type: string
+    default: ''
+    displayName: 'Rollback PRD: tag/versão a restaurar (vazio = deploy normal)'
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Pipelines
+      ref: refs/tags/v2.0.0      # PINE numa TAG — nunca refs/heads/main (rollout controlado)
+
+extends:
+  template: templates/stacks/dotnet-backend.yaml@templates
+  parameters:
+    rollbackImageTag: ${{ parameters.rollbackImageTag }}
+    pod:
+      min_replicas: '2'
+      max_replicas: '6'
+      requests_cpu: 250m
+      requests_memory: 256Mi
+      limits_cpu: 500m
+      limits_memory: 512Mi
+      cpu_utilization: '70'
+
+    networking:
+      ingress_path: /pedidos
+      base_path: pedidos
+      api_visibility: private
+      domain_name: ''
+      deployment_aspnetcore_urls: 'http://+:8080'
+      cognito: false
+
+    resources:
+      dynamodb_tables: []
+      s3_buckets: []
+      sqs: []
+      secrets: []
+
+    observability:
+      dd_lang: dotnet
+      dd_lib_version: latest
+
+    config:
+      env_vars:
+        - name: ASPNETCORE_FORWARDEDHEADERS_ENABLED
+          value: 'true'
+      # SSM por ambiente — a esteira seleciona automaticamente o do ambiente certo
+      ssm_parameters:
+        dev: []
+        hml: []
+        prd: []
