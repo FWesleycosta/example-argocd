@@ -22,15 +22,15 @@ parameters:
 steps:
   - download: current
     artifact: ${{ parameters.artifactName }}
-    displayName: 'Download da imagem (artefato ${{ parameters.artifactName }})'
+    displayName: 'Baixar imagem Docker'
 
   - bash: |
       set -euo pipefail
       docker load -i "$(Pipeline.Workspace)/${{ parameters.artifactName }}/${{ parameters.imageName }}.tar"
-    displayName: 'Carregar imagem (docker load)'
+    displayName: 'Carregar imagem Docker'
 
   - task: AmazonWebServices.aws-vsts-tools.ECRPushImage.ECRPushImage@1
-    displayName: 'Push da imagem para o ECR'
+    displayName: 'Publicar imagem no ECR'
     timeoutInMinutes: ${{ parameters.pushTimeoutMinutes }}
     retryCountOnTaskFailure: 2
     inputs:
