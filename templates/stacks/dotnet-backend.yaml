@@ -31,6 +31,18 @@ parameters:
   - name: rollbackImageTag
     type: string
     default: 'none'
+  - name: sistema
+    type: string
+    default: ''
+    displayName: 'Sistema/dominio de negocio (tag de governanca AWS)'
+  - name: owner
+    type: string
+    default: ''
+    displayName: 'Time/pessoa responsavel pela aplicacao (tag de governanca AWS)'
+  - name: resourceSuffix
+    type: string
+    default: ''
+    displayName: 'Sufixo de recursos AWS (somente sandbox; vazio usa -sdx)'
 
 variables:
   - group: git-credentials
@@ -60,6 +72,15 @@ stages:
                   - script: |
                       echo "ingress_path valido: '${{ parameters.networking.ingress_path }}'"
                     displayName: 'ingress_path ok'
+
+              - ${{ if eq(parameters.sistema, '') }}:
+                  - script: |
+                      echo "##[warning]Parametro 'sistema' nao informado. A tag 'Sistema' dos recursos AWS ficara vazia."
+                    displayName: 'Alertar sistema nao informado'
+              - ${{ if eq(parameters.owner, '') }}:
+                  - script: |
+                      echo "##[warning]Parametro 'owner' nao informado. A tag 'Owner' dos recursos AWS ficara vazia."
+                    displayName: 'Alertar owner nao informado'
 
       - stage: SonarQube
         displayName: 'Analisar qualidade com SonarQube'
@@ -92,6 +113,8 @@ stages:
               observability: ${{ parameters.observability }}
               config: ${{ parameters.config }}
               veracode: ${{ parameters.veracode }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
 
       - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
           - template: ../stages/deploy.yaml
@@ -104,6 +127,9 @@ stages:
               observability: ${{ parameters.observability }}
               env_vars: ${{ parameters.config.env_vars }}
               ssm_parameters: ${{ parameters.config.ssm_parameters.hml }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
 
           - template: ../stages/veracode.yaml
             parameters:
@@ -121,6 +147,9 @@ stages:
               observability: ${{ parameters.observability }}
               env_vars: ${{ parameters.config.env_vars }}
               ssm_parameters: ${{ parameters.config.ssm_parameters.prd }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
 
           - stage: PR_Main
             displayName: 'Abrir PR (release → main)'
@@ -132,11 +161,6 @@ stages:
                   sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
                   targetBranch: main
 
-      # sandbox/<qualquer>: deploy isolado na infra de DEV (ambiente sdx).
-      # Nomes derivados usam "sdx" (namespace, tfstate, sqs/sns/lambda/s3) e o
-      # resourceSuffix '-sdx' cobre IAM/DynamoDB/Secrets/SSM/base_path — os
-      # recursos coexistem com os de dev sem conflito. SSM usa a lista de dev:
-      # sandbox não tem chave própria no contrato config.ssm_parameters.
       - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/sandbox/') }}:
           - template: ../stages/deploy.yaml
             parameters:
@@ -148,6 +172,9 @@ stages:
               observability: ${{ parameters.observability }}
               env_vars: ${{ parameters.config.env_vars }}
               ssm_parameters: ${{ parameters.config.ssm_parameters.dev }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
 
       - ${{ else }}:
           - template: ../stages/deploy.yaml
@@ -161,3 +188,6 @@ stages:
               observability: ${{ parameters.observability }}
               env_vars: ${{ parameters.config.env_vars }}
               ssm_parameters: ${{ parameters.config.ssm_parameters.dev }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
