@@ -1,23 +1,23 @@
 variable "app_name" {
-  description = "Nome da aplicação (vem do repositório)"
-  type        = string
+    description = "Nome da aplicação (vem do repositório)"
+    type = string
 }
 
 variable "namespace" {
-  description = "Nome do namespace onde a aplicação vai rodar no EKS"
-  type        = string
+    description = "Nome do namespace onde a aplicação vai rodar no EKS"
+    type = string
 }
 
 variable "alb_shared_dns" {
-  type = string
+  type    = string
 }
 
 variable "api_gateway_vpc_link" {
-  type = string
+  type    = string
 }
 
 variable "alb_shared_listener" {
-  type = string
+  type    = string
 }
 
 variable "domain_name" {
@@ -34,12 +34,12 @@ variable "base_path" {
 
 variable "api_type" {
   description = "public or private"
-  type        = string
-  default     = "private"
+  type = string
+  default = "private"
 }
 
 variable "vpc_endpoint_apigw" {
-  type = string
+  type    = string
 }
 
 variable "domain_internal_name" {
@@ -64,13 +64,13 @@ variable "ssm_parameters" {
 variable "dynamodb_tables" {
   description = "Lista de tabelas DynamoDB a serem criadas"
   type = list(object({
-    table_name   = string
-    billing_mode = optional(string, "PAY_PER_REQUEST")
-    hash_key     = string
-    range_key    = optional(string)
+    table_name               = string
+    billing_mode             = optional(string, "PAY_PER_REQUEST")
+    hash_key                 = string
+    range_key                = optional(string)
     # Quando definido (ex.: "ttl"), habilita TTL na tabela apontando para esse atributo numérico (epoch em segundos).
     ttl_attribute_name = optional(string)
-    attributes         = list(object({ name = string, type = string }))
+    attributes               = list(object({ name = string, type = string }))
     global_secondary_indexes = optional(list(object({
       name               = string
       hash_key           = string
@@ -103,7 +103,7 @@ variable "secrets" {
 variable "cognito" {
   type        = string
   default     = "false"
-  description = "Se true, adiciona permissões do Cognito B2C à policy"
+  description = "Se true/True, adiciona permissões do Cognito B2C à policy (comparação case-insensitive)"
 }
 
 variable "endpoint_type" {
@@ -144,18 +144,20 @@ variable "certificate_arn" {
 }
 
 variable "queue_name" {
-  type = list(object({
+  type = list(object ({
     queue_name = string
     fifo_queue = optional(string, "false")
+    dlq_queue_name    = optional(string, "")
+    max_receive_count = optional(number, 3)
   }))
   default = []
 }
 
 
 variable "topic_name" {
-  type = list(object({
-    topic_name                  = string
-    fifo_topic                  = optional(string, "false")
+  type = list(object ({
+    topic_name = string
+    fifo_topic = optional(string, "false")
     content_based_deduplication = optional(string, "false")
   }))
   default = []
@@ -173,69 +175,24 @@ variable "sns_sqs_subscriptions" {
   default = []
 }
 
+variable "resource_suffix" {
+  type = string
+  default = ""
+}
+
 variable "project_name" {
   description = "Nome do projeto (vem do repositório)"
-  type        = string
+  type = string
 }
 
-variable "lambda_functions" {
-  description = <<-EOT
-    Lista de funções Lambda a serem criadas. Vazia por padrão: quem não usa
-    Lambda não paga nada em plan nem em recurso.
-
-    O `function_name` informado aqui é o nome CURTO — a esteira prefixa com
-    ambiente e região (lambda-<env>-<regiao>-<nome>), como já é feito em SQS
-    e SNS.
-
-    `role_arn` é opcional: sem ele, a função usa a role de execução criada
-    pela própria esteira (`lambda-exec-<app_name>`), que já concede escrita no
-    log group da função e, quando necessário, ENI de VPC e X-Ray. Informe um
-    ARN só quando a função precisar de uma role própria com permissões extras.
-  EOT
-
-  type = list(object({
-    function_name    = string
-    handler          = string
-    runtime          = string
-    filename         = string
-    source_code_hash = optional(string)
-
-    description        = optional(string)
-    memory_size        = optional(number, 128)
-    timeout            = optional(number, 30)
-    ephemeral_storage  = optional(number, 512)
-    architectures      = optional(list(string), ["arm64"])
-    environment        = optional(map(string))
-    log_retention_days = optional(number, 30)
-    tracing_config     = optional(string, "Active")
-    publish            = optional(bool, true)
-
-    subnet_ids         = optional(list(string))
-    security_group_ids = optional(list(string))
-
-    layers     = optional(list(object({ name = string, version = optional(number) })), [])
-    layer_arns = optional(list(string), [])
-
-    role_arn = optional(string)
-  }))
-
-  default = []
-}
-variable "resource_suffix" {
-  description = <<-EOT
-    Sufixo aplicado aos nomes de recursos que NÃO embutem o environment
-    (IAM roles/policy, log group do API Gateway, nome da REST API, DynamoDB,
-    Secrets, SSM e base_path). Vazio nos ambientes padrão — dev, hml e prd
-    vivem em contas separadas e não colidem. No sandbox (branch sandbox/*),
-    que compartilha a conta de DEV, a esteira envia '-sdx' para que os
-    recursos coexistam com os de dev sem conflito de nome.
-  EOT
-
+variable "sistema" {
+  description = "Sistema/dominio de negocio ao qual a aplicacao pertence (tag de governanca)"
   type    = string
   default = ""
+}
 
-  validation {
-    condition     = var.resource_suffix == "" || can(regex("^-[a-z0-9-]+$", var.resource_suffix))
-    error_message = "resource_suffix deve ser vazio ou iniciar com '-' seguido de [a-z0-9-] (ex.: '-sdx')."
-  }
+variable "owner" {
+  description = "Time/pessoa responsavel pela aplicacao (tag de governanca)"
+  type    = string
+  default = ""
 }
