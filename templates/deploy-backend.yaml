@@ -1,9 +1,9 @@
 parameters:
   environment: ''
-  # Sufixo de nomes de recursos AWS que não embutem o environment (IAM,
-  # DynamoDB, Secrets, SSM, base_path). Vem de resourceSuffix no
-  # variables/env/<env>.yaml: '' nos ambientes padrão, '-sdx' no sandbox.
+  k8sNamespace: ''
   resourceSuffix: ''
+  sistema: ''
+  owner: ''
   serviceAccount: ''
   clusterName: ''
   awsRegion: ''
@@ -32,11 +32,13 @@ parameters:
   dynamodb_tables: []
   s3_buckets: []
   secrets: []
+  sns_topics: []
+  sns_sqs_subscriptions: []
+  sqs: []
   dd_lang: ''
   dd_lib_version: 'latest'
-  cognito: false
+  cognito: 'false'
   certificate_arn: ''
-  sqs: []
 
 steps:
 
@@ -68,7 +70,7 @@ steps:
       set -euo pipefail
       APP="$(Build.Repository.Name)"
       PROJECT="$(System.TeamProject)"
-      jq -n --arg app "$APP" --arg ns "$APP-${{ parameters.environment }}" --arg project "$PROJECT" \
+      jq -n --arg app "$APP" --arg ns "${{ parameters.k8sNamespace }}" --arg project "$PROJECT" \
         '{app_name: $app, namespace: $ns, project_name: $project}' > _app.auto.tfvars.json
       echo "_app.auto.tfvars.json:"; cat _app.auto.tfvars.json
     workingDirectory: $(System.DefaultWorkingDirectory)/terraform
@@ -80,11 +82,16 @@ steps:
       awsRegion: ${{ parameters.awsRegion }}
       workingDirectory: $(System.DefaultWorkingDirectory)/terraform
       backendBucket: 'tfstate-$(Build.Repository.Name)-${{ parameters.environment }}'
-      backendKey: '$(Build.Repository.Name)/terraform.tfstate'
+      ${{ if or(eq(parameters.resourceSuffix, ''), eq(parameters.resourceSuffix, '-sdx')) }}:
+        backendKey: '$(Build.Repository.Name)/terraform.tfstate'
+      ${{ else }}:
+        backendKey: '$(Build.Repository.Name)${{ parameters.resourceSuffix }}/terraform.tfstate'
       tolerableErrorPatterns: 'BasePathConflictException|Base path already exists|CreateBasePathMapping'
       tfVars:
         environment: ${{ parameters.environment }}
         resource_suffix: ${{ parameters.resourceSuffix }}
+        sistema: ${{ parameters.sistema }}
+        owner: ${{ parameters.owner }}
         domain_name: ${{ parameters.domain_name }}
         cluster_name: ${{ parameters.clusterName }}
         alb_shared_dns: ${{ parameters.albSharedDns }}
@@ -95,23 +102,26 @@ steps:
         vpc_endpoint_apigw: ${{ parameters.vpc_endpoint_apigw }}
         domain_internal_name: ${{ parameters.domain_internal_name }}
         domain_name_id: ${{ parameters.domain_name_id }}
-        cognito: ${{ parameters.cognito }}
+        cognito: '${{ parameters.cognito }}'
         certificate_arn: ${{ parameters.certificate_arn }}
         ssm_parameters: ${{ parameters.ssm_parameters }}
         s3_buckets: ${{ parameters.s3_buckets }}
         secrets: ${{ parameters.secrets }}
         queue_name: ${{ parameters.sqs }}
         dynamodb_tables: ${{ parameters.dynamodb_tables }}
+        topic_name: ${{ parameters.sns_topics }}
+        sns_sqs_subscriptions: ${{ parameters.sns_sqs_subscriptions }}
 
   - template: steps/k8s-render.yaml
     parameters:
       sourceDir: '$(Build.SourcesDirectory)/templates/manifests/k8s'
       outputDir: '$(Build.SourcesDirectory)/k8s'
-      namespace: '$(Build.Repository.Name)-${{ parameters.environment }}'
+      namespace: '${{ parameters.k8sNamespace }}'
       configMapName: '$(Build.Repository.Name)-app-vars'
       envVars: ${{ parameters.env_vars }}
       substitutions:
         PLACEHOLDER_APP_NAME: '$(Build.Repository.Name)'
+        PLACEHOLDER_NAMESPACE: '${{ parameters.k8sNamespace }}'
         PLACEHOLDER_ECR_IMAGE: '${{ parameters.awsAccID }}.dkr.ecr.${{ parameters.awsRegion }}.amazonaws.com/$(Build.Repository.Name):$(Build.BuildId)'
         PLACEHOLDER_ENVIRONMENT: ${{ parameters.environment }}
         PLACEHOLDER_AWS_REGION: ${{ parameters.awsRegion }}
@@ -133,6 +143,6 @@ steps:
       serviceAccount: ${{ parameters.serviceAccount }}
       awsRegion: ${{ parameters.awsRegion }}
       clusterName: ${{ parameters.clusterName }}
-      namespace: '$(Build.Repository.Name)-${{ parameters.environment }}'
+      namespace: '${{ parameters.k8sNamespace }}'
       manifestsDir: '$(Build.SourcesDirectory)/k8s'
       workloadName: '$(Build.Repository.Name)'
