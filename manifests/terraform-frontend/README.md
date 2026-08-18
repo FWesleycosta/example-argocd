@@ -13,8 +13,9 @@ para `$(Build.SourcesDirectory)/terraform`, onde a esteira gera o `backend.tf`
 - **CloudFront** (`cloudfront_enabled`, default `true`) via módulo reutilizável
   **`Fibra.DevOps.Terraform//modules/aws_cloudfront_distribution`** (`source = "git::https://..."`,
   cópia de trabalho em `sandbox/Fibra.DevOps.Terraform/modules/aws_cloudfront_distribution`):
-  OAC, response headers policy (CORS + HSTS/nosniff/frame/referrer), managed policies
-  `CachingOptimized` + `CORS-S3Origin`, alias `<dns_name>-<env>.<base_domain>`
+  OAC, security headers via policy **compartilhada** (`response_headers_policy_name`, resolvida
+  por nome; vazio = managed AWS `CORS-and-SecurityHeadersPolicy` — nunca uma policy por app),
+  managed policies `CachingOptimized` + `CORS-S3Origin`, alias `<dns_name>-<env>.<base_domain>`
   (prd: `<dns_name>.<base_domain>`), fallback SPA 403/404 → `/index.html`, TLS 1.2+.
   A bucket policy (OAC restrito ao `module.cloudfront[0].ARN`) fica aqui no root.
 - Certificado: `acm_certificate_arn` ou lookup do wildcard `acm_certificate_domain` em
@@ -27,7 +28,7 @@ para `$(Build.SourcesDirectory)/terraform`, onde a esteira gera o `backend.tf`
 | Origem | Variáveis |
 |---|---|
 | `_app.auto.tfvars.json` (gerado) | `app_name`, `bucket_name`, `project_name` |
-| `_pipeline.auto.tfvars.json` (`deploy-frontend.yaml`) | `environment`, `aws_region`, `resource_suffix`, `sistema`, `owner`, `dns_name`, `cloudfront_enabled`, `access_logging_bucket` |
+| `_pipeline.auto.tfvars.json` (`deploy-frontend.yaml`) | `environment`, `aws_region`, `resource_suffix`, `sistema`, `owner`, `dns_name`, `cloudfront_enabled`, `response_headers_policy_name`, `access_logging_bucket` |
 | outputs lidos pelo motor | `bucket_name`, `cloudfront_distribution_id`, `site_url` |
 
 **Sandbox (`sdx`)**: a esteira envia `resource_suffix` (`-sdx` por default, ou o valor

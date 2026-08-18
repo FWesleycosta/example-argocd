@@ -68,6 +68,7 @@ stages:
                     awsAccID: ${{ variables.awsAccID }}
                     accessLoggingBucket: ${{ variables.accessLoggingWorkloads }}
                     dns_name: ${{ parameters.cdn.dns_name }}
+                    responseHeadersPolicyName: ${{ coalesce(parameters.cdn.response_headers_policy_name, '') }}
                     ${{ if or(eq(parameters.cdn.cloudfront, false), eq(parameters.cdn.cloudfront, 'false'), eq(parameters.cdn.cloudfront, 'False')) }}:
                       cloudfront: 'false'
                     ${{ else }}:
