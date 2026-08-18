@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: PLACEHOLDER_APP_NAME
-  namespace: PLACEHOLDER_APP_NAME-PLACEHOLDER_ENVIRONMENT
+  namespace: PLACEHOLDER_NAMESPACE
   labels:
     app: PLACEHOLDER_APP_NAME
     environment: PLACEHOLDER_ENVIRONMENT
@@ -29,13 +29,13 @@ spec:
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              preference:
-                matchExpressions:
-                  - key: "karpenter.sh/nodepool"
-                    operator: In
-                    values:
-                      - "default"
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: "karpenter.sh/nodepool"
+                operator: In
+                values:
+                - "default"
       containers:
         - name: PLACEHOLDER_APP_NAME
           image: PLACEHOLDER_ECR_IMAGE
@@ -59,10 +59,11 @@ spec:
             periodSeconds: 5
             successThreshold: 1
             failureThreshold: 3
-  #          livenessProbe:
-  #            tcpSocket:
-  #              port: 8080
-  #            initialDelaySeconds: 30
-  #            periodSeconds: 10
+#          livenessProbe:
+#            tcpSocket:
+#              port: 8080
+#            initialDelaySeconds: 30
+#            periodSeconds: 10
 
 
+ 
