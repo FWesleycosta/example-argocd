@@ -9,7 +9,7 @@ parameters:
 
 steps:
   - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'TF: validate'
+    displayName: 'Validar Terraform'
     inputs:
       awsCredentials: ${{ parameters.serviceAccount }}
       regionName: ${{ parameters.awsRegion }}
