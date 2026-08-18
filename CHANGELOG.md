@@ -218,6 +218,13 @@ no backend é a extração do job de exclusão de branch para `utils/delete-bran
   Terraform usa `serviceAccountTerraform`; upload/invalidation usam `serviceAccount`
   (separação herdada do legado — menor privilégio).
 - **`templates/hotfix/hotfix-frontend.yaml`** — fluxo `hotfix/*` do frontend.
+- **Caminhos do motor de frontend ancorados em `$(Pipeline.Workspace)`** (`terraformSourceDir`
+  = `$(Pipeline.Workspace)/s/templates/manifests/terraform-frontend`, `terraformWorkDir` =
+  `$(Pipeline.Workspace)/terraform`). O job de deploy do frontend faz checkout **só** do repo
+  `templates` (o `dist` vem do artefato) e, com checkout único, o ADO aponta
+  `Build.SourcesDirectory`/`System.DefaultWorkingDirectory` para a pasta desse repo
+  (`…/s/templates`) — o primeiro run real falhou com `…/s/templates/templates/manifests/…`.
+  O backend não sofre disso porque faz dois checkouts (`self` + `templates`).
 - **`templates/utils/delete-branch.yaml`** — job de exclusão da branch do run (extraído de
   `hotfix/hotfix-backend-dotnet.yaml`, que agora o referencia).
 - **`examples/azure-pipelines-frontend.yml`** — app fino de exemplo.
