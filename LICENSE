@@ -1,0 +1,32 @@
+Copyright (c) Banco Fibra S.A. Todos os direitos reservados.
+
+LICENÇA PROPRIETÁRIA — USO INTERNO
+
+Este repositório ("Fibra.DevOps.Pipelines") e todo o seu conteúdo — templates de
+pipeline, manifests, documentação e exemplos — são propriedade do Banco Fibra S.A.
+e constituem informação confidencial e ativo intelectual da instituição.
+
+1. CONCESSÃO DE USO
+   O uso é restrito a colaboradores, prestadores e equipes autorizadas do Banco
+   Fibra, exclusivamente para fins internos de construção, entrega e operação de
+   software da instituição.
+
+2. RESTRIÇÕES
+   É vedado, sem autorização formal e por escrito da área responsável (Plataforma /
+   DevOps) e do jurídico do Banco Fibra:
+   - copiar, redistribuir ou publicar este conteúdo, total ou parcialmente, fora
+     dos sistemas corporativos do Banco Fibra;
+   - disponibilizar o conteúdo a terceiros não autorizados;
+   - utilizar o conteúdo para fins distintos da operação interna do Banco Fibra.
+
+3. CONFIDENCIALIDADE
+   Este material pode conter referências a topologia de infraestrutura, convenções
+   de nomenclatura e processos de controle de mudança (GMUD). Trate-o como
+   informação de classificação INTERNA. Não exponha em repositórios públicos.
+
+4. AUSÊNCIA DE GARANTIA
+   O conteúdo é fornecido "no estado em que se encontra", sem garantias de qualquer
+   natureza. O uso é de responsabilidade das equipes consumidoras, observadas as
+   políticas internas de segurança e conformidade.
+
+Dúvidas sobre licenciamento ou uso: contate a equipe de Plataforma/DevOps.

@@ -1,0 +1,33 @@
+parameters:
+  - name: dependsOn
+    type: object
+    default: [Build]
+  - name: condition
+    type: string
+    default: succeeded()
+  - name: veracode
+    type: object
+    default: {}
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-latest
+  - name: timeoutInMinutes
+    type: number
+    default: 120
+
+stages:
+  - stage: Veracode
+    displayName: Veracode SAST
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    jobs:
+      - job: SecurityScan
+        displayName: Veracode SAST
+        timeoutInMinutes: ${{ parameters.timeoutInMinutes }}
+        pool: ${{ parameters.pool }}
+        steps:
+          - template: ../veracode/scanner-veracode.yaml
+            parameters:
+              ${{ each par in parameters.veracode }}:
+                ${{ par.key }}: ${{ par.value }}

@@ -1,0 +1,45 @@
+parameters:
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: artifactName
+    type: string
+    default: docker-image
+  - name: imageName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: imageTag
+    type: string
+    default: '$(Build.BuildId)'
+  - name: autoCreateRepository
+    type: boolean
+    default: true
+  - name: pushTimeoutMinutes
+    type: number
+    default: 10
+
+steps:
+  - download: current
+    artifact: ${{ parameters.artifactName }}
+    displayName: 'Download da imagem (artefato ${{ parameters.artifactName }})'
+
+  - bash: |
+      set -euo pipefail
+      docker load -i "$(Pipeline.Workspace)/${{ parameters.artifactName }}/${{ parameters.imageName }}.tar"
+    displayName: 'Carregar imagem (docker load)'
+
+  - task: AmazonWebServices.aws-vsts-tools.ECRPushImage.ECRPushImage@1
+    displayName: 'Push da imagem para o ECR'
+    timeoutInMinutes: ${{ parameters.pushTimeoutMinutes }}
+    retryCountOnTaskFailure: 2
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      sourceImageName: ${{ parameters.imageName }}
+      repositoryName: ${{ parameters.imageName }}
+      sourceImageTag: ${{ parameters.imageTag }}
+      pushTag: ${{ parameters.imageTag }}
+      logRequest: false
+      logResponse: false
+      autoCreateRepository: ${{ parameters.autoCreateRepository }}
