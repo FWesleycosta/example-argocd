@@ -6,10 +6,21 @@ parameters:
   - name: bypassPolicy
     type: boolean
     default: true
+  - name: requireManualApproval
+    type: boolean
+    default: false
+  - name: reviewers
+    type: string
+    default: ''
+  - name: waitTimeoutMinutes
+    type: number
+    default: 360
 
 jobs:
   - job: CreateAndCompletePR
-    displayName: 'Criar e concluir PR via Azure CLI'
+    displayName: 'Promover branch (${{ parameters.sourceBranch }} → ${{ parameters.targetBranch }})'
+    ${{ if eq(parameters.requireManualApproval, true) }}:
+      timeoutInMinutes: ${{ parameters.waitTimeoutMinutes }}
     steps:
       - script: |
           set -euo pipefail
@@ -18,13 +29,8 @@ jobs:
           TARGET="${{ parameters.targetBranch }}"
           # ADO emite booleanos como True/False; lower() em boolean pode falhar — normalizar no bash.
           BYPASS=$(printf '%s' '${{ parameters.bypassPolicy }}' | tr '[:upper:]' '[:lower:]')
-
-          # az repos precisa de organização/projeto/repositório. Sem isto a CLI cai
-          # em auto-detect pelas variáveis do agente — implícito, e resolve o repo
-          # errado em job com múltiplos checkouts (é o caso do stages/deploy.yaml).
-          az devops configure --defaults \
-            organization="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}" \
-            project="${SYSTEM_TEAMPROJECT}"
+          REQUIRE_MANUAL=$(printf '%s' '${{ parameters.requireManualApproval }}' | tr '[:upper:]' '[:lower:]')
+          WAIT_MINUTES="${{ parameters.waitTimeoutMinutes }}"
 
           fail() {
             echo "##[error]=================================================="
@@ -34,11 +40,10 @@ jobs:
             exit 1
           }
 
-          echo "##[section]PR de promoção: $SOURCE -> $TARGET  (bypass-policy=$BYPASS)"
+          echo "##[section]PR de promoção: $SOURCE -> $TARGET  (bypass-policy=$BYPASS, require-manual-approval=$REQUIRE_MANUAL)"
 
           echo "##[section]Etapa 1/4 — Localizando ou criando o PR"
           PR_ID=$(az repos pr list \
-            --repository "${BUILD_REPOSITORY_NAME}" \
             --source-branch "$SOURCE" \
             --target-branch "$TARGET" \
             --status active \
@@ -47,7 +52,6 @@ jobs:
           if [ -z "$PR_ID" ]; then
             echo "Nenhum PR ativo. Criando novo $SOURCE -> $TARGET..."
             PR_ID=$(az repos pr create \
-              --repository "${BUILD_REPOSITORY_NAME}" \
               --source-branch "$SOURCE" \
               --target-branch "$TARGET" \
               --title "Promote $SOURCE -> $TARGET" \
@@ -87,17 +91,50 @@ jobs:
               ;;
           esac
 
+          if [ "$REQUIRE_MANUAL" = "true" ]; then
+            echo "##[section]Etapa 3/4 — Revisores (opcional)"
+            if [ -n "${REVIEWERS_RAW:-}" ]; then
+              for r in $(echo "$REVIEWERS_RAW" | tr ',' ' '); do
+                r=$(echo "$r" | xargs)
+                [ -z "$r" ] && continue
+                echo "Adicionando revisor: $r"
+                az repos pr reviewer add --id "$PR_ID" --reviewers "$r"
+              done
+            else
+              echo "Nenhum revisor extra informado (use politicas de branch no destino para exigir aprovacao)."
+            fi
+
+            PR_URL="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}${SYSTEM_TEAMPROJECT}/_git/${BUILD_REPOSITORY_NAME}/pullrequest/${PR_ID}"
+            echo "##[section]Etapa 4/4 — Aguardando aprovacao e merge manual do PR #$PR_ID"
+            echo "Abra o PR no Azure DevOps: $PR_URL"
+            echo "##vso[task.logissue type=warning]PR #$PR_ID aguardando merge manual (ate ${WAIT_MINUTES} min)."
+
+            START_TS=$(date +%s)
+            END_TS=$((START_TS + WAIT_MINUTES * 60))
+            FINAL_STATUS=""
+            while [ "$(date +%s)" -lt "$END_TS" ]; do
+              FINAL_STATUS=$(az repos pr show --id "$PR_ID" --query "status" -o tsv)
+              CUR_MERGE=$(az repos pr show --id "$PR_ID" --query "mergeStatus" -o tsv)
+              echo "$(date -Is) status=$FINAL_STATUS mergeStatus=$CUR_MERGE"
+
+              if [ "$FINAL_STATUS" = "completed" ]; then
+                echo "##[section]✔ PR #$PR_ID concluido com sucesso ($SOURCE -> $TARGET)"
+                exit 0
+              fi
+              if [ "$FINAL_STATUS" = "abandoned" ] || [ "$CUR_MERGE" = "conflicts" ] || [ "$CUR_MERGE" = "failure" ]; then
+                fail "PR #$PR_ID nao pode ser concluido (status=$FINAL_STATUS, mergeStatus=$CUR_MERGE)."
+              fi
+              sleep 30
+            done
+            fail "Timeout aguardando merge do PR #$PR_ID apos ${WAIT_MINUTES} min."
+          fi
+
           echo "##[section]Etapa 3/4 — Concluindo o PR #$PR_ID"
-          # --squash false explícito: promoção exige merge commit verdadeiro. Com
-          # squash, os commits de release/* não existem em main com o mesmo hash — o
-          # back-merge main->develop vira conflito e o revert de uma release perde
-          # granularidade (colapsa em um único commit).
           az repos pr update \
             --id "$PR_ID" \
             --status completed \
-            --squash false \
             --bypass-policy "$BYPASS" \
-            --bypass-policy-reason "Promocao automatica via pipeline | build ${BUILD_BUILDID} (${BUILD_BUILDNUMBER}) | disparado por ${BUILD_REQUESTEDFOR} | ${SOURCE} -> ${TARGET}" \
+            --bypass-policy-reason "Promocao automatica via Pipeline" \
             --delete-source-branch false
 
 
@@ -125,10 +162,8 @@ jobs:
           echo "##[section]✔ PR #$PR_ID concluido com sucesso ($SOURCE -> $TARGET)"
         env:
           AZURE_DEVOPS_EXT_PAT: $(System.AccessToken)
+          REVIEWERS_RAW: ${{ parameters.reviewers }}
           SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $(System.TeamFoundationCollectionUri)
           SYSTEM_TEAMPROJECT: $(System.TeamProject)
           BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
-          BUILD_BUILDID: $(Build.BuildId)
-          BUILD_BUILDNUMBER: $(Build.BuildNumber)
-          BUILD_REQUESTEDFOR: $(Build.RequestedFor)
-        displayName: 'Executar PR via Azure CLI'
+        displayName: 'Criar e concluir o PR'
