@@ -1,1 +1,16 @@
 .idea/
+.DS_Store
+
+# Sandbox de validação local do Terraform.
+# O workdir gera um override que troca o source dos módulos para caminho
+# local — se isso vazar para manifests/terraform, a esteira quebra em PRD.
+sandbox/.validate/
+**/*_override.tf
+**/override.tf
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+crash.log

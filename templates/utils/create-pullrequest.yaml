@@ -1,0 +1,134 @@
+parameters:
+  - name: sourceBranch
+    type: string
+  - name: targetBranch
+    type: string
+  - name: bypassPolicy
+    type: boolean
+    default: true
+
+jobs:
+  - job: CreateAndCompletePR
+    displayName: 'Criar e concluir PR via Azure CLI'
+    steps:
+      - script: |
+          set -euo pipefail
+
+          SOURCE="${{ parameters.sourceBranch }}"
+          TARGET="${{ parameters.targetBranch }}"
+          # ADO emite booleanos como True/False; lower() em boolean pode falhar — normalizar no bash.
+          BYPASS=$(printf '%s' '${{ parameters.bypassPolicy }}' | tr '[:upper:]' '[:lower:]')
+
+          # az repos precisa de organização/projeto/repositório. Sem isto a CLI cai
+          # em auto-detect pelas variáveis do agente — implícito, e resolve o repo
+          # errado em job com múltiplos checkouts (é o caso do stages/deploy.yaml).
+          az devops configure --defaults \
+            organization="${SYSTEM_TEAMFOUNDATIONCOLLECTIONURI}" \
+            project="${SYSTEM_TEAMPROJECT}"
+
+          fail() {
+            echo "##[error]=================================================="
+            echo "##[error]  FALHA: $1"
+            echo "##[error]=================================================="
+            echo "##vso[task.logissue type=error]$1"
+            exit 1
+          }
+
+          echo "##[section]PR de promoção: $SOURCE -> $TARGET  (bypass-policy=$BYPASS)"
+
+          echo "##[section]Etapa 1/4 — Localizando ou criando o PR"
+          PR_ID=$(az repos pr list \
+            --repository "${BUILD_REPOSITORY_NAME}" \
+            --source-branch "$SOURCE" \
+            --target-branch "$TARGET" \
+            --status active \
+            --query "[0].pullRequestId" -o tsv)
+
+          if [ -z "$PR_ID" ]; then
+            echo "Nenhum PR ativo. Criando novo $SOURCE -> $TARGET..."
+            PR_ID=$(az repos pr create \
+              --repository "${BUILD_REPOSITORY_NAME}" \
+              --source-branch "$SOURCE" \
+              --target-branch "$TARGET" \
+              --title "Promote $SOURCE -> $TARGET" \
+              --query "pullRequestId" -o tsv)
+            echo "PR criado: #$PR_ID"
+          else
+            echo "PR existente encontrado: #$PR_ID"
+          fi
+
+          [ -n "$PR_ID" ] || fail "Nao foi possivel obter ou criar um PR ($SOURCE -> $TARGET)."
+
+          echo "##[section]Etapa 2/4 — Verificando conflitos (mergeStatus) do PR #$PR_ID"
+          echo "##[group]Aguardando avaliacao do mergeStatus (clique para expandir)"
+          MERGE_STATUS=""
+          for i in $(seq 1 12); do
+            MERGE_STATUS=$(az repos pr show --id "$PR_ID" --query "mergeStatus" -o tsv)
+            echo "tentativa $i: mergeStatus=$MERGE_STATUS"
+            case "$MERGE_STATUS" in
+              queued|notSet) sleep 5 ;;
+              *) break ;;
+            esac
+          done
+          echo "##[endgroup]"
+
+          case "$MERGE_STATUS" in
+            succeeded)
+              echo "Sem conflitos. PR #$PR_ID apto para merge."
+              ;;
+            conflicts)
+              fail "PR #$PR_ID tem CONFLITOS de merge ($SOURCE -> $TARGET). Merge NAO realizado. Resolva manualmente."
+              ;;
+            queued|notSet)
+              fail "mergeStatus do PR #$PR_ID nao foi avaliado a tempo (status: $MERGE_STATUS)."
+              ;;
+            *)
+              fail "PR #$PR_ID nao esta apto para merge (status: $MERGE_STATUS)."
+              ;;
+          esac
+
+          echo "##[section]Etapa 3/4 — Concluindo o PR #$PR_ID"
+          # --squash false explícito: promoção exige merge commit verdadeiro. Com
+          # squash, os commits de release/* não existem em main com o mesmo hash — o
+          # back-merge main->develop vira conflito e o revert de uma release perde
+          # granularidade (colapsa em um único commit).
+          az repos pr update \
+            --id "$PR_ID" \
+            --status completed \
+            --squash false \
+            --bypass-policy "$BYPASS" \
+            --bypass-policy-reason "Promocao automatica via pipeline | build ${BUILD_BUILDID} (${BUILD_BUILDNUMBER}) | disparado por ${BUILD_REQUESTEDFOR} | ${SOURCE} -> ${TARGET}" \
+            --delete-source-branch false
+
+
+          echo "##[section]Etapa 4/4 — Confirmando a conclusao do PR #$PR_ID"
+          echo "##[group]Aguardando status final (clique para expandir)"
+          FINAL_STATUS=""
+          for i in $(seq 1 12); do
+            FINAL_STATUS=$(az repos pr show --id "$PR_ID" --query "status" -o tsv)
+            CUR_MERGE=$(az repos pr show --id "$PR_ID" --query "mergeStatus" -o tsv)
+            echo "tentativa $i: status=$FINAL_STATUS mergeStatus=$CUR_MERGE"
+
+            if [ "$FINAL_STATUS" = "completed" ]; then
+              break
+            fi
+            if [ "$FINAL_STATUS" = "abandoned" ] || [ "$CUR_MERGE" = "conflicts" ] || [ "$CUR_MERGE" = "failure" ]; then
+              echo "##[endgroup]"
+              fail "Conclusao do PR #$PR_ID falhou (status=$FINAL_STATUS, mergeStatus=$CUR_MERGE)."
+            fi
+            sleep 5
+          done
+          echo "##[endgroup]"
+
+          [ "$FINAL_STATUS" = "completed" ] || fail "PR #$PR_ID nao atingiu o status 'completed' a tempo (status=$FINAL_STATUS)."
+
+          echo "##[section]✔ PR #$PR_ID concluido com sucesso ($SOURCE -> $TARGET)"
+        env:
+          AZURE_DEVOPS_EXT_PAT: $(System.AccessToken)
+          SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $(System.TeamFoundationCollectionUri)
+          SYSTEM_TEAMPROJECT: $(System.TeamProject)
+          BUILD_REPOSITORY_NAME: $(Build.Repository.Name)
+          BUILD_BUILDID: $(Build.BuildId)
+          BUILD_BUILDNUMBER: $(Build.BuildNumber)
+          BUILD_REQUESTEDFOR: $(Build.RequestedFor)
+        displayName: 'Executar PR via Azure CLI'

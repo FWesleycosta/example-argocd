@@ -1,0 +1,76 @@
+parameters:
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: clusterName
+    type: string
+  - name: namespace
+    type: string
+  - name: manifestsDir
+    type: string
+    default: '$(Build.SourcesDirectory)/k8s'
+  - name: createNamespace
+    type: boolean
+    default: true
+  - name: annotate
+    type: boolean
+    default: true
+  - name: workloadName
+    type: string
+    default: '$(Build.Repository.Name)'
+
+steps:
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'K8s: configurar kubeconfig'
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        aws eks update-kubeconfig --region "${{ parameters.awsRegion }}" --name "${{ parameters.clusterName }}"
+
+  - ${{ if eq(parameters.createNamespace, true) }}:
+      - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+        displayName: 'K8s: garantir namespace'
+        inputs:
+          awsCredentials: ${{ parameters.serviceAccount }}
+          regionName: ${{ parameters.awsRegion }}
+          scriptType: inline
+          inlineScript: |
+            set -euo pipefail
+            kubectl create namespace "${{ parameters.namespace }}" --dry-run=client -o yaml | kubectl apply -f -
+
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'K8s: aplicar manifests'
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        K8S_DIR="${{ parameters.manifestsDir }}"
+        echo "Aplicando manifests de: $K8S_DIR"
+        ls -la "$K8S_DIR"
+        kubectl apply -f "$K8S_DIR/" -n "${{ parameters.namespace }}"
+
+  - ${{ if eq(parameters.annotate, true) }}:
+      - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+        displayName: 'K8s: anotar deployment (rastreabilidade)'
+        inputs:
+          awsCredentials: ${{ parameters.serviceAccount }}
+          regionName: ${{ parameters.awsRegion }}
+          scriptType: inline
+          inlineScript: |
+            set -uo pipefail
+            APP="${{ parameters.workloadName }}"
+            NS="${{ parameters.namespace }}"
+
+            kubectl patch deployment "$APP" -n "$NS" \
+              --type=merge \
+              -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"deploy.fibra.io/build-id\":\"$(Build.BuildId)\",\"deploy.fibra.io/commit\":\"$(Build.SourceVersion)\",\"deploy.fibra.io/branch\":\"$(Build.SourceBranchName)\",\"deploy.fibra.io/triggered-by\":\"$(Build.RequestedFor)\"}}}}}"
+
+            echo "Annotations aplicadas:"
+            kubectl get deployment "$APP" -n "$NS" \
+              -o jsonpath='{.spec.template.metadata.annotations}' | jq .

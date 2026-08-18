@@ -1,0 +1,51 @@
+# templates/steps/rollout-verify.yaml
+# ----------------------------------------------------------------------------
+# Fecha a maior cegueira da esteira: hoje o deploy "passa" mesmo se os pods não
+# sobem (CrashLoop, readiness, ). Esteimagem errada step aguarda o rollout e, se
+# falhar, faz `rollout undo` e ABORTA o stage — bloqueando a promoção pra PRD.
+# ----------------------------------------------------------------------------
+parameters:
+  - name: environment
+    type: string
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: clusterName
+    type: string
+  - name: timeoutSeconds
+    type: string
+    default: '300'
+
+steps:
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'Verificar rollout (status + undo on fail)'
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -uo pipefail
+
+        aws eks update-kubeconfig --region ${{ parameters.awsRegion }} --name ${{ parameters.clusterName }}
+
+        APP="$(Build.Repository.Name)"
+        NS="${APP}-${{ parameters.environment }}"
+
+        echo "##[section]Aguardando rollout de '$APP' em '$NS' (timeout ${{ parameters.timeoutSeconds }}s)"
+        if kubectl rollout status deployment/"$APP" -n "$NS" --timeout=${{ parameters.timeoutSeconds }}s; then
+          echo "##[section]✔ Rollout concluído — nova revisão saudável."
+          exit 0
+        fi
+
+        echo "##[error]Rollout NÃO ficou saudável. Diagnóstico:"
+        kubectl get pods -n "$NS" -o wide || true
+        kubectl describe deployment/"$APP" -n "$NS" | tail -n 40 || true
+        kubectl get events -n "$NS" --sort-by=.lastTimestamp | tail -n 30 || true
+
+        echo "##[warning]Revertendo para a revisão anterior (rollout undo)..."
+        kubectl rollout undo deployment/"$APP" -n "$NS" || true
+        kubectl rollout status deployment/"$APP" -n "$NS" --timeout=120s || true
+
+        echo "##[error]Deploy abortado: a nova revisão não subiu. Ambiente revertido."
+        exit 1
