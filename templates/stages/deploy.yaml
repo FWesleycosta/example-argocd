@@ -21,6 +21,17 @@ parameters:
   - name: ssm_parameters
     type: object
     default: []
+  - name: sistema
+    type: string
+    default: ''
+  - name: owner
+    type: string
+    default: ''
+  - name: resourceSuffix
+    type: string
+    default: ''
+
+
 
 stages:
   - stage: Deploy_${{ parameters.environment }}
@@ -35,6 +46,8 @@ stages:
           vmImage: ubuntu-latest
         variables:
           - template: ../variables/env/${{ parameters.environment }}.yaml
+            parameters:
+              resourceSuffix: ${{ parameters.resourceSuffix }}
         strategy:
           runOnce:
             deploy:
@@ -50,6 +63,12 @@ stages:
                   parameters:
                     environment: ${{ parameters.environment }}
                     resourceSuffix: ${{ variables.resourceSuffix }}
+                    ${{ if ne(variables.resourceSuffix, '') }}:
+                      k8sNamespace: '$(Build.Repository.Name)${{ variables.resourceSuffix }}'
+                    ${{ else }}:
+                      k8sNamespace: '$(Build.Repository.Name)-${{ parameters.environment }}'
+                    sistema: ${{ parameters.sistema }}
+                    owner: ${{ parameters.owner }}
                     deployment_aspnetcore_environment: ${{ variables.deployment_aspnetcore_environment }}
                     serviceAccount: ${{ variables.serviceAccount }}
                     clusterName: ${{ variables.clusterName }}
@@ -67,7 +86,10 @@ stages:
                     ingress_path: ${{ parameters.networking.ingress_path }}
                     base_path: ${{ parameters.networking.base_path }}
                     api_visibility: ${{ parameters.networking.api_visibility }}
-                    cognito: ${{ parameters.networking.cognito }}
+                    ${{ if or(eq(parameters.networking.cognito, true), eq(parameters.networking.cognito, 'true'), eq(parameters.networking.cognito, 'True')) }}:
+                      cognito: 'true'
+                    ${{ else }}:
+                      cognito: 'false'
                     pod_requests_cpu: ${{ parameters.pod.requests_cpu }}
                     pod_requests_memory: ${{ parameters.pod.requests_memory }}
                     pod_limits_cpu: ${{ parameters.pod.limits_cpu }}
@@ -85,6 +107,8 @@ stages:
                     s3_buckets: ${{ parameters.resources.s3_buckets }}
                     secrets: ${{ parameters.resources.secrets }}
                     sqs: ${{ parameters.resources.sqs }}
+                    sns_topics: ${{ parameters.resources.sns_topics }}
+                    sns_sqs_subscriptions: ${{ parameters.resources.sns_sqs_subscriptions }}
                     dd_lang: ${{ parameters.observability.dd_lang }}
                     dd_lib_version: ${{ parameters.observability.dd_lib_version }}
 
@@ -95,12 +119,6 @@ stages:
                         serviceAccount: ${{ variables.serviceAccount }}
                         awsRegion: ${{ variables.awsRegion }}
                         awsAccID: ${{ variables.awsAccID }}
-                        # Perfil reduzido de hml: sem tag móvel, sem carimbo de
-                        # run, sem captura de approval. updateMarkdown fica no
-                        # default (true): o deploy de hml re-renderiza o
-                        # DEPLOY-PRD.md para manter a seção "Homologação" atual
-                        # — o "Último deploy" vem do JSONL (última entrada prd),
-                        # então não é sobrescrito por dados de hml.
                         ${{ if ne(parameters.environment, 'prd') }}:
                           prodTag: ''
                           stampRun: false
