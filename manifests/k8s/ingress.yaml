@@ -2,7 +2,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: PLACEHOLDER_APP_NAME-ingress
-  namespace: PLACEHOLDER_APP_NAME-PLACEHOLDER_ENVIRONMENT
+  namespace: PLACEHOLDER_NAMESPACE
   labels:
     app: PLACEHOLDER_APP_NAME
   annotations:
