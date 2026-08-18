@@ -13,15 +13,15 @@ parameters:
     type: string
     default: 'tfplan'
   - name: hasChangesVariable
-    type: string
+    type: string                 
     default: 'tfHasChanges'
   - name: extraArgs
-    type: string
+    type: string         
     default: ''
 
 steps:
   - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-    displayName: 'TF: plan'
+    displayName: 'Planejar Terraform'
     inputs:
       awsCredentials: ${{ parameters.serviceAccount }}
       regionName: ${{ parameters.awsRegion }}
