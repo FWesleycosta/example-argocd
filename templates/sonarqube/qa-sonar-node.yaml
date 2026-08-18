@@ -57,6 +57,9 @@ parameters:
   - name: breakOnQualityGate
     type: boolean
     default: true
+  - name: enforce
+    type: boolean
+    default: true      # false = lint e testes que falham viram warning (job SucceededWithIssues) e o pipeline segue
 
 steps:
   - task: NodeTool@0
@@ -102,19 +105,30 @@ steps:
 
   - ${{ if ne(parameters.lintCommand, '') }}:
       - bash: |
-          set -euo pipefail
+          set -uo pipefail
           echo "Lint: ${{ parameters.lintCommand }}"
           ${{ parameters.lintCommand }}
+          RC=$?
+          if [ "$RC" -ne 0 ]; then
+            if [ "${ENFORCE,,}" = "true" ]; then
+              echo "##[error]Lint falhou (rc=$RC). quality.mode=block: bloqueando."
+              exit "$RC"
+            fi
+            echo "##vso[task.logissue type=warning]Lint falhou (rc=$RC), mas quality.mode=warn: seguindo sem bloquear. Corrija e mude para quality.mode: block."
+            echo "##vso[task.complete result=SucceededWithIssues;]"
+          fi
         displayName: 'Lint'
         workingDirectory: $(Build.SourcesDirectory)
         env:
           CI: 'true'
+          ENFORCE: ${{ parameters.enforce }}
 
   - ${{ if ne(parameters.testCommand, '') }}:
       - bash: |
-          set -euo pipefail
+          set -uo pipefail
           echo "Testes: ${{ parameters.testCommand }}"
           ${{ parameters.testCommand }}
+          RC=$?
 
           REPORT="$(Build.SourcesDirectory)/${{ parameters.coverageReport }}"
           if [ -f "$REPORT" ]; then
@@ -122,10 +136,20 @@ steps:
           else
             echo "##[warning]Relatorio de cobertura '${{ parameters.coverageReport }}' nao encontrado — o Sonar vai reportar 0% de cobertura. Configure o runner para gerar lcov (jest: coverageReporters lcov; vitest: coverage.reporter lcov)."
           fi
+
+          if [ "$RC" -ne 0 ]; then
+            if [ "${ENFORCE,,}" = "true" ]; then
+              echo "##[error]Testes falharam (rc=$RC). quality.mode=block: bloqueando."
+              exit "$RC"
+            fi
+            echo "##vso[task.logissue type=warning]Testes falharam (rc=$RC), mas quality.mode=warn: seguindo sem bloquear. Corrija e mude para quality.mode: block."
+            echo "##vso[task.complete result=SucceededWithIssues;]"
+          fi
         displayName: 'Testes + cobertura'
         workingDirectory: $(Build.SourcesDirectory)
         env:
           CI: 'true'
+          ENFORCE: ${{ parameters.enforce }}
 
       - ${{ if ne(parameters.testResultsPattern, '') }}:
           - task: PublishTestResults@2

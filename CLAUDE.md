@@ -143,7 +143,8 @@ mesmos stages reutilizados (`stages/veracode.yaml` — com `defaultExcludePatter
 `sonarqube/quality-gate.yaml`); o que muda é o motor:
 
 ```
-SonarQube (sonarqube/qa-sonar-node.yaml: npm ci → lint → testes+lcov → scanner CLI → Quality Gate breaker)
+SonarQube (sonarqube/qa-sonar-node.yaml: npm ci → lint → testes+lcov → scanner CLI → Quality Gate)
+  quality.mode: warn (default) = lint/testes/gate só reportam, job amarelo | block = build breaker
 Build (frontend/build-frontend-node.yaml: npm ci → .env de config.env_vars → build → artefato frontend-dist)
 Deploy_<env> (stages/deploy-frontend.yaml → deploy-frontend.yaml):
   copiar manifests/terraform-frontend → tfvars → terraform-apply → ler outputs (distribution id)
