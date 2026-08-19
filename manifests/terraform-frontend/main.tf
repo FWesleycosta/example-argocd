@@ -66,9 +66,7 @@ module "cloudfront" {
   acm_certificate_arn  = local.certificate_arn
   price_class          = var.price_class
   cors_allowed_origins = var.cors_allowed_origins
-  # Security headers: policy compartilhada da conta (por nome) ou managed da AWS — nunca uma por app
-  response_headers_policy_name = var.response_headers_policy_name
-  # defaults do módulo: OAC, CachingOptimized + CORS-S3Origin, http2and3,
+  # defaults do módulo: OAC, CachingOptimized + CORS-S3Origin, http2and3, security headers,
   # fallback SPA 403/404 → /index.html, TLSv1.2_2021
   tags = local.tags
 }
