@@ -13,8 +13,10 @@ para `$(Build.SourcesDirectory)/terraform`, onde a esteira gera o `backend.tf`
 - **CloudFront** (`cloudfront_enabled`, default `true`) via módulo reutilizável
   **`Fibra.DevOps.Terraform//modules/aws_cloudfront_distribution`** (`source = "git::https://..."`,
   cópia de trabalho em `sandbox/Fibra.DevOps.Terraform/modules/aws_cloudfront_distribution`):
-  OAC, security headers via policy **compartilhada** (`response_headers_policy_name`, resolvida
-  por nome; vazio = managed AWS `CORS-and-SecurityHeadersPolicy` — nunca uma policy por app),
+  OAC, security headers via policy **compartilhada** da conta (`response_headers_policy_name`,
+  default da esteira `fibra-security-headers`, criada uma vez por conta em
+  `manifests/terraform-shared/cloudfront-headers`; vazio = managed AWS
+  `CORS-and-SecurityHeadersPolicy` — nunca uma policy por app),
   managed policies `CachingOptimized` + `CORS-S3Origin`, alias `<dns_name>-<env>.<base_domain>`
   (prd: `<dns_name>.<base_domain>`), fallback SPA 403/404 → `/index.html`, TLS 1.2+.
   A bucket policy (OAC restrito ao `module.cloudfront[0].ARN`) fica aqui no root.
