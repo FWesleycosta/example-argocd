@@ -47,25 +47,6 @@ steps:
     workingDirectory: ${{ parameters.terraformWorkDir }}
     displayName: 'TF vars de runtime (app_name/bucket_name/project_name)'
 
-  - ${{ if and(ne(parameters.responseHeadersPolicyName, ''), eq(parameters.cloudfront, 'true')) }}:
-      - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-        displayName: 'Verificar policy de security headers compartilhada'
-        inputs:
-          awsCredentials: ${{ parameters.serviceAccountTerraform }}
-          regionName: ${{ parameters.awsRegion }}
-          scriptType: inline
-          inlineScript: |
-            set -euo pipefail
-            NAME="${{ parameters.responseHeadersPolicyName }}"
-            ID=$(aws cloudfront list-response-headers-policies --type custom               --query "ResponseHeadersPolicyList.Items[?ResponseHeadersPolicy.ResponseHeadersPolicyConfig.Name=='${NAME}'].ResponseHeadersPolicy.Id"               --output text 2>/dev/null || true)
-            if [ -z "$ID" ] || [ "$ID" = "None" ]; then
-              echo "##[error]Response headers policy compartilhada '${NAME}' nao existe nesta conta (${{ parameters.environment }})."
-              echo "##[error]Bootstrap (uma vez por conta): manifests/terraform-shared/cloudfront-headers (ver README)."
-              echo "##[error]Alternativas no app: cdn.response_headers_policy_name com outra policy existente, ou '' para a managed da AWS."
-              exit 1
-            fi
-            echo "Policy '${NAME}' encontrada: $ID"
-
   - template: steps/terraform-apply.yaml
     parameters:
       serviceAccount: ${{ parameters.serviceAccountTerraform }}
