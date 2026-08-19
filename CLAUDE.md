@@ -280,10 +280,15 @@ por `source = "git::https://..."`. Recursos públicos/privados usam `count` sobr
 `local.is_public` / `local.is_private`.
 
 `sandbox/` é cópia local de trabalho de módulos daquele outro repositório (hoje
-`aws_lambda_function` e `aws_cloudfront_distribution`, com suíte `terraform test` e README). **Não é consumido pela
-esteira** — o `source` aponta para o repositório remoto. O `.gitignore` bloqueia
-`sandbox/.validate/` e `**/*override.tf` justamente para que o override que troca `source` por
-caminho local nunca vaze para `manifests/terraform/` e quebre PRD.
+`aws_lambda_function`, `aws_cloudfront_distribution` e `aws_cloudfront_response_headers_policy`,
+com suíte `terraform test` e README). **Não é consumido pela esteira** — o `source` aponta para
+o repositório remoto. O `.gitignore` bloqueia `sandbox/.validate/` e `**/*override.tf`
+justamente para que o override que troca `source` por caminho local nunca vaze para
+`manifests/terraform/` e quebre PRD.
+
+`manifests/terraform-shared/cloudfront-headers/` é um root **de plataforma** (não por app):
+cria a policy `fibra-security-headers` uma vez por conta; o stack de frontend a referencia por
+nome (`cdn.response_headers_policy_name`) e falha cedo se ela não existir.
 
 # Versionamento e mudanças
 
