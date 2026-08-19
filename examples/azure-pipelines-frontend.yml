@@ -30,7 +30,6 @@ extends:
     cdn:
       dns_name: internet-banking
       cloudfront: true
-      response_headers_policy_name: fibra-security-headers   # policy compartilhada da conta (plataforma); '' = managed AWS CORS-and-SecurityHeaders
       prune_stale_files: false           # true = remove do bucket arquivos que não estão mais no dist
 
     config:

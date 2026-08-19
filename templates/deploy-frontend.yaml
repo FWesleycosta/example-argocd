@@ -10,10 +10,12 @@ parameters:
   accessLoggingBucket: ''
   dns_name: ''
   cloudfront: 'true'
-  responseHeadersPolicyName: ''   # policy de security headers compartilhada da conta; vazio = managed da AWS
   pruneStaleFiles: 'false'
   runtime_vars: []
   distDir: '$(Pipeline.Workspace)/frontend-dist'
+  # Caminhos ancorados em Pipeline.Workspace: no job de deploy só o repo `templates` é baixado
+  # (checkout único), e nesse caso o ADO aponta Build.SourcesDirectory para a pasta desse repo
+  # (…/s/templates) — usar Build.SourcesDirectory aqui duplicaria o "templates".
   terraformSourceDir: '$(Pipeline.Workspace)/s/templates/manifests/terraform-frontend'
   terraformWorkDir: '$(Pipeline.Workspace)/terraform'
   runtimeConfigFile: 'env-config.js'
@@ -47,25 +49,6 @@ steps:
     workingDirectory: ${{ parameters.terraformWorkDir }}
     displayName: 'TF vars de runtime (app_name/bucket_name/project_name)'
 
-  - ${{ if and(ne(parameters.responseHeadersPolicyName, ''), eq(parameters.cloudfront, 'true')) }}:
-      - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
-        displayName: 'Verificar policy de security headers compartilhada'
-        inputs:
-          awsCredentials: ${{ parameters.serviceAccountTerraform }}
-          regionName: ${{ parameters.awsRegion }}
-          scriptType: inline
-          inlineScript: |
-            set -euo pipefail
-            NAME="${{ parameters.responseHeadersPolicyName }}"
-            ID=$(aws cloudfront list-response-headers-policies --type custom               --query "ResponseHeadersPolicyList.Items[?ResponseHeadersPolicy.ResponseHeadersPolicyConfig.Name=='${NAME}'].ResponseHeadersPolicy.Id"               --output text 2>/dev/null || true)
-            if [ -z "$ID" ] || [ "$ID" = "None" ]; then
-              echo "##[error]Response headers policy compartilhada '${NAME}' nao existe nesta conta (${{ parameters.environment }})."
-              echo "##[error]Bootstrap (uma vez por conta): manifests/terraform-shared/cloudfront-headers (ver README)."
-              echo "##[error]Alternativas no app: cdn.response_headers_policy_name com outra policy existente, ou '' para a managed da AWS."
-              exit 1
-            fi
-            echo "Policy '${NAME}' encontrada: $ID"
-
   - template: steps/terraform-apply.yaml
     parameters:
       serviceAccount: ${{ parameters.serviceAccountTerraform }}
@@ -84,7 +67,6 @@ steps:
         owner: ${{ parameters.owner }}
         dns_name: ${{ parameters.dns_name }}
         cloudfront_enabled: '${{ parameters.cloudfront }}'
-        response_headers_policy_name: ${{ parameters.responseHeadersPolicyName }}
         access_logging_bucket: ${{ parameters.accessLoggingBucket }}
 
   - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
@@ -143,9 +125,11 @@ steps:
         if [ "$PRUNE" = "true" ]; then DELETE_FLAG="--delete"; fi
 
         echo "##[section]sync $DIST -> s3://$BUCKET  ${DELETE_FLAG}"
+        # 1) assets com hash: cache longo e imutável
         aws s3 sync "$DIST" "s3://$BUCKET" $DELETE_FLAG \
           --exclude "index.html" --exclude "$RUNTIME_CFG" \
           --cache-control "public, max-age=31536000, immutable"
+        # 2) index.html e env-config.js: nunca cachear no browser (o CloudFront é invalidado abaixo)
         aws s3 cp "$DIST/$RUNTIME_CFG" "s3://$BUCKET/$RUNTIME_CFG" \
           --cache-control "no-cache, no-store, must-revalidate" --content-type "application/javascript"
         aws s3 cp "$DIST/index.html" "s3://$BUCKET/index.html" \

@@ -218,30 +218,6 @@ no backend é a extração do job de exclusão de branch para `utils/delete-bran
   Terraform usa `serviceAccountTerraform`; upload/invalidation usam `serviceAccount`
   (separação herdada do legado — menor privilégio).
 - **`templates/hotfix/hotfix-frontend.yaml`** — fluxo `hotfix/*` do frontend.
-- **Security headers do CloudFront via policy compartilhada** (módulo
-  `aws_cloudfront_distribution` + root + esteira). O módulo **não cria mais** uma response
-  headers policy por distribuição por default (quota de **20 por conta**; conflito de nome em
-  migração). Precedência: `response_headers_policy_id` > `response_headers_policy_name`
-  (policy compartilhada da conta, data source por nome) > `create_response_headers_policy =
-  true` (própria, opt-in — comportamento anterior) > managed AWS
-  `Managed-CORS-and-SecurityHeadersPolicy`. Novo `cdn.response_headers_policy_name` no stack
-  (default `''` = managed) → tfvar `response_headers_policy_name`. Output
-  `Response_Headers_Policy_ID` passa a refletir a policy efetiva. Apps que já aplicaram a
-  versão anterior terão a `headers-<bucket>` própria destruída no próximo apply (a
-  distribuição é atualizada antes). **Requer republicar o módulo** no `Fibra.DevOps.Terraform`.
-- **Policy compartilhada `fibra-security-headers` — a decisão da plataforma.** Novo módulo
-  **`sandbox/Fibra.DevOps.Terraform/modules/aws_cloudfront_response_headers_policy`** (CORS,
-  security headers — HSTS/nosniff/X-Frame-Options/Referrer-Policy/X-XSS-Protection —, CSP
-  opcional, `custom_headers`, `remove_headers`; `create_response_headers_policy`, outputs
-  `ID`/`Name`/`ETag`, preconditions, README e `tests/`) e novo root **de plataforma**
-  **`manifests/terraform-shared/cloudfront-headers/`** que cria essa policy **uma vez por
-  conta** (dev/hml/prd; backend via `-backend-config`; `Permissions-Policy`, remove
-  `Server`/`X-Powered-By`, CSP vazio até haver inventário). O stack passa a ter
-  `cdn.response_headers_policy_name` **default `fibra-security-headers`**, e o motor
-  verifica antes do Terraform (`list-response-headers-policies`) se a policy existe na conta —
-  se não existir, falha cedo apontando o bootstrap; `''` (ou `cdn` parcial sem a chave) cai
-  na managed da AWS. Trade-off: um bootstrap por conta em troca de headers uniformes,
-  alteráveis num lugar só (sem redeploy dos apps) e sem estourar a quota.
 - **Caminhos do motor de frontend ancorados em `$(Pipeline.Workspace)`** (`terraformSourceDir`
   = `$(Pipeline.Workspace)/s/templates/manifests/terraform-frontend`, `terraformWorkDir` =
   `$(Pipeline.Workspace)/terraform`). O job de deploy do frontend faz checkout **só** do repo

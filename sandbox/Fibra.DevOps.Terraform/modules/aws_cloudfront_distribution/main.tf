@@ -8,10 +8,8 @@ resource "aws_cloudfront_origin_access_control" "this" {
   signing_protocol                  = "sigv4"
 }
 
-# Criada SÓ com create_response_headers_policy = true (quota: 20 policies por conta —
-# prefira uma policy compartilhada por nome/ID ou a managed da AWS; ver locals.tf).
 resource "aws_cloudfront_response_headers_policy" "this" {
-  count = local.create_headers_policy
+  count = local.create
 
   name    = "headers-${var.name}"
   comment = "CORS${var.enable_security_headers ? " + security headers" : ""} for ${local.comment}"
@@ -81,7 +79,7 @@ resource "aws_cloudfront_distribution" "this" {
     compress                   = true
     cache_policy_id            = var.cache_policy_id
     origin_request_policy_id   = var.origin_request_policy_id != "" ? var.origin_request_policy_id : null
-    response_headers_policy_id = local.response_headers_policy_id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.this[0].id
   }
 
   dynamic "custom_error_response" {

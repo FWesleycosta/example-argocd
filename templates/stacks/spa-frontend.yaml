@@ -14,7 +14,6 @@ parameters:
     default:
       dns_name: ''
       cloudfront: true
-      response_headers_policy_name: 'fibra-security-headers'   # policy COMPARTILHADA da conta (manifests/terraform-shared/cloudfront-headers); '' = managed da AWS
       prune_stale_files: false
 
   - name: config

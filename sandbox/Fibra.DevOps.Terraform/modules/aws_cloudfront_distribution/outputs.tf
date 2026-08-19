@@ -24,6 +24,6 @@ output "Origin_Access_Control_ID" {
 }
 
 output "Response_Headers_Policy_ID" {
-  description = "ID da response headers policy efetivamente usada pela distribuição (explícita, compartilhada, criada ou managed)."
-  value       = var.create_cloudfront_distribution ? local.response_headers_policy_id : null
+  description = "ID da response headers policy criada."
+  value       = try(aws_cloudfront_response_headers_policy.this[0].id, null)
 }
