@@ -18,7 +18,7 @@ o certificado — o resto vem certo (e seguro) por padrão.
 | O que é criado | Em linguagem simples | Quando |
 |---|---|---|
 | `aws_cloudfront_origin_access_control` (OAC) | A "credencial" com que o CloudFront lê o bucket privado. Ninguém mais lê o bucket direto. | Sempre (com o módulo ligado). |
-| `aws_cloudfront_response_headers_policy` | Regras de CORS + cabeçalhos de segurança (HSTS, nosniff, X-Frame-Options, Referrer-Policy) que o CloudFront adiciona a toda resposta. | Sempre; os cabeçalhos de segurança podem ser desligados (`enable_security_headers = false`). |
+| `aws_cloudfront_response_headers_policy` | Regras de CORS + cabeçalhos de segurança (HSTS, nosniff, X-Frame-Options, Referrer-Policy) que o CloudFront adiciona a toda resposta. | **Só com `create_response_headers_policy = true`** (opt-in; consome 1 do limite de **20 policies custom por conta**). Default: associa a **managed** `CORS-with-preflight-and-SecurityHeadersPolicy` da AWS — mesmo efeito prático (CORS `*` + security headers), **zero slot do limite**. |
 | `aws_cloudfront_distribution` | A distribuição em si: origem S3 via OAC, cache policy gerenciada, HTTP/2+3, redirect para HTTPS, aliases + certificado ACM, fallback SPA (403/404 → `/index.html`). | Sempre (com o módulo ligado). |
 
 ### O que o módulo não faz
@@ -109,6 +109,14 @@ criada em us-east-1).
 **Trocar cache policy** — `cache_policy_id = "<id de cache policy própria>"`; para não repassar
 nada ao S3, `origin_request_policy_id = ""`.
 
+**Headers de resposta** — o default associa a managed `CORS-with-preflight-and-SecurityHeadersPolicy`
+(CORS `*` com preflight + HSTS/nosniff/`X-Frame-Options: SAMEORIGIN`/Referrer-Policy/X-XSS-Protection),
+que **não consome o limite de 20 policies custom da conta**. Outra managed ou uma policy externa:
+`response_headers_policy_id = "<id>"` (`""` = nenhuma). CORS restrito ou security headers custom:
+`create_response_headers_policy = true` + `cors_*`/`hsts_*`/`frame_option`/`referrer_policy` —
+uma precondition barra o `plan` se esses valores forem customizados **sem** o opt-in (senão
+seriam ignorados em silêncio).
+
 ---
 
 ## Referência completa
@@ -131,8 +139,10 @@ nada ao S3, `origin_request_policy_id = ""`.
 | `allowed_methods` / `cached_methods` | list(string) | `GET,HEAD,OPTIONS` / `GET,HEAD` | Default cache behavior. |
 | `cache_policy_id` | string | `658327ea-…` (CachingOptimized) | Cache policy. |
 | `origin_request_policy_id` | string | `88a5eaf4-…` (CORS-S3Origin) | Origin request policy; `""` = nenhuma. |
-| `cors_allowed_origins` / `_headers` / `_methods` / `cors_max_age_sec` | list / number | `["*"]` / lista comum / `GET,HEAD,OPTIONS` / `3600` | CORS da response headers policy. |
-| `enable_security_headers` | bool | `true` | HSTS + nosniff + X-Frame-Options + Referrer-Policy. |
+| `create_response_headers_policy` | bool | `false` | `true` = cria policy própria (CORS/security custom) — consome 1 slot do limite da conta. |
+| `response_headers_policy_id` | string | `eaab4381-…` (managed CORS-with-preflight-and-SecurityHeaders) | Policy associada quando **não** se cria a própria; `""` = nenhuma. |
+| `cors_allowed_origins` / `_headers` / `_methods` / `cors_max_age_sec` | list / number | `["*"]` / lista comum / `GET,HEAD,OPTIONS` / `3600` | CORS da policy própria (exige `create_response_headers_policy = true`). |
+| `enable_security_headers` | bool | `true` | HSTS + nosniff + X-Frame-Options + Referrer-Policy (na policy própria). |
 | `hsts_max_age_sec` | number | `31536000` | HSTS max-age. |
 | `frame_option` | string | `SAMEORIGIN` | `DENY` \| `SAMEORIGIN`. |
 | `referrer_policy` | string | `strict-origin-when-cross-origin` | Valores válidos de Referrer-Policy. |
@@ -151,7 +161,7 @@ nada ao S3, `origin_request_policy_id = ""`.
 | `Domain_Name` | `*.cloudfront.net` (alvo do DNS). |
 | `Hosted_Zone_ID` | Zone ID do CloudFront (alias Route 53). |
 | `Origin_Access_Control_ID` | ID do OAC. |
-| `Response_Headers_Policy_ID` | ID da response headers policy. |
+| `Response_Headers_Policy_ID` | ID da policy associada (própria ou managed/externa; `null` se nenhuma). |
 
 Todos os outputs são `null` com o módulo desligado.
 

@@ -50,3 +50,11 @@ run "desligado_ignora_obrigatorios" {
     error_message = "Desligado, os obrigatórios não devem ser exigidos."
   }
 }
+
+run "cors_customizado_sem_policy_propria" {
+  command = plan
+  variables {
+    cors_allowed_origins = ["https://app.bancofibra.com.br"]
+  }
+  expect_failures = [aws_cloudfront_distribution.this]
+}

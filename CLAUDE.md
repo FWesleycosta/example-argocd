@@ -178,7 +178,11 @@ Deploy_<env> (stages/deploy-frontend.yaml → deploy-frontend.yaml):
   `git-credentials` (igual ao backend). Certificado ACM sempre em **us-east-1** (provider
   alias). Não cria DNS. A cópia de trabalho do módulo está em
   `sandbox/Fibra.DevOps.Terraform/modules/aws_cloudfront_distribution` (validar local com
-  override de `source`, ver README do root). Suítes `tests/*.tftest.hcl` offline (TF ≥ 1.6).
+  override de `source`, ver README do root). **Response headers (`2.6.1`)**: o módulo associa
+  por default a **managed policy** da AWS `CORS-with-preflight-and-SecurityHeadersPolicy`
+  (zero consumo do limite de 20 policies custom/conta — era o que estourava com sandboxes);
+  policy própria é opt-in `create_response_headers_policy = true` (exigida para CORS/security
+  custom, com precondition que barra customização sem o opt-in). Suítes `tests/*.tftest.hcl` offline (TF ≥ 1.6).
   Detalhes na entrada `2.3.0` do `CHANGELOG.md`.
 
 ## Contratos que quebram silenciosamente

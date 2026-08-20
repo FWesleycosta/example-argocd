@@ -103,6 +103,18 @@ variable "origin_request_policy_id" {
   default     = "88a5eaf4-2fd4-4709-b370-b4c650ea3fcf"
 }
 
+variable "create_response_headers_policy" {
+  type        = bool
+  description = "true = cria uma response headers policy própria da distribuição (habilita customizar cors_*, enable_security_headers, hsts_max_age_sec, frame_option, referrer_policy) — consome 1 do limite de policies custom da conta (default 20). false (default) = associa a managed policy da AWS de response_headers_policy_id, que não consome o limite."
+  default     = false
+}
+
+variable "response_headers_policy_id" {
+  type        = string
+  description = "ID da response headers policy associada quando create_response_headers_policy = false. Default: managed CORS-with-preflight-and-SecurityHeadersPolicy (CORS * com preflight + HSTS, nosniff, X-Frame-Options SAMEORIGIN, Referrer-Policy, X-XSS-Protection). Outras managed: SecurityHeadersPolicy 67f7725c-6f97-4210-82d7-5512b31e9d03 (sem CORS), CORS-and-SecurityHeadersPolicy e61eb60c-9c35-4d20-a928-2b84e02af89c (CORS simples, sem preflight). Vazio = nenhuma policy."
+  default     = "eaab4381-ed33-4a86-88ca-d9558dc6cd63"
+}
+
 variable "cors_allowed_origins" {
   type        = list(string)
   description = "Origens permitidas na response headers policy (CORS). [\"*\"] libera qualquer origem — adequado para assets estáticos públicos."
