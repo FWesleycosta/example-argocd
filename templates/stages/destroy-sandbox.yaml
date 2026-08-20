@@ -1,0 +1,149 @@
+# DESTROY do sandbox (sdx) — stage ÚNICO do run quando o app roda com destroySandbox=true
+# numa branch sandbox/* (roteado em stacks/dotnet-backend.yaml, mesmo padrão do rollback).
+#
+# Ordem: carimbo do run → delete do namespace K8s (o workload solta a pod identity/IAM role
+# antes de o Terraform destruí-las; o ingress deletado dispara a limpeza das regras no ALB
+# compartilhado) → steps/terraform-destroy.yaml (plan -destroy com relatório na Summary e
+# artefato `sandbox-destroy` ANTES do apply; relatório do resultado DEPOIS).
+#
+# O que NÃO é tocado: bucket de tfstate (state vira vazio, histórico versionado), ECR
+# (imagens compartilhadas com dev) e aws_api_gateway_account (singleton da conta — sai do
+# state e permanece). Secrets destruídos entram na recovery window (7 dias): recriar o
+# MESMO sandbox nesse intervalo falha na criação do secret — aguarde ou use outro suffix.
+#
+# `condition: Build.Reason == Manual`: mesmo que um app fixe destroySandbox: true no YAML
+# por engano, um push de CI nunca destrói — só "Run pipeline" manual.
+parameters:
+  - name: networking
+    type: object
+  - name: resources
+    type: object
+  - name: ssm_parameters
+    type: object
+    default: []
+  - name: sistema
+    type: string
+    default: ''
+  - name: owner
+    type: string
+    default: ''
+  - name: resourceSuffix
+    type: string
+    default: ''
+
+stages:
+  - stage: Destroy_sdx
+    displayName: 'Destroy sandbox (sdx)'
+    condition: eq(variables['Build.Reason'], 'Manual')
+    jobs:
+      - deployment: destroy
+        displayName: 'Destroy sandbox (sdx)'
+        environment: sdx
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          - template: ../variables/env/sdx.yaml
+            parameters:
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - checkout: templates
+                  persistCredentials: true
+                  path: s/templates
+
+                - template: ../infra/setup-git-auth.yaml
+
+                - bash: |
+                    set -euo pipefail
+                    echo "##vso[build.updatebuildnumber]$(Build.Repository.Name)-destroy${{ variables.resourceSuffix }}-$(Build.BuildId)"
+                    echo "##vso[build.addbuildtag]destroy"
+                    echo "##vso[build.addbuildtag]sdx"
+                  displayName: 'Carimbar destroy (run name + tags)'
+
+                - script: |
+                    set -euo pipefail
+
+                    REPO_DIR="$(Build.SourcesDirectory)/templates"
+                    TF_TEMPLATES="${REPO_DIR}/manifests/terraform"
+                    TERRAFORM_BASE="$(Build.SourcesDirectory)/terraform"
+
+                    if [ ! -d "$TF_TEMPLATES" ]; then
+                      echo "##[error]Terraform templates not found: $TF_TEMPLATES"
+                      exit 1
+                    fi
+
+                    mkdir -p "$TERRAFORM_BASE"
+                    cp -r "$TF_TEMPLATES"/. "$TERRAFORM_BASE/"
+
+                    echo "##[section]Terraform manifests:"
+                    ls -la "$TERRAFORM_BASE"
+                  displayName: 'Prepare Terraform Manifests'
+
+                - bash: |
+                    set -euo pipefail
+                    APP="$(Build.Repository.Name)"
+                    PROJECT="$(System.TeamProject)"
+                    NS="${APP}${{ variables.resourceSuffix }}"
+                    jq -n --arg app "$APP" --arg ns "$NS" --arg project "$PROJECT" \
+                      '{app_name: $app, namespace: $ns, project_name: $project}' > _app.auto.tfvars.json
+                    echo "_app.auto.tfvars.json:"; cat _app.auto.tfvars.json
+                  workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+                  displayName: 'TF vars de runtime (app_name/namespace/project_name)'
+
+                - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+                  displayName: 'Deletar namespace K8s do sandbox'
+                  inputs:
+                    awsCredentials: ${{ variables.serviceAccount }}
+                    regionName: ${{ variables.awsRegion }}
+                    scriptType: inline
+                    inlineScript: |
+                      set -euo pipefail
+                      APP="$(Build.Repository.Name)"
+                      NS="${APP}${{ variables.resourceSuffix }}"
+
+                      aws eks update-kubeconfig --region "${{ variables.awsRegion }}" --name "${{ variables.clusterName }}"
+
+                      echo "##[section]Deletando namespace '$NS' (workloads, ingress, configmaps)..."
+                      kubectl delete namespace "$NS" --ignore-not-found=true --timeout=600s
+                      echo "##[section]✔ Namespace '$NS' removido (ou já não existia)."
+
+                - template: ../steps/terraform-destroy.yaml
+                  parameters:
+                    serviceAccount: ${{ variables.serviceAccount }}
+                    awsRegion: ${{ variables.awsRegion }}
+                    workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+                    backendBucket: 'tfstate-$(Build.Repository.Name)-sdx'
+                    ${{ if or(eq(variables.resourceSuffix, ''), eq(variables.resourceSuffix, '-sdx')) }}:
+                      backendKey: '$(Build.Repository.Name)/terraform.tfstate'
+                    ${{ else }}:
+                      backendKey: '$(Build.Repository.Name)${{ variables.resourceSuffix }}/terraform.tfstate'
+                    tfVars:
+                      environment: sdx
+                      resource_suffix: ${{ variables.resourceSuffix }}
+                      sistema: ${{ parameters.sistema }}
+                      owner: ${{ parameters.owner }}
+                      domain_name: ${{ parameters.networking.domain_name }}
+                      cluster_name: ${{ variables.clusterName }}
+                      alb_shared_dns: ${{ variables.albSharedDns }}
+                      api_gateway_vpc_link: ${{ variables.apiGatewayVpcLink }}
+                      alb_shared_listener: ${{ variables.albSharedListener }}
+                      base_path: ${{ parameters.networking.base_path }}
+                      api_type: ${{ parameters.networking.api_visibility }}
+                      vpc_endpoint_apigw: ${{ variables.vpc_endpoint_apigw }}
+                      domain_internal_name: ${{ variables.domain_internal_name }}
+                      domain_name_id: ${{ variables.domain_name_id }}
+                      ${{ if or(eq(parameters.networking.cognito, true), eq(parameters.networking.cognito, 'true'), eq(parameters.networking.cognito, 'True')) }}:
+                        cognito: 'true'
+                      ${{ else }}:
+                        cognito: 'false'
+                      certificate_arn: ${{ variables.certificate_arn }}
+                      ssm_parameters: ${{ parameters.ssm_parameters }}
+                      s3_buckets: ${{ parameters.resources.s3_buckets }}
+                      secrets: ${{ parameters.resources.secrets }}
+                      queue_name: ${{ parameters.resources.sqs }}
+                      dynamodb_tables: ${{ parameters.resources.dynamodb_tables }}
+                      topic_name: ${{ parameters.resources.sns_topics }}
+                      sns_sqs_subscriptions: ${{ parameters.resources.sns_sqs_subscriptions }}

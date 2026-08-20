@@ -1,0 +1,114 @@
+# DESTROY do sandbox FRONTEND (sdx) — stage ÚNICO do run quando o app roda com
+# destroySandbox=true numa branch sandbox/* (roteado em stacks/spa-frontend.yaml, mesmo
+# padrão do backend em stages/destroy-sandbox.yaml).
+#
+# Mesmo motor do backend (steps/terraform-destroy.yaml): verificação do state (nunca cria
+# bucket), plan -destroy com relatório na Summary + artefato `sandbox-destroy` ANTES do
+# apply, esvaziamento dos buckets S3 do state (o bucket do SITE está no state — objetos +
+# versões + delete markers saem antes do destroy), apply e relatório do resultado. Sem
+# namespace K8s aqui; o preserve de aws_api_gateway_account é no-op (não existe no state
+# do frontend).
+#
+# CloudFront: o destroy da distribuição é do provider (disable → aguarda deploy → delete)
+# e pode levar ~15–20 min — dentro do timeout default (60 min) do job.
+# O bucket de tfstate NÃO é apagado (state vira vazio, histórico versionado).
+#
+# `condition: Build.Reason == Manual`: mesmo que um app fixe destroySandbox: true no YAML
+# por engano, um push de CI nunca destrói — só "Run pipeline" manual.
+parameters:
+  - name: cdn
+    type: object
+  - name: sistema
+    type: string
+    default: ''
+  - name: owner
+    type: string
+    default: ''
+  - name: resourceSuffix
+    type: string
+    default: ''
+
+stages:
+  - stage: Destroy_sdx
+    displayName: 'Destroy sandbox frontend (sdx)'
+    condition: eq(variables['Build.Reason'], 'Manual')
+    jobs:
+      - deployment: destroy
+        displayName: 'Destroy sandbox frontend (sdx)'
+        environment: sdx
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          - template: ../variables/env/sdx.yaml
+            parameters:
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: templates
+                  persistCredentials: true
+                  path: s/templates
+
+                # O root manifests/terraform-frontend consome módulos privados do
+                # Fibra.DevOps.Terraform via git:: — o init precisa do GIT_PAT (grupo git-credentials).
+                - template: ../infra/setup-git-auth.yaml
+
+                - bash: |
+                    set -euo pipefail
+                    echo "##vso[build.updatebuildnumber]$(Build.Repository.Name)-destroy${{ variables.resourceSuffix }}-$(Build.BuildId)"
+                    echo "##vso[build.addbuildtag]destroy"
+                    echo "##vso[build.addbuildtag]sdx"
+                  displayName: 'Carimbar destroy (run name + tags)'
+
+                # Caminhos ancorados em Pipeline.Workspace: com checkout único do repo
+                # `templates`, Build.SourcesDirectory já aponta para .../s/templates —
+                # mesma regra do deploy-frontend.yaml.
+                - script: |
+                    set -euo pipefail
+                    TF_TEMPLATES="$(Pipeline.Workspace)/s/templates/manifests/terraform-frontend"
+                    TERRAFORM_BASE="$(Pipeline.Workspace)/terraform"
+
+                    if [ ! -d "$TF_TEMPLATES" ]; then
+                      echo "##[error]Terraform templates not found: $TF_TEMPLATES"
+                      exit 1
+                    fi
+                    mkdir -p "$TERRAFORM_BASE"
+                    cp -r "$TF_TEMPLATES"/. "$TERRAFORM_BASE/"
+                    echo "##[section]Terraform manifests:"; ls -la "$TERRAFORM_BASE"
+                  displayName: 'Prepare Terraform Manifests (frontend)'
+
+                - bash: |
+                    set -euo pipefail
+                    APP="$(Build.Repository.Name)"
+                    PROJECT="$(System.TeamProject)"
+                    # sandbox: o sufixo substitui o env no nome do bucket — mesma regra do deploy
+                    BUCKET="${APP}${{ variables.resourceSuffix }}"
+                    jq -n --arg app "$APP" --arg bucket "$BUCKET" --arg project "$PROJECT" \
+                      '{app_name: $app, bucket_name: $bucket, project_name: $project}' > _app.auto.tfvars.json
+                    echo "_app.auto.tfvars.json:"; cat _app.auto.tfvars.json
+                  workingDirectory: $(Pipeline.Workspace)/terraform
+                  displayName: 'TF vars de runtime (app_name/bucket_name/project_name)'
+
+                - template: ../steps/terraform-destroy.yaml
+                  parameters:
+                    serviceAccount: ${{ variables.serviceAccountTerraform }}
+                    awsRegion: ${{ variables.awsRegion }}
+                    workingDirectory: $(Pipeline.Workspace)/terraform
+                    backendBucket: 'tfstate-$(Build.Repository.Name)-sdx'
+                    ${{ if or(eq(variables.resourceSuffix, ''), eq(variables.resourceSuffix, '-sdx')) }}:
+                      backendKey: '$(Build.Repository.Name)/terraform.tfstate'
+                    ${{ else }}:
+                      backendKey: '$(Build.Repository.Name)${{ variables.resourceSuffix }}/terraform.tfstate'
+                    tfVars:
+                      environment: sdx
+                      aws_region: ${{ variables.awsRegion }}
+                      resource_suffix: ${{ variables.resourceSuffix }}
+                      sistema: ${{ parameters.sistema }}
+                      owner: ${{ parameters.owner }}
+                      dns_name: ${{ parameters.cdn.dns_name }}
+                      ${{ if or(eq(parameters.cdn.cloudfront, false), eq(parameters.cdn.cloudfront, 'false'), eq(parameters.cdn.cloudfront, 'False')) }}:
+                        cloudfront_enabled: 'false'
+                      ${{ else }}:
+                        cloudfront_enabled: 'true'
+                      access_logging_bucket: ${{ variables.accessLoggingWorkloads }}

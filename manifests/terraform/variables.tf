@@ -118,9 +118,9 @@ variable "endpoint_type" {
 }
 
 variable "security_policy" {
-  description = "Minimum TLS security policy for the domain. Use a TLS_1_2 (or newer) policy for production workloads; TLS_1_0 is deprecated and should only be used for legacy clients that cannot be upgraded. Note that the available policies differ by endpoint_type: REGIONAL domains support the SecurityPolicy_TLS13_* / SecurityPolicy_TLS12_* values, while EDGE domains support the *_EDGE values and the legacy TLS_1_0 / TLS_1_2 aliases."
+  description = "Minimum TLS security policy for the domain. Use a TLS_1_2 (or newer) policy for production workloads; TLS_1_0 is deprecated and should only be used for legacy clients that cannot be upgraded. Note that the available policies differ by endpoint_type: REGIONAL domains support the SecurityPolicy_TLS13_* / SecurityPolicy_TLS12_* values, while EDGE domains support the *_EDGE values and the legacy TLS_1_0 / TLS_1_2 aliases. O default aceita TLS 1.2 E 1.3 (PFS + pos-quantica) para nao quebrar clientes TLS 1.2 existentes; TLS 1.3-only (SecurityPolicy_TLS13_1_3_2025_09) e opt-in por app, apos validar $context.tlsVersion nos access logs."
   type        = string
-  default     = "SecurityPolicy_TLS13_1_3_2025_09"
+  default     = "SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09"
 
   validation {
     condition     = contains(["TLS_1_0", "TLS_1_2", "SecurityPolicy_TLS13_1_3_2025_09", "SecurityPolicy_TLS13_1_3_FIPS_2025_09", "SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09", "SecurityPolicy_TLS13_1_2_FIPS_PQ_2025_09", "SecurityPolicy_TLS13_1_2_FIPS_PFS_PQ_2025_09", "SecurityPolicy_TLS13_1_2_PQ_2025_09", "SecurityPolicy_TLS13_1_2_2021_06", "SecurityPolicy_TLS13_2025_EDGE", "SecurityPolicy_TLS12_PFS_2025_EDGE", "SecurityPolicy_TLS12_2018_EDGE"], var.security_policy)
@@ -129,9 +129,9 @@ variable "security_policy" {
 }
 
 variable "endpoint_access_mode" {
-  description = "Endpoint access mode for the custom domain (BASIC or STRICT). Required by the newer SecurityPolicy_TLS13_*/SecurityPolicy_TLS12_* security policies; ignored for the legacy TLS_1_0/TLS_1_2 policies. BASIC keeps the standard behavior; STRICT enforces stricter TLS handling."
+  description = "Endpoint access mode (BASIC or STRICT). Required by the newer SecurityPolicy_TLS13_*/SecurityPolicy_TLS12_* security policies; ignored for the legacy TLS_1_0/TLS_1_2 policies. STRICT impoe SNI host matching: invocar API privada sem custom domain/private DNS (ex.: URL do VPC endpoint com header Host) QUEBRA. Migracao recomendada pela AWS: enhanced policy + BASIC -> validar access logs -> STRICT (opt-in por app; voltar de STRICT para BASIC custa ~15 min de indisponibilidade)."
   type        = string
-  default     = "STRICT"
+  default     = "BASIC"
 
   validation {
     condition     = contains(["BASIC", "STRICT"], var.endpoint_access_mode)

@@ -31,6 +31,10 @@ parameters:
   - name: rollbackImageTag
     type: string
     default: 'none'
+  - name: destroySandbox
+    type: boolean
+    default: false
+    displayName: 'DESTRUIR o sandbox (terraform destroy + namespace K8s) — só branches sandbox/*'
   - name: sistema
     type: string
     default: ''
@@ -48,7 +52,34 @@ variables:
   - group: git-credentials
 
 stages:
-  - ${{ if and(ne(parameters.rollbackImageTag, ''), ne(parameters.rollbackImageTag, 'none')) }}:
+  # destroySandbox=true: o run vira SÓ destroy — e apenas em branches sandbox/*. Em
+  # qualquer outra branch o run FALHA num guard explícito (nunca cai no fluxo de deploy).
+  # Tem precedência sobre rollbackImageTag.
+  - ${{ if eq(parameters.destroySandbox, true) }}:
+      - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/sandbox/') }}:
+          - template: ../stages/destroy-sandbox.yaml
+            parameters:
+              networking: ${{ parameters.networking }}
+              resources: ${{ parameters.resources }}
+              ssm_parameters: ${{ parameters.config.ssm_parameters.dev }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+      - ${{ else }}:
+          - stage: Destroy_guard
+            displayName: 'destroySandbox bloqueado — branch não é sandbox/*'
+            jobs:
+              - job: Guard
+                displayName: 'Bloquear destroy fora de sandbox/*'
+                pool:
+                  vmImage: ubuntu-latest
+                steps:
+                  - script: |
+                      echo "##[error]destroySandbox=true só é permitido em branches sandbox/* (branch atual: $(Build.SourceBranch)). Nenhum stage de deploy ou destroy foi executado."
+                      exit 1
+                    displayName: 'destroySandbox fora de sandbox/*'
+
+  - ${{ elseif and(ne(parameters.rollbackImageTag, ''), ne(parameters.rollbackImageTag, 'none')) }}:
       - template: ../stages/rollback.yaml
         parameters:
           environment: prd

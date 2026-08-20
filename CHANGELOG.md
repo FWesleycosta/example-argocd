@@ -156,6 +156,109 @@ flowchart TD
 | `sandbox/*` | Build + deploy em **sdx** (infra de DEV, recursos com sufixo `-sdx`; SSM/Secrets com prefixo `/sdx/...`) |
 | `release/*` | hml → Veracode → prd → PRs de promoção |
 | `hotfix/*` | Veracode → prd → aprovação → PRs em cascata → exclusão da branch |
+| `sandbox/*` com `destroySandbox: true` (run manual) | **só** destroy do sandbox (namespace K8s + `terraform destroy`); outras branches → guard falha o run |
+
+---
+
+## [2.6.0] - 2026-08-20
+
+**Destroy do sandbox sob demanda (backend e frontend)**: novo parâmetro
+**`destroySandbox`** (boolean, default `false`) nos `stacks/dotnet-backend.yaml` **e**
+`stacks/spa-frontend.yaml`. Marcado `true` num **"Run pipeline" manual de uma branch
+`sandbox/*`**, o run vira **só destroy** (mesmo padrão de roteamento do
+`rollbackImageTag`): backend deleta o namespace K8s e roda `terraform destroy` de todos os
+recursos do state do `resourceSuffix`; frontend destrói S3 do site + CloudFront do mesmo
+state. Ambos com **relatório do que SERÁ destruído** (aba Summary + artefato
+`sandbox-destroy`, gerado do `terraform plan -destroy` **antes** do apply) e **relatório
+do que FOI destruído** depois. **Compatível (MINOR)**: parâmetro novo com default — apps
+pinados não mudam de comportamento.
+
+### Adicionado
+
+- **`stacks/dotnet-backend.yaml`** e **`stacks/spa-frontend.yaml`**: parâmetro
+  `destroySandbox` (boolean, default `false`); no backend, com **precedência sobre
+  `rollbackImageTag`**. Roteamento compile-time:
+  - branch `sandbox/*` → **só** `stages/destroy-sandbox.yaml` (backend) /
+    `stages/destroy-sandbox-frontend.yaml` (frontend);
+  - qualquer outra branch → stage **`Destroy_guard`** que **falha o run de propósito**
+    (nunca cai no fluxo normal de deploy com o parâmetro ligado). No frontend, os stages
+    `Validate`/`SonarQube`/`Build` passaram para dentro do `${{ else }}` do roteamento —
+    **sem mudança de comportamento** quando `destroySandbox` é `false` (default).
+- **`stages/destroy-sandbox.yaml`** — stage `Destroy_sdx` (deployment no Environment
+  `sdx`, `condition: Build.Reason == 'Manual'` — mesmo um app que fixe `true` no YAML
+  nunca destrói via push de CI). Ordem: carimbo do run (`<app>-destroy<suffix>-<buildId>` +
+  build tags `destroy`/`sdx`) → **delete do namespace K8s** `<repo><suffix>` (o workload
+  solta a pod identity antes de o Terraform destruí-la; o ingress deletado aciona a limpeza
+  das regras no ALB compartilhado) → `steps/terraform-destroy.yaml` com os **mesmos
+  tfvars/backend do deploy** (state key idêntica à do `deploy-backend.yaml`).
+- **`stages/destroy-sandbox-frontend.yaml`** — stage `Destroy_sdx` do frontend (Environment
+  `sdx`, mesma `condition: Build.Reason == 'Manual'`). Sem namespace K8s; usa
+  `serviceAccountTerraform`, root `manifests/terraform-frontend` e os **mesmos
+  tfvars/backend do `deploy-frontend.yaml`** (state key idêntica). O **bucket do site**
+  (`<repo><suffix>`) está no state → é esvaziado pelo motor antes do destroy; a
+  **distribuição CloudFront** é destruída pelo provider (disable → delete, ~15–20 min,
+  dentro do timeout default do job). O preserve de `aws_api_gateway_account` é no-op aqui.
+- **`steps/terraform-destroy.yaml`** — motor único de destroy usado pelos dois stacks,
+  espelho do `terraform-apply.yaml` para o caminho de destruição:
+  - **nunca cria o bucket de state**: se bucket/objeto não existem, falha com mensagem
+    clara ("sandbox nunca foi deployado ou já destruído");
+  - **preserva `aws_api_gateway_account`** (`terraform state rm`): é singleton da conta
+    compartilhada com dev — destruí-lo resetaria o CloudWatch role do API Gateway de
+    todos os apps;
+  - `terraform plan -destroy` (`destroy.tfplan`) → relatório na Summary + artefato
+    (`destroy-plan.txt`/`.json` + lista de endereços);
+  - **esvazia os buckets S3 gerenciados pelo state** (objetos + versões + delete markers)
+    antes do apply — `force_destroy` default `false` travaria o destroy;
+  - apply do plan de destroy → relatório final: state vazio = sucesso; **destroy parcial
+    falha o job** listando o que restou no state (ponto de partida da recuperação).
+  - O que **não** é tocado: bucket de tfstate (o state vira vazio, histórico versionado no
+    S3) e ECR (imagens compartilhadas com dev).
+
+### Corrigido
+
+- **`manifests/terraform/main.tf` — API privada**: `CreateRestApi` falhava com
+  `BadRequestException: Endpoint access mode is not supported for this security policy`.
+  Causa: `aws_api_gateway_rest_api.this` enviava `endpoint_access_mode = STRICT` **sem**
+  `security_policy` — a API caía na policy default/legada, que não aceita access mode.
+  Fix: `security_policy = var.security_policy` pareado com o `endpoint_access_mode`
+  (mesma regra já usada no custom domain público). Argumentos confirmados no schema do
+  provider AWS ≥ 6.x.
+- **Defaults de TLS rebaixados para não quebrar APIs já em produção**: com o par acima
+  sendo enviado também para APIs **existentes** (update in-place no próximo deploy), os
+  defaults antigos eram perigosos — `SecurityPolicy_TLS13_1_3_2025_09` é **TLS 1.3-only**
+  (o default atual de API privada, `TLS_1_2`, aceita 1.2 **e** 1.3: qualquer consumidor
+  sem TLS 1.3 quebraria no handshake) e `STRICT` impõe **SNI host matching** (invocação
+  de API privada via URL do VPC endpoint com header `Host`, sem private DNS, quebra).
+  Novos defaults, seguindo a migração recomendada pela AWS (enhanced + `BASIC` → validar
+  logs → `STRICT`): **`security_policy = SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09`**
+  (TLS 1.2 e 1.3, PFS + pós-quântica) e **`endpoint_access_mode = BASIC`** — vale para a
+  API privada **e** para o custom domain público. TLS 1.3-only/`STRICT` viram **opt-in
+  por app** (variáveis já parametrizáveis) após validar `$context.tlsVersion` /
+  `$context.cipherSuite` nos access logs. Voltar de `STRICT` para `BASIC` custa ~15 min
+  de indisponibilidade — mais um motivo para não nascer em `STRICT`.
+
+### Notas de adoção
+
+- O app precisa expor o parâmetro no `azure-pipelines.yml` e repassá-lo:
+
+  ```yaml
+  parameters:
+    - name: destroySandbox
+      displayName: 'DESTRUIR o sandbox (só branches sandbox/*)'
+      type: boolean
+      default: false
+
+  extends:
+    template: templates/stacks/dotnet-backend.yaml@templates
+    parameters:
+      destroySandbox: ${{ parameters.destroySandbox }}
+  ```
+
+  (no frontend, `template: templates/stacks/spa-frontend.yaml@templates` — mesmo snippet.)
+
+- **Secrets** (backend) destruídos entram na recovery window de **7 dias**: recriar o MESMO
+  sandbox nesse intervalo falha na criação do secret ("scheduled for deletion") — aguardar
+  ou usar outro `resourceSuffix`.
 
 ---
 

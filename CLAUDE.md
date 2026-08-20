@@ -81,6 +81,7 @@ ou seja, os stages que não pertencem à branch nem existem no run:
 | `release/X.Y.Z` | … → Build → Deploy HML + Veracode → **gate GMUD** → Deploy PRD → PR release→main |
 | `hotfix/*` | … → Build → Veracode → Deploy PRD → aprovação → PR hotfix→main → delete da branch |
 | qualquer, com `rollbackImageTag` preenchido | **só** `stages/rollback.yaml` (pula Sonar/Build) |
+| `sandbox/*`, com `destroySandbox: true` (run manual) | **só** `stages/destroy-sandbox.yaml` (frontend: `destroy-sandbox-frontend.yaml`); em outra branch, `Destroy_guard` **falha o run** (precede o rollback) |
 
 ## Invariante de branches — `release/*` e `feature/*` nascem do `main`
 
@@ -255,6 +256,19 @@ Derivam de variáveis do ADO em runtime — mudar isso afeta ECR, namespace e st
   - **Pré-requisito (backend)**: a service connection de **hml** precisa de `ecr:DescribeImages`
     e `ecr:BatchGetImage` para o `resolve-artifact-image` (hoje só a de prd tem) — sem isso,
     `digest: null` + warning. O frontend não precisa de ECR.
+- **Destroy do sandbox (`2.6.0`)**: `destroySandbox: true` num run **manual** de `sandbox/*`
+  roteia para `stages/destroy-sandbox.yaml` (stage único, Environment `sdx`): delete do
+  namespace K8s → `steps/terraform-destroy.yaml` — verifica o state (**nunca** cria bucket),
+  preserva `aws_api_gateway_account` (`state rm`; singleton da conta compartilhada com dev),
+  `plan -destroy` com relatório na Summary + artefato `sandbox-destroy` **antes** do apply,
+  esvazia os buckets S3 do state (objetos + versões), e relatório final — destroy parcial
+  **falha o job** listando o que restou. tfstate e ECR ficam intactos; secrets entram na
+  recovery window de 7 dias (recriar o mesmo sandbox nesse prazo falha — outro suffix ou
+  aguardar). Fora de `sandbox/*`, `Destroy_guard` falha o run. **Frontend**: mesmo
+  parâmetro/motor via `stages/destroy-sandbox-frontend.yaml` (sem K8s;
+  `serviceAccountTerraform`, root `terraform-frontend`; bucket do site é esvaziado pelo
+  motor, CloudFront destruído pelo provider ~15–20 min); os stages incondicionais do
+  `spa-frontend.yaml` passaram para o `${{ else }}` do roteamento.
 - **Rollback rastreado**: `stages/rollback.yaml` faz `kubectl set image` para uma tag que já
   existe no ECR, passando pelo Environment `prd` (mesmo gate de GMUD) — assim o painel
   Environments do ADO continua refletindo o que está live.

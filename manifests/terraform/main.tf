@@ -441,6 +441,12 @@ resource "aws_api_gateway_rest_api" "this" {
 
   name        = "${var.app_name}${var.resource_suffix}"
   description = var.app_name
+  # security_policy e endpoint_access_mode andam EM PAR (mesma regra do custom domain
+  # público acima): STRICT só é aceito pelas policies novas (SecurityPolicy_TLS13_*/
+  # TLS12_*). Sem o security_policy, a API cai na policy default/legada e o CreateRestApi
+  # falha com "Endpoint access mode is not supported for this security policy".
+  security_policy      = var.security_policy
+  endpoint_access_mode = var.endpoint_access_mode
 
   endpoint_configuration {
     types            = ["PRIVATE"]
@@ -609,8 +615,7 @@ resource "aws_api_gateway_stage" "this" {
 
 
 resource "aws_ssm_parameter" "this" {
-  # Chave do for_each = nome declarado pelo app (estável entre ambientes);
-  # o nome efetivo (prefixo /sdx/ no sandbox) fica em effective_name — ver locals.tf.
+
   for_each = { for param in local.ssm_params_named : param.name => param }
 
   name        = each.value.effective_name
@@ -711,8 +716,7 @@ resource "aws_s3_bucket_cors_configuration" "app_buckets" {
 
 module "secrets" {
   source = "git::https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform//modules/aws_secret_manager"
-  # Chave do for_each = nome declarado pelo app; nome efetivo (prefixo do sandbox)
-  # em effective_name — ver locals.tf.
+
   for_each = { for s in local.secrets_named : s.name => s }
 
   name                    = each.value.effective_name
@@ -765,7 +769,7 @@ module "aws_sqs_queue" {
   tags = local.tags
 }
 
-#########################################       
+#########################################
 #         AWS SNS
 ########################################
 
