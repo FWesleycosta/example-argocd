@@ -221,9 +221,21 @@ pinados não mudam de comportamento.
   Causa: `aws_api_gateway_rest_api.this` enviava `endpoint_access_mode = STRICT` **sem**
   `security_policy` — a API caía na policy default/legada, que não aceita access mode.
   Fix: `security_policy = var.security_policy` pareado com o `endpoint_access_mode`
-  (mesma regra já usada no custom domain público, e defaults compatíveis:
-  `SecurityPolicy_TLS13_1_3_2025_09` + `STRICT`). Argumentos confirmados no schema do
+  (mesma regra já usada no custom domain público). Argumentos confirmados no schema do
   provider AWS ≥ 6.x.
+- **Defaults de TLS rebaixados para não quebrar APIs já em produção**: com o par acima
+  sendo enviado também para APIs **existentes** (update in-place no próximo deploy), os
+  defaults antigos eram perigosos — `SecurityPolicy_TLS13_1_3_2025_09` é **TLS 1.3-only**
+  (o default atual de API privada, `TLS_1_2`, aceita 1.2 **e** 1.3: qualquer consumidor
+  sem TLS 1.3 quebraria no handshake) e `STRICT` impõe **SNI host matching** (invocação
+  de API privada via URL do VPC endpoint com header `Host`, sem private DNS, quebra).
+  Novos defaults, seguindo a migração recomendada pela AWS (enhanced + `BASIC` → validar
+  logs → `STRICT`): **`security_policy = SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09`**
+  (TLS 1.2 e 1.3, PFS + pós-quântica) e **`endpoint_access_mode = BASIC`** — vale para a
+  API privada **e** para o custom domain público. TLS 1.3-only/`STRICT` viram **opt-in
+  por app** (variáveis já parametrizáveis) após validar `$context.tlsVersion` /
+  `$context.cipherSuite` nos access logs. Voltar de `STRICT` para `BASIC` custa ~15 min
+  de indisponibilidade — mais um motivo para não nascer em `STRICT`.
 
 ### Notas de adoção
 
