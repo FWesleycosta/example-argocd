@@ -162,22 +162,28 @@ flowchart TD
 
 ## [2.6.0] - 2026-08-20
 
-**Destroy do sandbox sob demanda**: novo parâmetro **`destroySandbox`** (boolean, default
-`false`) no `stacks/dotnet-backend.yaml`. Marcado `true` num **"Run pipeline" manual de uma
-branch `sandbox/*`**, o run vira **só destroy** (mesmo padrão de roteamento do
-`rollbackImageTag`): deleta o namespace K8s do sandbox e roda `terraform destroy` de todos
-os recursos do state do `resourceSuffix`, com **relatório do que SERÁ destruído** (aba
-Summary + artefato `sandbox-destroy`, gerado do `terraform plan -destroy` **antes** do
-apply) e **relatório do que FOI destruído** depois. **Compatível (MINOR)**: parâmetro novo
-com default — apps pinados não mudam de comportamento.
+**Destroy do sandbox sob demanda (backend e frontend)**: novo parâmetro
+**`destroySandbox`** (boolean, default `false`) nos `stacks/dotnet-backend.yaml` **e**
+`stacks/spa-frontend.yaml`. Marcado `true` num **"Run pipeline" manual de uma branch
+`sandbox/*`**, o run vira **só destroy** (mesmo padrão de roteamento do
+`rollbackImageTag`): backend deleta o namespace K8s e roda `terraform destroy` de todos os
+recursos do state do `resourceSuffix`; frontend destrói S3 do site + CloudFront do mesmo
+state. Ambos com **relatório do que SERÁ destruído** (aba Summary + artefato
+`sandbox-destroy`, gerado do `terraform plan -destroy` **antes** do apply) e **relatório
+do que FOI destruído** depois. **Compatível (MINOR)**: parâmetro novo com default — apps
+pinados não mudam de comportamento.
 
 ### Adicionado
 
-- **`stacks/dotnet-backend.yaml`**: parâmetro `destroySandbox` (boolean, default `false`),
-  com **precedência sobre `rollbackImageTag`**. Roteamento compile-time:
-  - branch `sandbox/*` → **só** `stages/destroy-sandbox.yaml`;
+- **`stacks/dotnet-backend.yaml`** e **`stacks/spa-frontend.yaml`**: parâmetro
+  `destroySandbox` (boolean, default `false`); no backend, com **precedência sobre
+  `rollbackImageTag`**. Roteamento compile-time:
+  - branch `sandbox/*` → **só** `stages/destroy-sandbox.yaml` (backend) /
+    `stages/destroy-sandbox-frontend.yaml` (frontend);
   - qualquer outra branch → stage **`Destroy_guard`** que **falha o run de propósito**
-    (nunca cai no fluxo normal de deploy com o parâmetro ligado).
+    (nunca cai no fluxo normal de deploy com o parâmetro ligado). No frontend, os stages
+    `Validate`/`SonarQube`/`Build` passaram para dentro do `${{ else }}` do roteamento —
+    **sem mudança de comportamento** quando `destroySandbox` é `false` (default).
 - **`stages/destroy-sandbox.yaml`** — stage `Destroy_sdx` (deployment no Environment
   `sdx`, `condition: Build.Reason == 'Manual'` — mesmo um app que fixe `true` no YAML
   nunca destrói via push de CI). Ordem: carimbo do run (`<app>-destroy<suffix>-<buildId>` +
@@ -185,8 +191,15 @@ com default — apps pinados não mudam de comportamento.
   solta a pod identity antes de o Terraform destruí-la; o ingress deletado aciona a limpeza
   das regras no ALB compartilhado) → `steps/terraform-destroy.yaml` com os **mesmos
   tfvars/backend do deploy** (state key idêntica à do `deploy-backend.yaml`).
-- **`steps/terraform-destroy.yaml`** — espelho do `terraform-apply.yaml` para o caminho de
-  destruição:
+- **`stages/destroy-sandbox-frontend.yaml`** — stage `Destroy_sdx` do frontend (Environment
+  `sdx`, mesma `condition: Build.Reason == 'Manual'`). Sem namespace K8s; usa
+  `serviceAccountTerraform`, root `manifests/terraform-frontend` e os **mesmos
+  tfvars/backend do `deploy-frontend.yaml`** (state key idêntica). O **bucket do site**
+  (`<repo><suffix>`) está no state → é esvaziado pelo motor antes do destroy; a
+  **distribuição CloudFront** é destruída pelo provider (disable → delete, ~15–20 min,
+  dentro do timeout default do job). O preserve de `aws_api_gateway_account` é no-op aqui.
+- **`steps/terraform-destroy.yaml`** — motor único de destroy usado pelos dois stacks,
+  espelho do `terraform-apply.yaml` para o caminho de destruição:
   - **nunca cria o bucket de state**: se bucket/objeto não existem, falha com mensagem
     clara ("sandbox nunca foi deployado ou já destruído");
   - **preserva `aws_api_gateway_account`** (`terraform state rm`): é singleton da conta
@@ -218,11 +231,11 @@ com default — apps pinados não mudam de comportamento.
       destroySandbox: ${{ parameters.destroySandbox }}
   ```
 
-- **Secrets** destruídos entram na recovery window de **7 dias**: recriar o MESMO sandbox
-  nesse intervalo falha na criação do secret ("scheduled for deletion") — aguardar ou usar
-  outro `resourceSuffix`.
-- Frontend (`stacks/spa-frontend.yaml`) ainda **não** tem destroy — pendência conhecida
-  (exige esvaziar o bucket do site e lidar com o CloudFront antes do destroy).
+  (no frontend, `template: templates/stacks/spa-frontend.yaml@templates` — mesmo snippet.)
+
+- **Secrets** (backend) destruídos entram na recovery window de **7 dias**: recriar o MESMO
+  sandbox nesse intervalo falha na criação do secret ("scheduled for deletion") — aguardar
+  ou usar outro `resourceSuffix`.
 
 ---
 

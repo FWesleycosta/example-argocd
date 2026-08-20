@@ -42,6 +42,10 @@ parameters:
   - name: veracode
     type: object
     default: {}
+  - name: destroySandbox
+    type: boolean
+    default: false
+    displayName: 'DESTRUIR o sandbox (terraform destroy: S3 + CloudFront) — só branches sandbox/*'
   - name: sistema
     type: string
     default: ''
@@ -59,151 +63,177 @@ variables:
   - group: git-credentials   # GIT_PAT para o terraform init clonar módulos privados (Fibra.DevOps.Terraform)
 
 stages:
-  - stage: Validate
-    displayName: 'Validar parametros'
-    jobs:
-      - job: ValidateFrontend
-        displayName: 'Validar cdn/config'
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - ${{ if eq(parameters.cdn.dns_name, '') }}:
-              - script: |
-                  echo "##[error]cdn.dns_name e obrigatorio (ex.: internet-banking -> internet-banking-dev.bancofibra.com.br)"
-                  exit 1
-                displayName: 'cdn.dns_name ausente'
-          - ${{ else }}:
-              - script: |
-                  echo "cdn.dns_name ok: '${{ parameters.cdn.dns_name }}'"
-                displayName: 'cdn.dns_name ok'
+  # destroySandbox=true: o run vira SÓ destroy — e apenas em branches sandbox/*. Em
+  # qualquer outra branch o run FALHA num guard explícito (nunca cai no fluxo de deploy).
+  # Mesmo padrão do backend (stacks/dotnet-backend.yaml / stages/destroy-sandbox.yaml).
+  - ${{ if eq(parameters.destroySandbox, true) }}:
+      - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/sandbox/') }}:
+          - template: ../stages/destroy-sandbox-frontend.yaml
+            parameters:
+              cdn: ${{ parameters.cdn }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+      - ${{ else }}:
+          - stage: Destroy_guard
+            displayName: 'destroySandbox bloqueado — branch não é sandbox/*'
+            jobs:
+              - job: Guard
+                displayName: 'Bloquear destroy fora de sandbox/*'
+                pool:
+                  vmImage: ubuntu-latest
+                steps:
+                  - script: |
+                      echo "##[error]destroySandbox=true só é permitido em branches sandbox/* (branch atual: $(Build.SourceBranch)). Nenhum stage de deploy ou destroy foi executado."
+                      exit 1
+                    displayName: 'destroySandbox fora de sandbox/*'
 
-          - ${{ if eq(parameters.sistema, '') }}:
-              - script: |
-                  echo "##[warning]Parametro 'sistema' nao informado. A tag 'Sistema' dos recursos AWS ficara vazia."
-                displayName: 'Alertar sistema nao informado'
-          - ${{ if eq(parameters.owner, '') }}:
-              - script: |
-                  echo "##[warning]Parametro 'owner' nao informado. A tag 'Owner' dos recursos AWS ficara vazia."
-                displayName: 'Alertar owner nao informado'
-          - ${{ if ne(parameters.quality.mode, 'block') }}:
-              - script: |
-                  echo "##[warning]quality.mode='${{ parameters.quality.mode }}': lint, testes e Quality Gate do Sonar SO REPORTAM (nao bloqueiam). Use quality.mode: block para transformar em gate."
-                displayName: 'Alertar gates de qualidade em modo aviso'
+  - ${{ else }}:
+      - stage: Validate
+        displayName: 'Validar parametros'
+        jobs:
+          - job: ValidateFrontend
+            displayName: 'Validar cdn/config'
+            pool:
+              vmImage: ubuntu-latest
+            steps:
+              - ${{ if eq(parameters.cdn.dns_name, '') }}:
+                  - script: |
+                      echo "##[error]cdn.dns_name e obrigatorio (ex.: internet-banking -> internet-banking-dev.bancofibra.com.br)"
+                      exit 1
+                    displayName: 'cdn.dns_name ausente'
+              - ${{ else }}:
+                  - script: |
+                      echo "cdn.dns_name ok: '${{ parameters.cdn.dns_name }}'"
+                    displayName: 'cdn.dns_name ok'
 
-  - stage: SonarQube
-    displayName: 'Analisar qualidade com SonarQube'
-    dependsOn: Validate
-    condition: succeeded()
-    jobs:
-      - job: SonarQubeScan
-        displayName: 'Analisar código JS/TS'
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-            fetchDepth: 0
-            displayName: 'Obter código-fonte completo'
-          - template: ../sonarqube/qa-sonar-node.yaml
+              - ${{ if eq(parameters.sistema, '') }}:
+                  - script: |
+                      echo "##[warning]Parametro 'sistema' nao informado. A tag 'Sistema' dos recursos AWS ficara vazia."
+                    displayName: 'Alertar sistema nao informado'
+              - ${{ if eq(parameters.owner, '') }}:
+                  - script: |
+                      echo "##[warning]Parametro 'owner' nao informado. A tag 'Owner' dos recursos AWS ficara vazia."
+                    displayName: 'Alertar owner nao informado'
+              - ${{ if ne(parameters.quality.mode, 'block') }}:
+                  - script: |
+                      echo "##[warning]quality.mode='${{ parameters.quality.mode }}': lint, testes e Quality Gate do Sonar SO REPORTAM (nao bloqueiam). Use quality.mode: block para transformar em gate."
+                    displayName: 'Alertar gates de qualidade em modo aviso'
+
+      - stage: SonarQube
+        displayName: 'Analisar qualidade com SonarQube'
+        dependsOn: Validate
+        condition: succeeded()
+        jobs:
+          - job: SonarQubeScan
+            displayName: 'Analisar código JS/TS'
+            pool:
+              vmImage: ubuntu-latest
+            steps:
+              - checkout: self
+                fetchDepth: 0
+                displayName: 'Obter código-fonte completo'
+              - template: ../sonarqube/qa-sonar-node.yaml
+                parameters:
+                  nodeVersion: ${{ coalesce(parameters.frontend.node_version, '20.x') }}
+                  installCommand: ${{ coalesce(parameters.frontend.install_command, '') }}
+                  lintCommand: ${{ parameters.quality.lint_command }}
+                  testCommand: ${{ parameters.quality.test_command }}
+                  coverageReport: ${{ coalesce(parameters.quality.coverage_report, 'coverage/lcov.info') }}
+                  # mode=block -> lint/testes/gate bloqueiam; qualquer outro valor (warn/ausente) -> só reportam
+                  ${{ if eq(parameters.quality.mode, 'block') }}:
+                    enforce: true
+                    breakOnQualityGate: true
+                  ${{ else }}:
+                    enforce: false
+                    breakOnQualityGate: false
+
+      - stage: Build
+        displayName: 'Compilar frontend e publicar artefato'
+        dependsOn: SonarQube
+        condition: succeeded()
+        jobs:
+          - template: ../frontend/build-frontend-node.yaml
             parameters:
               nodeVersion: ${{ coalesce(parameters.frontend.node_version, '20.x') }}
               installCommand: ${{ coalesce(parameters.frontend.install_command, '') }}
-              lintCommand: ${{ parameters.quality.lint_command }}
-              testCommand: ${{ parameters.quality.test_command }}
-              coverageReport: ${{ coalesce(parameters.quality.coverage_report, 'coverage/lcov.info') }}
-              # mode=block -> lint/testes/gate bloqueiam; qualquer outro valor (warn/ausente) -> só reportam
-              ${{ if eq(parameters.quality.mode, 'block') }}:
-                enforce: true
-                breakOnQualityGate: true
-              ${{ else }}:
-                enforce: false
-                breakOnQualityGate: false
+              buildCommand: ${{ coalesce(parameters.frontend.build_command, 'npm run build') }}
+              outputDir: ${{ coalesce(parameters.frontend.output_dir, 'dist') }}
+              envVars: ${{ parameters.config.env_vars }}
 
-  - stage: Build
-    displayName: 'Compilar frontend e publicar artefato'
-    dependsOn: SonarQube
-    condition: succeeded()
-    jobs:
-      - template: ../frontend/build-frontend-node.yaml
-        parameters:
-          nodeVersion: ${{ coalesce(parameters.frontend.node_version, '20.x') }}
-          installCommand: ${{ coalesce(parameters.frontend.install_command, '') }}
-          buildCommand: ${{ coalesce(parameters.frontend.build_command, 'npm run build') }}
-          outputDir: ${{ coalesce(parameters.frontend.output_dir, 'dist') }}
-          envVars: ${{ parameters.config.env_vars }}
-
-  - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/') }}:
-      - template: ../hotfix/hotfix-frontend.yaml
-        parameters:
-          cdn: ${{ parameters.cdn }}
-          config: ${{ parameters.config }}
-          veracode: ${{ parameters.veracode }}
-          sistema: ${{ parameters.sistema }}
-          owner: ${{ parameters.owner }}
-
-  - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
-      - template: ../stages/deploy-frontend.yaml
-        parameters:
-          environment: hml
-          dependsOn: [Build]
-          cdn: ${{ parameters.cdn }}
-          runtime_vars: ${{ parameters.config.runtime_vars.hml }}
-          sistema: ${{ parameters.sistema }}
-          owner: ${{ parameters.owner }}
-          resourceSuffix: ${{ parameters.resourceSuffix }}
-
-      - template: ../stages/veracode.yaml
-        parameters:
-          dependsOn: [Deploy_hml]
-          veracode: ${{ parameters.veracode }}
-          # Veracode SAST para JS: enviar código-fonte, sem dependências, bundle nem sourcemaps
-          defaultExcludePatterns: |
-              !**/node_modules/**
-              !**/dist/**
-              !**/build/**
-              !**/coverage/**
-              !**/*.map
-              !**/.git/**
-
-      - template: ../stages/deploy-frontend.yaml
-        parameters:
-          environment: prd
-          dependsOn: [Deploy_hml, Veracode]
-          condition: and(succeeded(), eq(variables['Build.Reason'], 'Manual'))
-          cdn: ${{ parameters.cdn }}
-          runtime_vars: ${{ parameters.config.runtime_vars.prd }}
-          sistema: ${{ parameters.sistema }}
-          owner: ${{ parameters.owner }}
-          resourceSuffix: ${{ parameters.resourceSuffix }}
-
-      - stage: PR_Main
-        displayName: 'Abrir PR (release → main)'
-        dependsOn: Deploy_prd
-        condition: and(succeeded(), eq(variables['Build.Reason'], 'Manual'))
-        jobs:
-          - template: ../utils/create-pullrequest.yaml
+      - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/') }}:
+          - template: ../hotfix/hotfix-frontend.yaml
             parameters:
-              sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
-              targetBranch: main
+              cdn: ${{ parameters.cdn }}
+              config: ${{ parameters.config }}
+              veracode: ${{ parameters.veracode }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
 
-  - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/sandbox/') }}:
-      - template: ../stages/deploy-frontend.yaml
-        parameters:
-          environment: sdx
-          dependsOn: [Build]
-          cdn: ${{ parameters.cdn }}
-          runtime_vars: ${{ parameters.config.runtime_vars.dev }}
-          sistema: ${{ parameters.sistema }}
-          owner: ${{ parameters.owner }}
-          resourceSuffix: ${{ parameters.resourceSuffix }}
+      - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+          - template: ../stages/deploy-frontend.yaml
+            parameters:
+              environment: hml
+              dependsOn: [Build]
+              cdn: ${{ parameters.cdn }}
+              runtime_vars: ${{ parameters.config.runtime_vars.hml }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
 
-  - ${{ else }}:
-      - template: ../stages/deploy-frontend.yaml
-        parameters:
-          environment: dev
-          dependsOn: [Build]
-          condition: and(succeeded('Build'), or(eq(variables['Build.SourceBranch'], 'refs/heads/develop'), eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')))
-          cdn: ${{ parameters.cdn }}
-          runtime_vars: ${{ parameters.config.runtime_vars.dev }}
-          sistema: ${{ parameters.sistema }}
-          owner: ${{ parameters.owner }}
-          resourceSuffix: ${{ parameters.resourceSuffix }}
+          - template: ../stages/veracode.yaml
+            parameters:
+              dependsOn: [Deploy_hml]
+              veracode: ${{ parameters.veracode }}
+              # Veracode SAST para JS: enviar código-fonte, sem dependências, bundle nem sourcemaps
+              defaultExcludePatterns: |
+                  !**/node_modules/**
+                  !**/dist/**
+                  !**/build/**
+                  !**/coverage/**
+                  !**/*.map
+                  !**/.git/**
+
+          - template: ../stages/deploy-frontend.yaml
+            parameters:
+              environment: prd
+              dependsOn: [Deploy_hml, Veracode]
+              condition: and(succeeded(), eq(variables['Build.Reason'], 'Manual'))
+              cdn: ${{ parameters.cdn }}
+              runtime_vars: ${{ parameters.config.runtime_vars.prd }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+
+          - stage: PR_Main
+            displayName: 'Abrir PR (release → main)'
+            dependsOn: Deploy_prd
+            condition: and(succeeded(), eq(variables['Build.Reason'], 'Manual'))
+            jobs:
+              - template: ../utils/create-pullrequest.yaml
+                parameters:
+                  sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
+                  targetBranch: main
+
+      - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/sandbox/') }}:
+          - template: ../stages/deploy-frontend.yaml
+            parameters:
+              environment: sdx
+              dependsOn: [Build]
+              cdn: ${{ parameters.cdn }}
+              runtime_vars: ${{ parameters.config.runtime_vars.dev }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+
+      - ${{ else }}:
+          - template: ../stages/deploy-frontend.yaml
+            parameters:
+              environment: dev
+              dependsOn: [Build]
+              condition: and(succeeded('Build'), or(eq(variables['Build.SourceBranch'], 'refs/heads/develop'), eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')))
+              cdn: ${{ parameters.cdn }}
+              runtime_vars: ${{ parameters.config.runtime_vars.dev }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
