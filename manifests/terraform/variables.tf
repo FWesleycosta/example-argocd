@@ -1,23 +1,23 @@
 variable "app_name" {
-    description = "Nome da aplicação (vem do repositório)"
-    type = string
+  description = "Nome da aplicação (vem do repositório)"
+  type        = string
 }
 
 variable "namespace" {
-    description = "Nome do namespace onde a aplicação vai rodar no EKS"
-    type = string
+  description = "Nome do namespace onde a aplicação vai rodar no EKS"
+  type        = string
 }
 
 variable "alb_shared_dns" {
-  type    = string
+  type = string
 }
 
 variable "api_gateway_vpc_link" {
-  type    = string
+  type = string
 }
 
 variable "alb_shared_listener" {
-  type    = string
+  type = string
 }
 
 variable "domain_name" {
@@ -34,12 +34,12 @@ variable "base_path" {
 
 variable "api_type" {
   description = "public or private"
-  type = string
-  default = "private"
+  type        = string
+  default     = "private"
 }
 
 variable "vpc_endpoint_apigw" {
-  type    = string
+  type = string
 }
 
 variable "domain_internal_name" {
@@ -64,13 +64,13 @@ variable "ssm_parameters" {
 variable "dynamodb_tables" {
   description = "Lista de tabelas DynamoDB a serem criadas"
   type = list(object({
-    table_name               = string
-    billing_mode             = optional(string, "PAY_PER_REQUEST")
-    hash_key                 = string
-    range_key                = optional(string)
+    table_name   = string
+    billing_mode = optional(string, "PAY_PER_REQUEST")
+    hash_key     = string
+    range_key    = optional(string)
     # Quando definido (ex.: "ttl"), habilita TTL na tabela apontando para esse atributo numérico (epoch em segundos).
     ttl_attribute_name = optional(string)
-    attributes               = list(object({ name = string, type = string }))
+    attributes         = list(object({ name = string, type = string }))
     global_secondary_indexes = optional(list(object({
       name               = string
       hash_key           = string
@@ -144,9 +144,9 @@ variable "certificate_arn" {
 }
 
 variable "queue_name" {
-  type = list(object ({
-    queue_name = string
-    fifo_queue = optional(string, "false")
+  type = list(object({
+    queue_name        = string
+    fifo_queue        = optional(string, "false")
     dlq_queue_name    = optional(string, "")
     max_receive_count = optional(number, 3)
   }))
@@ -155,9 +155,9 @@ variable "queue_name" {
 
 
 variable "topic_name" {
-  type = list(object ({
-    topic_name = string
-    fifo_topic = optional(string, "false")
+  type = list(object({
+    topic_name                  = string
+    fifo_topic                  = optional(string, "false")
     content_based_deduplication = optional(string, "false")
   }))
   default = []
@@ -176,23 +176,23 @@ variable "sns_sqs_subscriptions" {
 }
 
 variable "resource_suffix" {
-  type = string
+  type    = string
   default = ""
 }
 
 variable "project_name" {
   description = "Nome do projeto (vem do repositório)"
-  type = string
+  type        = string
 }
 
 variable "sistema" {
   description = "Sistema/dominio de negocio ao qual a aplicacao pertence (tag de governanca)"
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
 
 variable "owner" {
   description = "Time/pessoa responsavel pela aplicacao (tag de governanca)"
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
