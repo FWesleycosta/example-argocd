@@ -214,6 +214,17 @@ pinados não mudam de comportamento.
   - O que **não** é tocado: bucket de tfstate (o state vira vazio, histórico versionado no
     S3) e ECR (imagens compartilhadas com dev).
 
+### Corrigido
+
+- **`manifests/terraform/main.tf` — API privada**: `CreateRestApi` falhava com
+  `BadRequestException: Endpoint access mode is not supported for this security policy`.
+  Causa: `aws_api_gateway_rest_api.this` enviava `endpoint_access_mode = STRICT` **sem**
+  `security_policy` — a API caía na policy default/legada, que não aceita access mode.
+  Fix: `security_policy = var.security_policy` pareado com o `endpoint_access_mode`
+  (mesma regra já usada no custom domain público, e defaults compatíveis:
+  `SecurityPolicy_TLS13_1_3_2025_09` + `STRICT`). Argumentos confirmados no schema do
+  provider AWS ≥ 6.x.
+
 ### Notas de adoção
 
 - O app precisa expor o parâmetro no `azure-pipelines.yml` e repassá-lo:
