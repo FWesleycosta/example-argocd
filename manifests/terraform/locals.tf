@@ -1,6 +1,6 @@
 locals {
-  is_public  = var.api_type == "public"  ? 1 : 0
-  is_private = var.api_type == "private" ? 1 : 0
+  is_public        = var.api_type == "public" ? 1 : 0
+  is_private       = var.api_type == "private" ? 1 : 0
   full_domain_name = "${var.domain_internal_name}+${var.domain_name_id}"
   # Azure DevOps interpola booleanos YAML como "True"/"False"; a comparação precisa ser case-insensitive.
   cognito_enabled = lower(tostring(var.cognito)) == "true"
@@ -61,19 +61,50 @@ locals {
   ])
 
   topic_arns = merge(
-    { for name, mod in module.aws_sns_topic        : name => mod.topic_arn },
-    { for name, d   in data.aws_sns_topic.existing : name => d.arn },
+    { for name, mod in module.aws_sns_topic : name => mod.topic_arn },
+    { for name, d in data.aws_sns_topic.existing : name => d.arn },
   )
   queue_arns = merge(
-    { for name, mod in module.aws_sqs_queue        : name => mod.queue_arn },
-    { for name, d   in data.aws_sqs_queue.existing : name => d.arn },
+    { for name, mod in module.aws_sqs_queue : name => mod.queue_arn },
+    { for name, d in data.aws_sqs_queue.existing : name => d.arn },
   )
   queue_urls = merge(
-    { for name, mod in module.aws_sqs_queue        : name => mod.queue_url },
-    { for name, d   in data.aws_sqs_queue.existing : name => d.url },
+    { for name, mod in module.aws_sqs_queue : name => mod.queue_url },
+    { for name, d in data.aws_sqs_queue.existing : name => d.url },
   )
 
   ssm_params = try(jsondecode(var.ssm_parameters), var.ssm_parameters)
   s3_buckets = try(jsondecode(var.s3_buckets), var.s3_buckets)
+
+  # Sandbox (resource_suffix != ""): SSM e Secrets Manager são isolados pelo PREFIXO do
+  # caminho (/sdx/...), não por sufixo no fim do nome. "-sdx" vira o segmento "sdx"; um
+  # sufixo customizado (ex.: "-joao") vira "joao", preservando o isolamento entre
+  # sandboxes do mesmo app. Nos demais ambientes (suffix "") o nome fica intacto.
+  sdx_path_prefix = var.resource_suffix == "" ? "" : trimprefix(var.resource_suffix, "-")
+
+  # SSM: o sandbox reusa a lista de DEV, cujos nomes trazem o ambiente no 1º segmento
+  # (/dev/sistema/app/param) → troca o 1º segmento pelo prefixo (/sdx/sistema/app/param).
+  # Nome sem segmento de ambiente: apenas ganha o prefixo (fallback — nunca sem isolamento).
+  ssm_params_named = [
+    for p in local.ssm_params : merge(p, {
+      effective_name = local.sdx_path_prefix == "" ? p.name : (
+        length(regexall("^/(dev|hml|prd)/", p.name)) > 0
+        ? replace(p.name, "/^/(dev|hml|prd)//", "/${local.sdx_path_prefix}/")
+        : "/${local.sdx_path_prefix}${startswith(p.name, "/") ? "" : "/"}${p.name}"
+      )
+    })
+  ]
+
+  # Secrets: a lista é única para todos os ambientes (nome sem segmento de ambiente),
+  # então o sandbox só prefixa, preservando o estilo do nome (com/sem "/" inicial).
+  secrets_named = [
+    for s in var.secrets : merge(s, {
+      effective_name = local.sdx_path_prefix == "" ? s.name : (
+        startswith(s.name, "/")
+        ? "/${local.sdx_path_prefix}${s.name}"
+        : "${local.sdx_path_prefix}/${s.name}"
+      )
+    })
+  ]
 }
- 
+

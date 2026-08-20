@@ -65,12 +65,14 @@ stages:
                       fi
                       echo "##[section]✔ Rollback concluído. '$NS' rodando $IMAGE."
 
-                - template: ../steps/record-prod-release.yaml
+                - template: ../steps/resolve-artifact-image.yaml
                   parameters:
-                    environment: ${{ parameters.environment }}
                     serviceAccount: ${{ variables.serviceAccount }}
                     awsRegion: ${{ variables.awsRegion }}
                     awsAccID: ${{ variables.awsAccID }}
                     imageTag: ${{ parameters.imageTag }}
+                - template: ../steps/record-prod-release.yaml
+                  parameters:
+                    environment: ${{ parameters.environment }}
                     deployType: rollback
                     stampRun: false

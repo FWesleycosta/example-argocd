@@ -78,3 +78,22 @@ stages:
                       pruneStaleFiles: 'false'
                     runtime_vars: ${{ parameters.runtime_vars }}
                     distDir: '$(Pipeline.Workspace)/${{ parameters.artifactName }}'
+
+                # Registro de release (DORA) — mesmo record e mesmos perfis do backend (prd completo,
+                # hml reduzido); só muda a identidade: artefato estático (sem ECR), digest = sha256
+                # do dist sem o env-config.js (gerado por ambiente), referência = bucket publicado.
+                # Best-effort: nunca falha o deploy. FRONT_BUCKET/FRONT_SITE_URL vêm do motor acima.
+                - ${{ if in(parameters.environment, 'prd', 'hml') }}:
+                    - template: ../steps/resolve-artifact-static.yaml
+                      parameters:
+                        artifactPath: '$(Pipeline.Workspace)/${{ parameters.artifactName }}'
+                        artifactLocation: 's3://$(FRONT_BUCKET)'
+                        artifactDigestExcludes: 'env-config.js'
+                        siteUrl: '$(FRONT_SITE_URL)'
+                    - template: ../steps/record-prod-release.yaml
+                      parameters:
+                        environment: ${{ parameters.environment }}
+                        ${{ if ne(parameters.environment, 'prd') }}:
+                          stampRun: false
+                          captureApproval: false
+                          artifactName: 'hml-release'

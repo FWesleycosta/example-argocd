@@ -112,15 +112,20 @@ stages:
                     dd_lang: ${{ parameters.observability.dd_lang }}
                     dd_lib_version: ${{ parameters.observability.dd_lib_version }}
 
+                # Registro de release (DORA): 1) identidade do artefato (imagem ECR: digest + tag
+                # móvel `prod` só em prd) → 2) registro (history.jsonl, DEPLOY-PRD.md, artefato).
                 - ${{ if in(parameters.environment, 'prd', 'hml') }}:
-                    - template: ../steps/record-prod-release.yaml
+                    - template: ../steps/resolve-artifact-image.yaml
                       parameters:
-                        environment: ${{ parameters.environment }}
                         serviceAccount: ${{ variables.serviceAccount }}
                         awsRegion: ${{ variables.awsRegion }}
                         awsAccID: ${{ variables.awsAccID }}
                         ${{ if ne(parameters.environment, 'prd') }}:
                           prodTag: ''
+                    - template: ../steps/record-prod-release.yaml
+                      parameters:
+                        environment: ${{ parameters.environment }}
+                        ${{ if ne(parameters.environment, 'prd') }}:
                           stampRun: false
                           captureApproval: false
                           artifactName: 'hml-release'

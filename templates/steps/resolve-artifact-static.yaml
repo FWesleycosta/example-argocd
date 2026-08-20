@@ -1,0 +1,80 @@
+# templates/steps/resolve-artifact-static.yaml
+# Identidade do artefato de release quando ele é ESTÁTICO publicado (frontend S3/CloudFront):
+# digest = sha256 da árvore de arquivos de `artifactPath` (caminho relativo + sha256 de cada
+# arquivo, ordenação LC_ALL=C — estável entre agentes), excluindo os nomes em
+# `artifactDigestExcludes` (arquivos gerados por ambiente, ex.: env-config.js — assim o MESMO
+# build tem o MESMO digest em hml e prd: build único verificável).
+# Exporta variáveis RELEASE_* consumidas por steps/record-prod-release.yaml.
+# Best-effort: falhas viram warning e RELEASE_ARTIFACT_DIGEST vazio — nunca bloqueia o deploy.
+#
+# Saídas (##vso[task.setvariable]):
+#   RELEASE_ARTIFACT_KIND      = static
+#   RELEASE_ARTIFACT_TAG       = <artifactTag>        (Build.BuildId por default — identidade do build)
+#   RELEASE_ARTIFACT_URI       = <artifactLocation>   (ex.: s3://<bucket>)
+#   RELEASE_ARTIFACT_DIGEST    = sha256:... (vazio se não calculado)
+#   RELEASE_IMAGE_REF_BY_DIGEST= ''  (não se aplica)
+#   RELEASE_MOVING_TAG         = ''  (não há registry)
+#   RELEASE_SITE_URL           = <siteUrl>
+parameters:
+  - name: artifactPath
+    type: string
+  - name: artifactLocation
+    type: string
+    default: ''
+  - name: artifactDigestExcludes
+    type: string
+    default: ''          # nomes de arquivo separados por vírgula
+  - name: siteUrl
+    type: string
+    default: ''
+  - name: artifactTag
+    type: string
+    default: '$(Build.BuildId)'
+
+steps:
+  - bash: |
+      set -euo pipefail
+      warn() { echo "##[warning]$*"; }
+
+      ARTIFACT_PATH="${{ parameters.artifactPath }}"
+      LOCATION="${{ parameters.artifactLocation }}"
+      EXCLUDES="${{ parameters.artifactDigestExcludes }}"
+      SITE_URL="${{ parameters.siteUrl }}"
+      TAG="${{ parameters.artifactTag }}"
+
+      resolve_static_digest() {
+        local base="$ARTIFACT_PATH" excl_args=() name
+        [ -n "$base" ] && [ -d "$base" ] || return 1
+        if [ -n "$EXCLUDES" ]; then
+          IFS=',' read -ra _ex <<< "$EXCLUDES"
+          for name in "${_ex[@]}"; do
+            name="$(printf '%s' "$name" | xargs)"
+            [ -n "$name" ] && excl_args+=( -not -name "$name" )
+          done
+        fi
+        ( cd "$base" && find . -type f ${excl_args[@]+"${excl_args[@]}"} -print0 | LC_ALL=C sort -z \
+            | xargs -0 sha256sum | sha256sum | cut -d' ' -f1 )
+      }
+
+      DIGEST=""
+      if DIGEST_OUT="$(resolve_static_digest)" && [ -n "$DIGEST_OUT" ]; then
+        DIGEST="sha256:${DIGEST_OUT}"
+      else
+        warn "Não calculei o digest do artefato em '${ARTIFACT_PATH:-<vazio>}' (diretório ausente?). O registro segue SEM digest."
+      fi
+
+      echo "##[section]Artefato da release"
+      echo "  Build/tag:    $TAG"
+      echo "  Local:        ${LOCATION:-<não informado>}"
+      echo "  Digest:       ${DIGEST:-<não resolvido>}  (excluindo: ${EXCLUDES:--})"
+      [ -n "$SITE_URL" ] && echo "  Site:         $SITE_URL"
+
+      echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_KIND]static"
+      echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_TAG]$TAG"
+      echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_URI]$LOCATION"
+      echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_DIGEST]$DIGEST"
+      echo "##vso[task.setvariable variable=RELEASE_IMAGE_REF_BY_DIGEST]"
+      echo "##vso[task.setvariable variable=RELEASE_MOVING_TAG]"
+      echo "##vso[task.setvariable variable=RELEASE_SITE_URL]$SITE_URL"
+    displayName: 'Resolver artefato (estático: digest do dist)'
+    continueOnError: true
