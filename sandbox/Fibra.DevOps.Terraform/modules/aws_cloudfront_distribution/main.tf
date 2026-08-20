@@ -9,7 +9,7 @@ resource "aws_cloudfront_origin_access_control" "this" {
 }
 
 resource "aws_cloudfront_response_headers_policy" "this" {
-  count = local.create
+  count = local.create_headers_policy
 
   name    = "headers-${var.name}"
   comment = "CORS${var.enable_security_headers ? " + security headers" : ""} for ${local.comment}"
@@ -79,7 +79,7 @@ resource "aws_cloudfront_distribution" "this" {
     compress                   = true
     cache_policy_id            = var.cache_policy_id
     origin_request_policy_id   = var.origin_request_policy_id != "" ? var.origin_request_policy_id : null
-    response_headers_policy_id = aws_cloudfront_response_headers_policy.this[0].id
+    response_headers_policy_id = local.response_headers_policy_id
   }
 
   dynamic "custom_error_response" {
@@ -124,6 +124,19 @@ resource "aws_cloudfront_distribution" "this" {
     precondition {
       condition     = var.origin_domain_name == null || !can(regex("s3-website", var.origin_domain_name))
       error_message = "origin_domain_name não pode ser endpoint de website hosting (s3-website-*): OAC exige o endpoint REST regional do bucket."
+    }
+    precondition {
+      condition = var.create_response_headers_policy || (
+        var.cors_allowed_origins == tolist(["*"]) &&
+        var.cors_allowed_headers == tolist(["Authorization", "Content-Type", "Origin", "Accept", "X-Requested-With"]) &&
+        var.cors_allowed_methods == tolist(["GET", "HEAD", "OPTIONS"]) &&
+        var.cors_max_age_sec == 3600 &&
+        var.enable_security_headers &&
+        var.hsts_max_age_sec == 31536000 &&
+        var.frame_option == "SAMEORIGIN" &&
+        var.referrer_policy == "strict-origin-when-cross-origin"
+      )
+      error_message = "cors_*/enable_security_headers/hsts_max_age_sec/frame_option/referrer_policy customizados exigem create_response_headers_policy = true — com o default (false) a distribuição usa a managed policy da AWS e esses valores seriam silenciosamente ignorados."
     }
   }
 }

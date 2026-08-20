@@ -160,6 +160,47 @@ flowchart TD
 
 ---
 
+## [2.6.1] - 2026-08-20
+
+**CloudFront sem estourar o limite de response headers policies**: o módulo
+`aws_cloudfront_distribution` (cópia de trabalho em `sandbox/`) deixa de criar uma
+`aws_cloudfront_response_headers_policy` **por distribuição** — era isso que consumia os
+**20 slots** de policies custom da conta (o erro de limite apareceu ao criar CloudFront em
+sandbox, que divide a conta de dev). O default passa a associar a **managed policy da AWS**
+`CORS-with-preflight-and-SecurityHeadersPolicy` (`eaab4381-ed33-4a86-88ca-d9558dc6cd63`),
+que entrega o mesmo efeito prático dos defaults antigos (CORS `*` com preflight + HSTS,
+`nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy`, `X-XSS-Protection`) e **não
+consome o limite**. **Sem mudança de contrato da esteira** (nenhum template alterado);
+o efeito chega quando o módulo for atualizado no repositório `Fibra.DevOps.Terraform`
+(o root `manifests/terraform-frontend` consome sem `?ref=`).
+
+### Alterado (módulo `aws_cloudfront_distribution` — cópia `sandbox/`)
+
+- **`create_response_headers_policy`** (bool, default `false`): policy própria vira
+  **opt-in** — necessária para CORS restrito ou security headers custom (`cors_*`,
+  `enable_security_headers`, `hsts_max_age_sec`, `frame_option`, `referrer_policy`);
+  consome 1 slot do limite. **Precondition** barra o `plan` se esses valores forem
+  customizados sem o opt-in (antes seriam ignorados em silêncio).
+- **`response_headers_policy_id`** (string, default managed CORS-with-preflight-and-
+  SecurityHeaders): policy associada quando não se cria a própria — aceita outra managed
+  (`SecurityHeadersPolicy` `67f7725c-…`, `CORS-and-SecurityHeadersPolicy` `e61eb60c-…`)
+  ou uma policy externa; `""` = nenhuma. Output `Response_Headers_Policy_ID` reflete a
+  policy efetivamente associada. Suíte `terraform test`: 16 runs passando (TF 1.9.8).
+
+### Notas de migração
+
+- **Distribuições existentes**: no próximo apply com o módulo atualizado, o behavior troca
+  para a managed **in-place** (sem recriar o CloudFront) e a policy `headers-<nome>`
+  por-app é **destruída — liberando um slot do limite a cada deploy**.
+- Diferenças sutis de headers da managed vs. a policy antiga: adiciona
+  `X-XSS-Protection: 1; mode=block`, `Access-Control-Allow-Methods` mais amplo
+  (`DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT`) e `override = No` (exceto `nosniff`) —
+  irrelevante para origem S3 privada, que não emite esses headers.
+- App que customizava CORS via `cors_allowed_origins` precisa passar a enviar também
+  `create_response_headers_policy = true` (a precondition avisa com mensagem clara).
+
+---
+
 ## [2.6.0] - 2026-08-20
 
 **Destroy do sandbox sob demanda (backend e frontend)**: novo parâmetro

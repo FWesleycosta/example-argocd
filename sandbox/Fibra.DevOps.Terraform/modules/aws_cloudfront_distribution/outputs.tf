@@ -24,6 +24,6 @@ output "Origin_Access_Control_ID" {
 }
 
 output "Response_Headers_Policy_ID" {
-  description = "ID da response headers policy criada."
-  value       = try(aws_cloudfront_response_headers_policy.this[0].id, null)
+  description = "ID da response headers policy associada ao behavior: a criada pelo módulo (create_response_headers_policy = true) ou a managed/externa de response_headers_policy_id; null se nenhuma."
+  value       = try(aws_cloudfront_response_headers_policy.this[0].id, var.response_headers_policy_id != "" ? var.response_headers_policy_id : null)
 }

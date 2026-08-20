@@ -26,8 +26,12 @@ run "defaults" {
   command = plan
 
   assert {
-    condition     = aws_cloudfront_origin_access_control.this[0].name == "oac-fibra-ib-dev" && aws_cloudfront_response_headers_policy.this[0].name == "headers-fibra-ib-dev"
-    error_message = "OAC e headers policy devem derivar de name."
+    condition     = aws_cloudfront_origin_access_control.this[0].name == "oac-fibra-ib-dev" && length(aws_cloudfront_response_headers_policy.this) == 0
+    error_message = "Default: OAC derivado de name e NENHUMA headers policy própria (managed da AWS, não consome o limite da conta)."
+  }
+  assert {
+    condition     = one(aws_cloudfront_distribution.this[0].default_cache_behavior).response_headers_policy_id == "eaab4381-ed33-4a86-88ca-d9558dc6cd63"
+    error_message = "Default deve associar a managed CORS-with-preflight-and-SecurityHeadersPolicy."
   }
   assert {
     condition     = aws_cloudfront_distribution.this[0].comment == "internet-banking-dev.bancofibra.com.br"
@@ -46,20 +50,32 @@ run "defaults" {
     error_message = "Com ACM o viewer_certificate deve ser sni-only + TLSv1.2_2021."
   }
   assert {
-    condition     = length(aws_cloudfront_response_headers_policy.this[0].security_headers_config) == 1
-    error_message = "enable_security_headers default deve incluir security_headers_config."
-  }
-  assert {
     condition     = one(aws_cloudfront_distribution.this[0].default_cache_behavior).cache_policy_id == "658327ea-f89d-4fab-a63d-7e88639e58f6"
     error_message = "Default de cache_policy_id deve ser a managed CachingOptimized."
+  }
+}
+
+run "headers_policy_propria_opt_in" {
+  command = plan
+  variables {
+    create_response_headers_policy = true
+  }
+  assert {
+    condition     = aws_cloudfront_response_headers_policy.this[0].name == "headers-fibra-ib-dev"
+    error_message = "Opt-in deve criar a policy própria derivada de name."
+  }
+  assert {
+    condition     = length(aws_cloudfront_response_headers_policy.this[0].security_headers_config) == 1
+    error_message = "enable_security_headers default deve incluir security_headers_config na policy própria."
   }
 }
 
 run "sem_security_headers_e_sem_spa" {
   command = plan
   variables {
-    enable_security_headers = false
-    spa_fallback            = false
+    create_response_headers_policy = true
+    enable_security_headers        = false
+    spa_fallback                   = false
   }
   assert {
     condition     = length(aws_cloudfront_response_headers_policy.this[0].security_headers_config) == 0
