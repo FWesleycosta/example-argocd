@@ -156,6 +156,73 @@ flowchart TD
 | `sandbox/*` | Build + deploy em **sdx** (infra de DEV, recursos com sufixo `-sdx`; SSM/Secrets com prefixo `/sdx/...`) |
 | `release/*` | hml → Veracode → prd → PRs de promoção |
 | `hotfix/*` | Veracode → prd → aprovação → PRs em cascata → exclusão da branch |
+| `sandbox/*` com `destroySandbox: true` (run manual) | **só** destroy do sandbox (namespace K8s + `terraform destroy`); outras branches → guard falha o run |
+
+---
+
+## [2.6.0] - 2026-08-20
+
+**Destroy do sandbox sob demanda**: novo parâmetro **`destroySandbox`** (boolean, default
+`false`) no `stacks/dotnet-backend.yaml`. Marcado `true` num **"Run pipeline" manual de uma
+branch `sandbox/*`**, o run vira **só destroy** (mesmo padrão de roteamento do
+`rollbackImageTag`): deleta o namespace K8s do sandbox e roda `terraform destroy` de todos
+os recursos do state do `resourceSuffix`, com **relatório do que SERÁ destruído** (aba
+Summary + artefato `sandbox-destroy`, gerado do `terraform plan -destroy` **antes** do
+apply) e **relatório do que FOI destruído** depois. **Compatível (MINOR)**: parâmetro novo
+com default — apps pinados não mudam de comportamento.
+
+### Adicionado
+
+- **`stacks/dotnet-backend.yaml`**: parâmetro `destroySandbox` (boolean, default `false`),
+  com **precedência sobre `rollbackImageTag`**. Roteamento compile-time:
+  - branch `sandbox/*` → **só** `stages/destroy-sandbox.yaml`;
+  - qualquer outra branch → stage **`Destroy_guard`** que **falha o run de propósito**
+    (nunca cai no fluxo normal de deploy com o parâmetro ligado).
+- **`stages/destroy-sandbox.yaml`** — stage `Destroy_sdx` (deployment no Environment
+  `sdx`, `condition: Build.Reason == 'Manual'` — mesmo um app que fixe `true` no YAML
+  nunca destrói via push de CI). Ordem: carimbo do run (`<app>-destroy<suffix>-<buildId>` +
+  build tags `destroy`/`sdx`) → **delete do namespace K8s** `<repo><suffix>` (o workload
+  solta a pod identity antes de o Terraform destruí-la; o ingress deletado aciona a limpeza
+  das regras no ALB compartilhado) → `steps/terraform-destroy.yaml` com os **mesmos
+  tfvars/backend do deploy** (state key idêntica à do `deploy-backend.yaml`).
+- **`steps/terraform-destroy.yaml`** — espelho do `terraform-apply.yaml` para o caminho de
+  destruição:
+  - **nunca cria o bucket de state**: se bucket/objeto não existem, falha com mensagem
+    clara ("sandbox nunca foi deployado ou já destruído");
+  - **preserva `aws_api_gateway_account`** (`terraform state rm`): é singleton da conta
+    compartilhada com dev — destruí-lo resetaria o CloudWatch role do API Gateway de
+    todos os apps;
+  - `terraform plan -destroy` (`destroy.tfplan`) → relatório na Summary + artefato
+    (`destroy-plan.txt`/`.json` + lista de endereços);
+  - **esvazia os buckets S3 gerenciados pelo state** (objetos + versões + delete markers)
+    antes do apply — `force_destroy` default `false` travaria o destroy;
+  - apply do plan de destroy → relatório final: state vazio = sucesso; **destroy parcial
+    falha o job** listando o que restou no state (ponto de partida da recuperação).
+  - O que **não** é tocado: bucket de tfstate (o state vira vazio, histórico versionado no
+    S3) e ECR (imagens compartilhadas com dev).
+
+### Notas de adoção
+
+- O app precisa expor o parâmetro no `azure-pipelines.yml` e repassá-lo:
+
+  ```yaml
+  parameters:
+    - name: destroySandbox
+      displayName: 'DESTRUIR o sandbox (só branches sandbox/*)'
+      type: boolean
+      default: false
+
+  extends:
+    template: templates/stacks/dotnet-backend.yaml@templates
+    parameters:
+      destroySandbox: ${{ parameters.destroySandbox }}
+  ```
+
+- **Secrets** destruídos entram na recovery window de **7 dias**: recriar o MESMO sandbox
+  nesse intervalo falha na criação do secret ("scheduled for deletion") — aguardar ou usar
+  outro `resourceSuffix`.
+- Frontend (`stacks/spa-frontend.yaml`) ainda **não** tem destroy — pendência conhecida
+  (exige esvaziar o bucket do site e lidar com o CloudFront antes do destroy).
 
 ---
 

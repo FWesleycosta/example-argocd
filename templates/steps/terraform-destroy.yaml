@@ -1,0 +1,235 @@
+# Motor de DESTROY do sandbox — espelho do steps/terraform-apply.yaml para o caminho de
+# destruição. Diferenças deliberadas:
+#   - NUNCA cria o bucket de state: se ele (ou o objeto de state) não existe, o sandbox
+#     nunca foi deployado — falha com mensagem clara em vez de "destruir" um state vazio.
+#   - `terraform plan -destroy` vira relatório ("o que SERÁ destruído") na aba Summary e
+#     no artefato antes do apply; depois do apply, um segundo relatório mostra o resultado
+#     ("o que FOI destruído" + o que sobrou no state, se algo falhar no meio).
+#   - aws_api_gateway_account é singleton da CONTA (compartilhada com dev): sai do state
+#     antes do plan e fica intacto na conta.
+#   - Buckets S3 gerenciados pelo state são esvaziados (objetos + versões + delete markers)
+#     antes do apply — sem isso, force_destroy=false travaria o destroy.
+# O bucket de tfstate NÃO é apagado (o objeto vira um state vazio, histórico versionado).
+# Só é chamado por stages/destroy-sandbox.yaml (branch sandbox/*).
+parameters:
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: workingDirectory
+    type: string
+    default: '$(System.DefaultWorkingDirectory)/terraform'
+  - name: terraformVersion
+    type: string
+    default: '1.9.8'
+  - name: backendBucket
+    type: string
+  - name: backendKey
+    type: string
+  - name: tfVars
+    type: object
+    default: {}
+  - name: lockTimeout
+    type: string
+    default: '5m'
+  - name: artifactName
+    type: string
+    default: 'sandbox-destroy'
+
+steps:
+  - task: TerraformInstaller@1
+    displayName: 'Instalar Terraform (${{ parameters.terraformVersion }})'
+    inputs:
+      terraformVersion: ${{ parameters.terraformVersion }}
+
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'Verificar state do sandbox'
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        BUCKET="${{ parameters.backendBucket }}"
+        KEY="${{ parameters.backendKey }}"
+        if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+          echo "##[error]Bucket de state '$BUCKET' não existe — este sandbox nunca foi deployado (ou já foi destruído)."
+          exit 1
+        fi
+        if ! aws s3api head-object --bucket "$BUCKET" --key "$KEY" >/dev/null 2>&1; then
+          echo "##[error]State '$KEY' não existe em '$BUCKET' — nada para destruir (confira o resourceSuffix usado no deploy)."
+          exit 1
+        fi
+        echo "State encontrado: s3://$BUCKET/$KEY"
+
+  - bash: |
+      set -euo pipefail
+      cat > backend.tf <<EOF
+      terraform {
+        backend "s3" {
+          bucket  = "${{ parameters.backendBucket }}"
+          key     = "${{ parameters.backendKey }}"
+          region  = "${{ parameters.awsRegion }}"
+          encrypt = true
+        }
+      }
+      EOF
+      echo "backend.tf gerado:"; cat backend.tf
+    workingDirectory: ${{ parameters.workingDirectory }}
+    displayName: 'Configurar backend remoto no S3'
+
+  - bash: |
+      set -euo pipefail
+      echo '${{ convertToJson(parameters.tfVars) }}' > _pipeline.auto.tfvars.json
+      echo "Variáveis de pipeline (sensíveis mascaradas):"
+      jq 'with_entries(if (.key|test("secret|password|token|key";"i")) then .value="***" else . end)' _pipeline.auto.tfvars.json
+      echo "Outros *.auto.tfvars.json no diretório (do chamador) também serão carregados:"
+      ls -1 *.auto.tfvars.json
+    workingDirectory: ${{ parameters.workingDirectory }}
+    displayName: 'Gerar variáveis do Terraform (tfvars)'
+
+  - template: terraform/init.yaml
+    parameters:
+      serviceAccount: ${{ parameters.serviceAccount }}
+      awsRegion: ${{ parameters.awsRegion }}
+      workingDirectory: ${{ parameters.workingDirectory }}
+      lockTimeout: ${{ parameters.lockTimeout }}
+
+  # aws_api_gateway_account aponta o CloudWatch role do API Gateway para a CONTA inteira
+  # (compartilhada com dev). Destruí-lo resetaria essa configuração para todos os apps.
+  # Removê-lo do state faz o destroy ignorá-lo; o próximo deploy de dev/sdx re-adota.
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'Preservar aws_api_gateway_account (singleton da conta)'
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        cd "${{ parameters.workingDirectory }}"
+        if terraform state rm aws_api_gateway_account.this 2>/dev/null; then
+          echo "aws_api_gateway_account.this removido do state — recurso preservado na conta."
+        else
+          echo "aws_api_gateway_account.this não está no state — nada a preservar."
+        fi
+
+  - template: terraform/plan.yaml
+    parameters:
+      serviceAccount: ${{ parameters.serviceAccount }}
+      awsRegion: ${{ parameters.awsRegion }}
+      workingDirectory: ${{ parameters.workingDirectory }}
+      lockTimeout: ${{ parameters.lockTimeout }}
+      planFile: 'destroy.tfplan'
+      hasChangesVariable: 'tfDestroyHasChanges'
+      extraArgs: '-destroy'
+
+  - bash: |
+      set -euo pipefail
+      cd "${{ parameters.workingDirectory }}"
+      terraform show -no-color destroy.tfplan > destroy-plan.txt
+      terraform show -json destroy.tfplan > destroy-plan.json
+
+      COUNT=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' destroy-plan.json)
+      {
+        echo "## 🔥 Sandbox destroy — recursos que SERÃO destruídos"
+        echo ""
+        echo "- **App**: \`$(Build.Repository.Name)\` · **Branch**: \`$(Build.SourceBranch)\` · **Disparado por**: $(Build.RequestedFor)"
+        echo "- **State**: \`s3://${{ parameters.backendBucket }}/${{ parameters.backendKey }}\`"
+        echo ""
+        echo "**Total: ${COUNT} recurso(s)**"
+        echo ""
+        jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | "- `\(.address)` _(\(.type))_"' destroy-plan.json
+        echo ""
+        echo "_Plan completo no artefato \`${{ parameters.artifactName }}\` (destroy-plan.txt)._"
+      } > destroy-plan-summary.md
+
+      cat destroy-plan-summary.md
+      echo "##vso[task.uploadsummary]${{ parameters.workingDirectory }}/destroy-plan-summary.md"
+      echo "##vso[artifact.upload artifactname=${{ parameters.artifactName }}]${{ parameters.workingDirectory }}/destroy-plan.txt"
+      echo "##vso[artifact.upload artifactname=${{ parameters.artifactName }}]${{ parameters.workingDirectory }}/destroy-plan.json"
+    displayName: 'Relatório: o que SERÁ destruído (Summary + artefato)'
+
+  # force_destroy dos buckets do app é false por default — bucket com objeto travaria o
+  # destroy. Sandbox é descartável: esvazia os buckets GERENCIADOS PELO STATE (nunca por
+  # nome adivinhado), incluindo versões e delete markers (versioning é habilitado por default).
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'Esvaziar buckets S3 do sandbox (antes do destroy)'
+    condition: and(succeeded(), ne(variables['tfDestroyHasChanges'], 'false'))
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        cd "${{ parameters.workingDirectory }}"
+        BUCKETS=$(terraform state pull | jq -r '.resources[]? | select(.type == "aws_s3_bucket" and .mode == "managed") | .instances[]?.attributes.bucket // empty')
+        if [ -z "$BUCKETS" ]; then
+          echo "Nenhum bucket S3 gerenciado no state — nada a esvaziar."
+          exit 0
+        fi
+        for B in $BUCKETS; do
+          if ! aws s3api head-bucket --bucket "$B" 2>/dev/null; then
+            echo "Bucket '$B' não existe mais — pulando."
+            continue
+          fi
+          echo "##[section]Esvaziando bucket '$B' (objetos, versões e delete markers)..."
+          while :; do
+            BATCH=$(aws s3api list-object-versions --bucket "$B" --max-keys 500 --output json \
+              | jq -c '{Objects: ([.Versions[]?, .DeleteMarkers[]?] | map({Key: .Key, VersionId: .VersionId})), Quiet: true}')
+            N=$(echo "$BATCH" | jq '.Objects | length')
+            [ "$N" -eq 0 ] && break
+            aws s3api delete-objects --bucket "$B" --delete "$BATCH" >/dev/null
+            echo "  removidos $N objeto(s)/versão(ões)..."
+          done
+          echo "  bucket '$B' vazio."
+        done
+
+  - template: terraform/apply.yaml
+    parameters:
+      serviceAccount: ${{ parameters.serviceAccount }}
+      awsRegion: ${{ parameters.awsRegion }}
+      workingDirectory: ${{ parameters.workingDirectory }}
+      lockTimeout: ${{ parameters.lockTimeout }}
+      planFile: 'destroy.tfplan'
+      hasChangesVariable: 'tfDestroyHasChanges'
+
+  # Roda mesmo se o apply falhar no meio (succeededOrFailed): o relatório mostra o que
+  # sobrou no state — é o ponto de partida da recuperação manual. A checagem de
+  # tfDestroyHasChanges (setada só pelo plan) evita rodar se o run morreu ANTES do plan
+  # (ex.: state inexistente), quando não há nada para reportar.
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'Relatório: o que FOI destruído (Summary + artefato)'
+    condition: and(succeededOrFailed(), ne(variables['tfDestroyHasChanges'], ''))
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        cd "${{ parameters.workingDirectory }}"
+        PLANNED=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' destroy-plan.json 2>/dev/null || echo 0)
+        REMAINING=$(terraform state list 2>/dev/null | wc -l | tr -d ' ')
+        {
+          if [ "$REMAINING" -eq 0 ]; then
+            echo "## ✅ Sandbox destroy — resultado"
+            echo ""
+            echo "**State vazio: os ${PLANNED} recurso(s) planejados foram destruídos.**"
+            echo ""
+            jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | "- ~~`\(.address)`~~ _(\(.type))_"' destroy-plan.json 2>/dev/null || true
+          else
+            echo "## ⚠️ Sandbox destroy — resultado PARCIAL"
+            echo ""
+            echo "**${REMAINING} recurso(s) AINDA no state (de ${PLANNED} planejados):**"
+            echo ""
+            terraform state list | sed 's/^/- `/; s/$/`/'
+            echo ""
+            echo "Reexecute o destroy ou finalize manualmente; o state segue em \`s3://${{ parameters.backendBucket }}/${{ parameters.backendKey }}\`."
+          fi
+        } > destroy-result-summary.md
+        cat destroy-result-summary.md
+        echo "##vso[task.uploadsummary]${{ parameters.workingDirectory }}/destroy-result-summary.md"
+        echo "##vso[artifact.upload artifactname=${{ parameters.artifactName }}]${{ parameters.workingDirectory }}/destroy-result-summary.md"
+        if [ "$REMAINING" -ne 0 ]; then
+          echo "##[error]Destroy parcial: ${REMAINING} recurso(s) restante(s) no state."
+          exit 1
+        fi
