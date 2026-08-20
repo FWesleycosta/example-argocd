@@ -153,9 +153,49 @@ flowchart TD
 | Branch | Comportamento do pipeline |
 |--------|---------------------------|
 | `develop`, `sandbox` | Build + deploy em **dev** |
-| `sandbox/*` | Build + deploy em **sdx** (infra de DEV, recursos com sufixo `-sdx`) |
+| `sandbox/*` | Build + deploy em **sdx** (infra de DEV, recursos com sufixo `-sdx`; SSM/Secrets com prefixo `/sdx/...`) |
 | `release/*` | hml → Veracode → prd → PRs de promoção |
 | `hotfix/*` | Veracode → prd → aprovação → PRs em cascata → exclusão da branch |
+
+---
+
+## [2.5.0] - 2026-08-20
+
+Sandbox (`sandbox/*`): **SSM Parameters e Secrets Manager passam a ser isolados pelo
+prefixo do caminho, não mais por sufixo no fim do nome** — de
+`/dev/sistema/app/param-sdx` para **`/sdx/sistema/app/param`**, alinhado à convenção de
+nomes `/ambiente/...`. **Compatível (MINOR)**: nenhum parâmetro de `stacks/*` ou de
+`deploy-backend.yaml` mudou, e **dev/hml/prd ficam byte a byte idênticos** (com
+`resource_suffix` vazio o nome declarado pelo app segue intacto). Muda apenas o nome
+efetivo dos recursos criados no ambiente `sdx`.
+
+### Alterado (`manifests/terraform/` — só afeta sandbox)
+
+- **`locals.tf`**: novo `sdx_path_prefix` = `resource_suffix` sem o `-` inicial (`-sdx` →
+  segmento `sdx`; sufixo customizado `-joao` → `joao`, preservando o isolamento entre
+  sandboxes do mesmo app). Novas listas `ssm_params_named`/`secrets_named` com o
+  `effective_name`:
+  - **SSM** (o sandbox reusa a lista `ssm_parameters.dev`, cujos nomes trazem o ambiente
+    no 1º segmento): troca o 1º segmento `dev|hml|prd` pelo prefixo —
+    `/dev/credito/api/conn` → `/sdx/credito/api/conn`. Nome sem segmento de ambiente
+    apenas ganha o prefixo (`/sdx/...`), nunca ficando sem isolamento.
+  - **Secrets** (lista única para os 3 ambientes, nome sem segmento de ambiente): só
+    prefixa, preservando o estilo com/sem `/` inicial — `credito/api/db` →
+    `sdx/credito/api/db`; `/credito/api/db` → `/sdx/credito/api/db`.
+- **`main.tf`** (`aws_ssm_parameter.this`, `module.secrets`): usam `effective_name` e não
+  concatenam mais `${var.resource_suffix}` ao nome. As **chaves do `for_each` continuam
+  sendo o nome declarado pelo app** — endereços no state não mudam em nenhum ambiente.
+- Demais recursos sufixados (IAM, log group, DynamoDB, API Gateway, SQS/SNS, `base_path`)
+  **seguem com sufixo** — nada mudou fora de SSM/Secrets.
+
+### Notas de migração (apenas sandboxes ativos)
+
+- No próximo apply do `sdx`, os SSM/Secrets antigos (`...-sdx`) são **destruídos e
+  recriados** no novo caminho. Secrets recriados voltam com os valores `PREENCHER`
+  (o antigo fica 7 dias em recovery window) — **re-preencher valores manuais** após o
+  primeiro deploy. A aplicação no sandbox deve passar a ler os paths `/sdx/...`.
+- A IAM policy do pod não precisa de ajuste: usa `Resource = "*"` com condição por tag,
+  não ARN por caminho.
 
 ---
 

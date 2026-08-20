@@ -129,7 +129,7 @@ os steps na ordem:
 image-promote  →  copiar manifests/terraform  →  tfvars de runtime  →  terraform-apply
                                                     (init→validate→plan→apply)
                →  k8s-render (PLACEHOLDER_* + ConfigMap)  →  k8s-deploy (apply + annotations)
-               →  record-prod-release   [somente prd]
+               →  resolve-artifact-image → record-prod-release   [prd completo / hml reduzido]
 ```
 
 Consequência prática: mudanças de comportamento de deploy quase sempre pertencem a um `steps/*`,
@@ -150,7 +150,15 @@ Deploy_<env> (stages/deploy-frontend.yaml → deploy-frontend.yaml):
   copiar manifests/terraform-frontend → tfvars → terraform-apply → ler outputs (distribution id)
   → gerar env-config.js (window.env ← config.runtime_vars.<env>) no artefato
   → aws s3 sync <repo>-<env> (assets immutable; index/env-config no-cache) → invalidation /* [se cdn.cloudfront]
+  → resolve-artifact-static → record-prod-release   [prd completo / hml reduzido — mesmos perfis do backend]
 ```
+
+- **Registro de release** igual ao backend (`2.4.0`): mesmo `record-prod-release` (`history.jsonl`
+  + `DEPLOY-PRD.md` do app); só a identidade muda — `steps/resolve-artifact-static.yaml`: sem
+  ECR/tag móvel, `image.tag` = `Build.BuildId`, `image.uri` = `s3://<bucket>`, `image.digest` =
+  sha256 do `dist` **excluindo `env-config.js`** (mesmo build ⇒ mesmo digest em hml e prd),
+  `artifact.site_url`. Best-effort; não exige `checkout: self` (o record clona o repo). Mesmos
+  pré-requisitos de portal (OAuth token + Contribute).
 
 - **Build único** também aqui: o `dist` é construído uma vez; o que varia por ambiente vai em
   `config.runtime_vars.{dev,hml,prd}` (`window.env`), **não** no `.env`. `config.env_vars` é
@@ -200,11 +208,15 @@ Derivam de variáveis do ADO em runtime — mudar isso afeta ECR, namespace e st
   em runtime; os demais via `_pipeline.auto.tfvars.json` (qualquer `*.auto.tfvars.json` no
   diretório é carregado)
 - **sandbox (`sdx`)**: os nomes acima já isolam por embutirem o env; o que **não** embute
-  (IAM, log group do APIGW, DynamoDB, Secrets, SSM, `base_path`, nome da REST API) é sufixado
+  (IAM, log group do APIGW, DynamoDB, `base_path`, nome da REST API) é sufixado
   via `resource_suffix` no Terraform (default `""`; `sdx` envia `-sdx` via `resourceSuffix`
   do `variables/env/sdx.yaml`). Recurso novo no `manifests/terraform/` com nome sem
   `var.environment` **deve** receber `${var.resource_suffix}`, senão colide com dev na conta
-  compartilhada.
+  compartilhada. **Exceção (`2.5.0`) — SSM e Secrets Manager**: isolados pelo **prefixo do
+  caminho** e não por sufixo — `local.sdx_path_prefix` (suffix sem o `-`: `-sdx` → `sdx`)
+  troca o 1º segmento `dev|hml|prd` do nome (`/dev/x/y/z` → `/sdx/x/y/z`) ou apenas prefixa
+  quando não há segmento de ambiente (caso dos secrets, lista única para os 3 ambientes);
+  `effective_name` em `locals.tf`, chave do `for_each` segue o nome declarado pelo app.
 
 ## Políticas centrais embutidas na esteira
 
@@ -213,10 +225,17 @@ Derivam de variáveis do ADO em runtime — mudar isso afeta ECR, namespace e st
   PRODUÇÃO. Decisão em `stages/deploy.yaml`, compile-time.
 - **SSM por ambiente**: o app declara `config.ssm_parameters.{dev,hml,prd}` e o stack repassa
   apenas o do ambiente do stage.
-- **Registro de deploy** (`steps/record-prod-release.yaml`, último step do stage — nunca
-  bloqueia): roda em **prd e hml**, com perfis diferentes decididos em `stages/deploy.yaml`:
-  - **prd** (perfil completo): carimba o run (`· prd` + build tags), resolve o **digest**, move a
-    tag móvel `prod` no ECR, publica o artefato `prod-release`, sobe o resumo na aba **Summary**,
+- **Registro de deploy** — dois steps em sequência no fim do stage, ambos best-effort (nunca
+  bloqueiam), rodando em **prd e hml** com perfis decididos em `stages/deploy.yaml` /
+  `stages/deploy-frontend.yaml` (`2.4.0`):
+  1. **identidade do artefato** → exporta `RELEASE_ARTIFACT_{KIND,TAG,URI,DIGEST}`,
+     `RELEASE_IMAGE_REF_BY_DIGEST`, `RELEASE_MOVING_TAG`, `RELEASE_SITE_URL`:
+     `steps/resolve-artifact-image.yaml` (backend: digest no ECR + tag móvel `prod`, `prodTag: ''`
+     em hml) ou `steps/resolve-artifact-static.yaml` (frontend: sha256 do `dist` sem
+     `env-config.js`, `s3://<bucket>`, `site_url`). É o único lugar com lógica por tipo.
+  2. **`steps/record-prod-release.yaml`** — só registro; lê as `RELEASE_*` via defaults
+     `$(...)` (sem `resolve-*` antes: warning + `kind: unknown`, não falha). Não usa AWS.
+  - **prd** (perfil completo): carimba o run (`· prd` + build tags), publica o artefato `prod-release`, sobe o resumo na aba **Summary**,
     grava a entrada no **`.deploy/history.jsonl`** do repo do app e **renderiza** o
     `DEPLOY-PRD.md` a partir desse JSONL (commit com `[skip ci]`; policy bloqueou → PR de
     `release-record/<buildId>`). Captura aprovador do gate via timeline→approvals
@@ -227,12 +246,15 @@ Derivam de variáveis do ADO em runtime — mudar isso afeta ECR, namespace e st
   - O `DEPLOY-PRD.md` é **função pura do JSONL**: "Último deploy" = última entrada `prd` (nunca
     as variáveis do run — é o que permite ao hml re-renderizar sem corromper os dados de
     produção), "Histórico" = `prd` (50), "Homologação" = `hml` (20).
-  - Parâmetros: `environment` (`prd`), `historyFile` (`.deploy/history.jsonl`), `updateMarkdown`,
-    `captureApproval`, além dos anteriores; `prodTag: ''` = não mover tag móvel. `deployType`
-    distingue `deploy` × `hotfix` × `rollback`. Schema (`schema_version: 1`) e consultas `jq` de
-    métricas: ver entrada `2.1.0` do `CHANGELOG.md`.
-  - **Pré-requisito**: a service connection de **hml** precisa de `ecr:DescribeImages` e
-    `ecr:BatchGetImage` (hoje só a de prd tem) — sem isso, `digest: null` + warning.
+  - Parâmetros do record: `environment` (`prd`), `historyFile` (`.deploy/history.jsonl`),
+    `updateMarkdown`, `captureApproval`, `deployType` (`deploy` × `hotfix` × `rollback`),
+    `stampRun`, `artifactName`, `recordBranch`, `appName`; a identidade (`artifactKind/Tag/Uri/
+    Digest/RefByDigest`, `movingTag`, `siteUrl`) tem default nas `RELEASE_*`. `prodTag` agora é
+    do `resolve-artifact-image`. Schema (`schema_version: 1`, campo aditivo `artifact.{kind,
+    site_url}` desde `2.4.0`) e consultas `jq`: ver entradas `2.1.0`/`2.4.0` do `CHANGELOG.md`.
+  - **Pré-requisito (backend)**: a service connection de **hml** precisa de `ecr:DescribeImages`
+    e `ecr:BatchGetImage` para o `resolve-artifact-image` (hoje só a de prd tem) — sem isso,
+    `digest: null` + warning. O frontend não precisa de ECR.
 - **Rollback rastreado**: `stages/rollback.yaml` faz `kubectl set image` para uma tag que já
   existe no ECR, passando pelo Environment `prd` (mesmo gate de GMUD) — assim o painel
   Environments do ADO continua refletindo o que está live.
