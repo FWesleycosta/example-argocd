@@ -1,10 +1,4 @@
 parameters:
-  - name: serviceAccount
-    type: string
-  - name: awsRegion
-    type: string
-  - name: awsAccID
-    type: string
   - name: environment
     type: string
     default: 'prd'
@@ -17,15 +11,9 @@ parameters:
   - name: captureApproval
     type: boolean
     default: true
-  - name: imageName
+  - name: appName
     type: string
     default: '$(Build.Repository.Name)'
-  - name: imageTag
-    type: string
-    default: '$(Build.BuildId)'
-  - name: prodTag
-    type: string
-    default: 'prod'
   - name: deployType
     type: string
     default: 'auto'
@@ -43,13 +31,35 @@ parameters:
     type: string
     default: ''
 
+  - name: artifactKind
+    type: string
+    default: '$(RELEASE_ARTIFACT_KIND)'       # image | static
+  - name: artifactTag
+    type: string
+    default: '$(RELEASE_ARTIFACT_TAG)'        # identidade do build (Build.BuildId) — liga hml→prd
+  - name: artifactUri
+    type: string
+    default: '$(RELEASE_ARTIFACT_URI)'        # <registry>/<repo>:<tag>  ou  s3://<bucket>
+  - name: artifactDigest
+    type: string
+    default: '$(RELEASE_ARTIFACT_DIGEST)'
+  - name: artifactRefByDigest
+    type: string
+    default: '$(RELEASE_IMAGE_REF_BY_DIGEST)' # só image
+  - name: movingTag
+    type: string
+    default: '$(RELEASE_MOVING_TAG)'          # só image; '' = não houve tag móvel
+  - name: siteUrl
+    type: string
+    default: '$(RELEASE_SITE_URL)'            # só static
+
 steps:
   - ${{ if parameters.stampRun }}:
       - bash: |
           set -euo pipefail
 
           echo "##vso[build.addbuildtag]prod"
-          echo "##vso[build.addbuildtag]${{ parameters.imageName }}"
+          echo "##vso[build.addbuildtag]${{ parameters.appName }}"
 
           BN="$(Build.BuildNumber)"
           case "$BN" in
@@ -58,7 +68,7 @@ steps:
           esac
         displayName: 'Carimbar execução (deploy em prod)'
 
-  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+  - task: Bash@3
     displayName: 'Registrar release (${{ parameters.environment }})'
     continueOnError: true
     env:
@@ -68,25 +78,44 @@ steps:
       UPDATE_MARKDOWN: ${{ parameters.updateMarkdown }}
       CAPTURE_APPROVAL: ${{ parameters.captureApproval }}
       HISTORY_FILE: ${{ parameters.historyFile }}
+      ARTIFACT_KIND: ${{ parameters.artifactKind }}
+      ARTIFACT_TAG: ${{ parameters.artifactTag }}
+      ARTIFACT_URI: ${{ parameters.artifactUri }}
+      ARTIFACT_DIGEST: ${{ parameters.artifactDigest }}
+      ARTIFACT_REF_BY_DIGEST: ${{ parameters.artifactRefByDigest }}
+      MOVING_TAG: ${{ parameters.movingTag }}
+      SITE_URL: ${{ parameters.siteUrl }}
     inputs:
-      awsCredentials: ${{ parameters.serviceAccount }}
-      regionName: ${{ parameters.awsRegion }}
-      scriptType: inline
-      inlineScript: |
+      targetType: 'inline'
+      script: |
         set -euo pipefail
 
         warn() { echo "##[warning]$*"; }
+        # Macro não expandida (resolve-* não rodou) chega literal como "$(NOME)": trata como vazio.
+        unmacro() { case "$1" in '$('*')') printf '' ;; *) printf '%s' "$1" ;; esac; }
 
-        ACCOUNT_ID="${{ parameters.awsAccID }}"
-        REGION="${{ parameters.awsRegion }}"
-        REPO="${{ parameters.imageName }}"
-        TAG="${{ parameters.imageTag }}"
-        PROD_TAG="${{ parameters.prodTag }}"
+        REPO="${{ parameters.appName }}"
         ENVIRONMENT="${{ parameters.environment }}"
         UPDATE_MARKDOWN="$(printf '%s' "${UPDATE_MARKDOWN:-true}" | tr '[:upper:]' '[:lower:]')"
         CAPTURE_APPROVAL="$(printf '%s' "${CAPTURE_APPROVAL:-true}" | tr '[:upper:]' '[:lower:]')"
-        REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
-        IMAGE_URI="${REGISTRY}/${REPO}:${TAG}"
+
+        ARTIFACT_KIND="$(unmacro "${ARTIFACT_KIND:-}")"
+        TAG="$(unmacro "${ARTIFACT_TAG:-}")"
+        IMAGE_URI="$(unmacro "${ARTIFACT_URI:-}")"
+        DIGEST="$(unmacro "${ARTIFACT_DIGEST:-}")"
+        IMAGE_REF_BY_DIGEST="$(unmacro "${ARTIFACT_REF_BY_DIGEST:-}")"
+        PROD_TAG="$(unmacro "${MOVING_TAG:-}")"
+        SITE_URL="$(unmacro "${SITE_URL:-}")"
+
+        if [ -z "$ARTIFACT_KIND" ] || [ -z "$TAG" ]; then
+          warn "Identidade do artefato ausente (RELEASE_ARTIFACT_KIND/TAG vazios). Rode steps/resolve-artifact-image.yaml ou resolve-artifact-static.yaml antes deste step. Registrando com kind='${ARTIFACT_KIND:-?}' e tag='${TAG:-$(Build.BuildId)}'."
+          ARTIFACT_KIND="${ARTIFACT_KIND:-unknown}"
+          TAG="${TAG:-$(Build.BuildId)}"
+        fi
+        case "$ARTIFACT_KIND" in
+          static) REF_LABEL="Artefato" ;;
+          *)      REF_LABEL="Imagem" ;;
+        esac
 
         DEPLOY_TYPE="${{ parameters.deployType }}"
         if [ "$DEPLOY_TYPE" = "auto" ]; then
@@ -109,78 +138,11 @@ steps:
         fi
         MSG_SAFE="$(printf '%s' "$COMMIT_MSG" | tr '\n\r|' '  /' | cut -c1-80)"
 
-        resolve_digest() {
-          aws ecr describe-images \
-            --repository-name "$REPO" \
-            --image-ids imageTag="$TAG" \
-            --region "$REGION" \
-            --query 'imageDetails[0].imageDigest' \
-            --output text 2>/tmp/ecr_digest.err
-        }
-
-        DIGEST=""
-        if DIGEST_OUT="$(resolve_digest)" && [ -n "$DIGEST_OUT" ] && [ "$DIGEST_OUT" != "None" ]; then
-          DIGEST="$DIGEST_OUT"
-        else
-          warn "Não resolvi o digest de ${REPO}:${TAG}. O registro segue SEM digest. Confira 'ecr:DescribeImages' na service connection e se a imagem ainda existe no ECR (lifecycle policy)."
-          if [ -s /tmp/ecr_digest.err ]; then
-            echo "  Erro retornado pelo ECR:"
-            head -c 500 /tmp/ecr_digest.err
-            echo
-          fi
-        fi
-
-        echo "##[section]Imagem em prod"
-        echo "  URI (tag):    $IMAGE_URI"
+        echo "##[section]${REF_LABEL} em ${ENVIRONMENT}"
+        echo "  Referência:   ${IMAGE_URI:-<não informada>}  (tag/build: $TAG)"
         echo "  Digest:       ${DIGEST:-<não resolvido>}"
-
-        IMAGE_REF_BY_DIGEST=""
-        if [ -n "$DIGEST" ]; then
-          IMAGE_REF_BY_DIGEST="${REGISTRY}/${REPO}@${DIGEST}"
-        fi
-
-        promote_moving_tag() {
-          local manifest
-          manifest="$(aws ecr batch-get-image \
-            --repository-name "$REPO" \
-            --image-ids imageTag="$TAG" \
-            --region "$REGION" \
-            --query 'images[0].imageManifest' \
-            --output text 2>/dev/null)" || return 1
-          [ -n "$manifest" ] && [ "$manifest" != "None" ] || return 2
-          aws ecr put-image \
-            --repository-name "$REPO" \
-            --image-tag "$PROD_TAG" \
-            --image-manifest "$manifest" \
-            --region "$REGION" >/dev/null 2>/tmp/ecr_puttag.err || return 3
-        }
-
-        if [ -z "$PROD_TAG" ]; then
-          echo "  Tag móvel desabilitada (prodTag vazio — perfil ${ENVIRONMENT})."
-          MOVING_RC=-1
-        else
-        set +e; promote_moving_tag; MOVING_RC=$?; set -e
-        case "$MOVING_RC" in
-          0)
-            echo "  Tag móvel '$PROD_TAG' atualizada para o digest atual."
-            ;;
-          1|2)
-            warn "Não consegui ler o manifesto de ${REPO}:${TAG} — a tag móvel '$PROD_TAG' NÃO foi atualizada e pode estar apontando para uma versão anterior. Confira 'ecr:BatchGetImage' na service connection."
-            ;;
-          *)
-            if grep -q "ImageAlreadyExistsException" /tmp/ecr_puttag.err 2>/dev/null; then
-              echo "  Tag '$PROD_TAG' já aponta para este digest (nada a fazer)."
-            else
-              warn "Não consegui mover a tag '$PROD_TAG' para ${REPO}:${TAG} — ela pode estar apontando para uma versão anterior. Confira 'ecr:PutImage' na service connection."
-              if [ -s /tmp/ecr_puttag.err ]; then
-                echo "  Erro retornado pelo ECR:"
-                head -c 500 /tmp/ecr_puttag.err
-                echo
-              fi
-            fi
-            ;;
-        esac
-        fi
+        [ -n "$PROD_TAG" ] && echo "  Tag móvel:    $PROD_TAG"
+        [ -n "$SITE_URL" ] && echo "  Site:         $SITE_URL"
 
         PIPELINE_URL="$(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
 
@@ -201,6 +163,8 @@ steps:
           --arg image_digest "$DIGEST" \
           --arg image_ref_by_digest "$IMAGE_REF_BY_DIGEST" \
           --arg prod_tag "$PROD_TAG" \
+          --arg artifact_kind "$ARTIFACT_KIND" \
+          --arg site_url "${SITE_URL:-}" \
           --arg commit "$COMMIT" \
           --arg commit_message "$COMMIT_MSG" \
           --arg branch "$(Build.SourceBranch)" \
@@ -214,6 +178,8 @@ steps:
             pipeline_url: $pipeline_url,
             build_id: $build_id,
             build_number: $build_number,
+            artifact_kind: $artifact_kind,
+            site_url: $site_url,
             image_uri: $image_uri,
             image_tag: $image_tag,
             image_digest: $image_digest,
@@ -237,10 +203,17 @@ steps:
           echo "Build ID:       $(Build.BuildId)"
           echo "Build Number:   $(Build.BuildNumber)"
           echo ""
-          echo "Imagem (tag):   $IMAGE_URI"
-          echo "Digest:         $DIGEST"
-          echo "Imagem (ref):   $IMAGE_REF_BY_DIGEST"
-          echo "Tag móvel:      $PROD_TAG"
+          if [ "$ARTIFACT_KIND" = "static" ]; then
+            echo "Artefato:       build $TAG"
+            echo "Local:          $IMAGE_URI"
+            echo "Digest:         $DIGEST"
+            echo "Site:           ${SITE_URL:--}"
+          else
+            echo "Imagem (tag):   $IMAGE_URI"
+            echo "Digest:         $DIGEST"
+            echo "Imagem (ref):   $IMAGE_REF_BY_DIGEST"
+            echo "Tag móvel:      $PROD_TAG"
+          fi
           echo ""
           echo "Commit:         ${COMMIT:--}"
           echo "Mensagem:       ${COMMIT_MSG:--}"
@@ -257,9 +230,16 @@ steps:
           echo "| Data (UTC) | $DEPLOYED_AT |"
           echo "| Disparado por | $(Build.RequestedFor) |"
           echo "| Pipeline | [Build $(Build.BuildId)]($PIPELINE_URL) |"
-          echo "| Imagem (tag) | \`$IMAGE_URI\` |"
-          echo "| Digest | \`$DIGEST\` |"
-          echo "| Tag móvel | \`$PROD_TAG\` |"
+          if [ "$ARTIFACT_KIND" = "static" ]; then
+            echo "| Artefato | build \`$TAG\` |"
+            echo "| Local | \`$IMAGE_URI\` |"
+            echo "| Digest | \`$DIGEST\` |"
+            echo "| Site | ${SITE_URL:--} |"
+          else
+            echo "| Imagem (tag) | \`$IMAGE_URI\` |"
+            echo "| Digest | \`$DIGEST\` |"
+            echo "| Tag móvel | \`$PROD_TAG\` |"
+          fi
           echo "| Commit | \`${COMMIT:--}\` |"
           echo "| Mensagem | $MSG_SAFE |"
           echo "| Branch | \`$(Build.SourceBranch)\` |"
@@ -326,9 +306,12 @@ steps:
           --arg branch "$(Build.SourceBranch)" \
           --arg build_id "$(Build.BuildId)" --arg build_number "$(Build.BuildNumber)" \
           --arg url "$PIPELINE_URL" --arg triggered_by "$(Build.RequestedFor)" \
+          --arg artifact_kind "$ARTIFACT_KIND" --arg site_url "${SITE_URL:-}" \
           --argjson approval "$APPROVAL_JSON" \
           '{schema_version: 1, app: $app, environment: $environment,
             deploy_type: $deploy_type, deployed_at: $deployed_at, result: "succeeded",
+            artifact: {kind: $artifact_kind,
+                       site_url: (if $site_url == "" then null else $site_url end)},
             image: {tag: $tag,
                     digest: (if $digest == "" then null else $digest end),
                     uri: $uri,
@@ -393,6 +376,12 @@ steps:
               fi
 
               LAST_PRD="$(jq -s '[.[] | select(.environment == "prd")] | last // empty' "$HIST" 2>/dev/null)"
+              # Rótulos por perfil: backend = imagem no ECR; frontend (static) = build publicado no S3.
+              if [ "$ARTIFACT_KIND" = "static" ]; then
+                TAG_LABEL="Artefato (build)"; TAG_COL="Build (artefato)"
+              else
+                TAG_LABEL="Imagem (tag ECR)"; TAG_COL="Tag"
+              fi
               {
                 echo "# Produção — ${REPO}"
                 echo ""
@@ -403,13 +392,14 @@ steps:
                 echo "_O que está em **produção** agora, segundo o último registro da esteira._"
                 echo ""
                 if [ -n "$LAST_PRD" ]; then
-                  echo "$LAST_PRD" | jq -r '
+                  echo "$LAST_PRD" | jq -r --arg tag_label "$TAG_LABEL" '
                     "| Campo | Valor |",
                     "|---|---|",
                     "| Situação | \(.deploy_type) |",
                     "| Data (UTC) | \(.deployed_at) |",
-                    "| Imagem (tag ECR) | `\(.image.tag)` |",
+                    "| \($tag_label) | `\(.image.tag)` |",
                     "| Digest | `\(.image.digest // "-")` |",
+                    (if (.artifact.site_url // "") != "" then "| Site | \(.artifact.site_url) |" else empty end),
                     "| Commit | `\(.source.commit // "-")` |",
                     "| Mensagem | \((.source.commit_message // "-") | gsub("[|\r\n]"; " ") | .[0:80]) |",
                     "| Branch | `\(.source.branch)` |",
@@ -423,7 +413,7 @@ steps:
                 echo ""
                 echo "_Mais recente primeiro. **Tipo**: \`deploy\` = release via GMUD · \`hotfix\` = correção expressa · \`rollback\` = retorno a versão anterior._"
                 echo ""
-                echo "| Data (UTC) | Tipo | Tag | Commit | Mensagem | Build | Por |"
+                echo "| Data (UTC) | Tipo | ${TAG_COL} | Commit | Mensagem | Build | Por |"
                 echo "|---|---|---|---|---|---|---|"
                 awk '{a[NR]=$0} END{for(i=NR;i>=1;i--) print a[i]}' "$HIST" 2>/dev/null | jq -r 'select(.environment == "prd")
                   | "| \(.deployed_at) | \(.deploy_type) | `\(.image.tag)` | `\((.source.commit // "-")[0:8])` | \((.source.commit_message // "-") | gsub("[|\r\n]"; " ") | .[0:80]) | [#\(.pipeline.build_id)](\(.pipeline.url)) | \(.pipeline.triggered_by) |"' 2>/dev/null | head -50
@@ -432,7 +422,7 @@ steps:
                 echo ""
                 echo "_O que subiu em **HML** a cada merge na release — validação da QA; **ainda não está em produção**._"
                 echo ""
-                echo "| Data (UTC) | Tag | Commit | Mensagem | Build | Por |"
+                echo "| Data (UTC) | ${TAG_COL} | Commit | Mensagem | Build | Por |"
                 echo "|---|---|---|---|---|---|"
                 awk '{a[NR]=$0} END{for(i=NR;i>=1;i--) print a[i]}' "$HIST" 2>/dev/null | jq -r 'select(.environment == "hml")
                   | "| \(.deployed_at) | `\(.image.tag)` | `\((.source.commit // "-")[0:8])` | \((.source.commit_message // "-") | gsub("[|\r\n]"; " ") | .[0:80]) | [#\(.pipeline.build_id)](\(.pipeline.url)) | \(.pipeline.triggered_by) |"' 2>/dev/null | head -20

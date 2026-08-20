@@ -1,0 +1,128 @@
+# templates/steps/resolve-artifact-image.yaml
+# Identidade do artefato de release quando ele é uma IMAGEM no ECR (backend EKS):
+# resolve o digest da tag e (opcionalmente) move a tag móvel `prodTag` para ela.
+# Exporta variáveis RELEASE_* consumidas por steps/record-prod-release.yaml.
+# Best-effort: falhas viram warning e RELEASE_ARTIFACT_DIGEST vazio — nunca bloqueia o deploy.
+#
+# Saídas (##vso[task.setvariable]):
+#   RELEASE_ARTIFACT_KIND      = image
+#   RELEASE_ARTIFACT_TAG       = <imageTag>
+#   RELEASE_ARTIFACT_URI       = <acct>.dkr.ecr.<region>.amazonaws.com/<imageName>:<imageTag>
+#   RELEASE_ARTIFACT_DIGEST    = sha256:... (vazio se não resolvido)
+#   RELEASE_IMAGE_REF_BY_DIGEST= <registry>/<imageName>@<digest> (vazio se sem digest)
+#   RELEASE_MOVING_TAG         = <prodTag> (vazio se desabilitado)
+#   RELEASE_SITE_URL           = '' (não se aplica)
+parameters:
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: awsAccID
+    type: string
+  - name: imageName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: imageTag
+    type: string
+    default: '$(Build.BuildId)'
+  - name: prodTag
+    type: string
+    default: 'prod'      # '' = não mover tag móvel (perfil hml)
+
+steps:
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'Resolver artefato (imagem ECR ${{ parameters.imageName }}:${{ parameters.imageTag }})'
+    continueOnError: true
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        warn() { echo "##[warning]$*"; }
+
+        ACCOUNT_ID="${{ parameters.awsAccID }}"
+        REGION="${{ parameters.awsRegion }}"
+        REPO="${{ parameters.imageName }}"
+        TAG="${{ parameters.imageTag }}"
+        PROD_TAG="${{ parameters.prodTag }}"
+        REGISTRY="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+        IMAGE_URI="${REGISTRY}/${REPO}:${TAG}"
+
+        resolve_digest() {
+          aws ecr describe-images \
+            --repository-name "$REPO" \
+            --image-ids imageTag="$TAG" \
+            --region "$REGION" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text 2>/tmp/ecr_digest.err
+        }
+
+        DIGEST=""
+        if DIGEST_OUT="$(resolve_digest)" && [ -n "$DIGEST_OUT" ] && [ "$DIGEST_OUT" != "None" ]; then
+          DIGEST="$DIGEST_OUT"
+        else
+          warn "Não resolvi o digest de ${REPO}:${TAG}. O registro segue SEM digest. Confira 'ecr:DescribeImages' na service connection e se a imagem ainda existe no ECR (lifecycle policy)."
+          if [ -s /tmp/ecr_digest.err ]; then
+            echo "  Erro retornado pelo ECR:"
+            head -c 500 /tmp/ecr_digest.err
+            echo
+          fi
+        fi
+
+        IMAGE_REF_BY_DIGEST=""
+        [ -n "$DIGEST" ] && IMAGE_REF_BY_DIGEST="${REGISTRY}/${REPO}@${DIGEST}"
+
+        echo "##[section]Imagem da release"
+        echo "  URI (tag):    $IMAGE_URI"
+        echo "  Digest:       ${DIGEST:-<não resolvido>}"
+
+        promote_moving_tag() {
+          local manifest
+          manifest="$(aws ecr batch-get-image \
+            --repository-name "$REPO" \
+            --image-ids imageTag="$TAG" \
+            --region "$REGION" \
+            --query 'images[0].imageManifest' \
+            --output text 2>/dev/null)" || return 1
+          [ -n "$manifest" ] && [ "$manifest" != "None" ] || return 2
+          aws ecr put-image \
+            --repository-name "$REPO" \
+            --image-tag "$PROD_TAG" \
+            --image-manifest "$manifest" \
+            --region "$REGION" >/dev/null 2>/tmp/ecr_puttag.err || return 3
+        }
+
+        if [ -z "$PROD_TAG" ]; then
+          echo "  Tag móvel desabilitada (prodTag vazio)."
+        else
+          set +e; promote_moving_tag; MOVING_RC=$?; set -e
+          case "$MOVING_RC" in
+            0)
+              echo "  Tag móvel '$PROD_TAG' atualizada para o digest atual."
+              ;;
+            1|2)
+              warn "Não consegui ler o manifesto de ${REPO}:${TAG} — a tag móvel '$PROD_TAG' NÃO foi atualizada e pode estar apontando para uma versão anterior. Confira 'ecr:BatchGetImage' na service connection."
+              ;;
+            *)
+              if grep -q "ImageAlreadyExistsException" /tmp/ecr_puttag.err 2>/dev/null; then
+                echo "  Tag '$PROD_TAG' já aponta para este digest (nada a fazer)."
+              else
+                warn "Não consegui mover a tag '$PROD_TAG' para ${REPO}:${TAG} — ela pode estar apontando para uma versão anterior. Confira 'ecr:PutImage' na service connection."
+                if [ -s /tmp/ecr_puttag.err ]; then
+                  echo "  Erro retornado pelo ECR:"
+                  head -c 500 /tmp/ecr_puttag.err
+                  echo
+                fi
+              fi
+              ;;
+          esac
+        fi
+
+        echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_KIND]image"
+        echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_TAG]$TAG"
+        echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_URI]$IMAGE_URI"
+        echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_DIGEST]$DIGEST"
+        echo "##vso[task.setvariable variable=RELEASE_IMAGE_REF_BY_DIGEST]$IMAGE_REF_BY_DIGEST"
+        echo "##vso[task.setvariable variable=RELEASE_MOVING_TAG]$PROD_TAG"
+        echo "##vso[task.setvariable variable=RELEASE_SITE_URL]"

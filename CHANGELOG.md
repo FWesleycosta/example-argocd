@@ -159,6 +159,73 @@ flowchart TD
 
 ---
 
+## [2.4.0] - 2026-08-19
+
+Registro de release (DORA) para o **stack de frontend**: `Deploy_hml`/`Deploy_prd` do
+`spa-frontend` passam a gravar o `.deploy/history.jsonl` e renderizar o `DEPLOY-PRD.md` do app,
+com os mesmos perfis do backend. Para isso o registro foi separado em dois steps — **identidade
+do artefato** (`resolve-artifact-image` | `resolve-artifact-static`) e **registro**
+(`record-prod-release`, agora sem lógica por tipo) —, evitando duplicar o registro nos dois
+stacks. **Compatível (MINOR)**: nenhum parâmetro de `stacks/*` mudou; o backend mantém o
+comportamento e a saída anteriores, exceto por um campo **aditivo** no JSONL. Origem: item 3 da
+auditoria de paridade backend × frontend.
+
+### Alterado (refactor interno — steps, não contrato de app)
+
+- **`steps/record-prod-release.yaml` passou a fazer SÓ registro.** A lógica de ECR (resolver
+  digest, mover tag móvel `prod`) saiu dele e foi para um step próprio; o record não usa mais
+  AWS (task `Bash@3`, sem `serviceAccount/awsRegion/awsAccID`). Ele lê a identidade do artefato
+  das variáveis **`RELEASE_*`** exportadas pelo step anterior, via defaults `$(...)`:
+  `artifactKind`, `artifactTag`, `artifactUri`, `artifactDigest`, `artifactRefByDigest`,
+  `movingTag`, `siteUrl` (todos sobrescrevíveis). Sem `resolve-*` antes: warning e
+  `artifact.kind: unknown`, nunca falha. Parâmetros removidos do record: `serviceAccount`,
+  `awsRegion`, `awsAccID`, `imageName` (→ `appName`), `imageTag`, `prodTag` — **internos**:
+  os únicos chamadores (`stages/deploy.yaml`, `stages/rollback.yaml`, `stages/deploy-frontend.yaml`)
+  foram atualizados; nenhum parâmetro de `stacks/*` mudou.
+- **JSONL (`schema_version` segue `1`, campo aditivo)**: toda entrada — backend inclusive — passa
+  a ter `artifact: {kind: "image"|"static", site_url: string|null}`. `latest.json` ganha
+  `artifact_kind` e `site_url`. Consultas `jq` existentes não quebram (entradas antigas sem
+  `artifact` continuam válidas; o render usa `.artifact.site_url // ""`). Rótulos do resumo, do
+  `latest.*` e do `DEPLOY-PRD.md` seguem o `kind` ("Artefato (build)" / "Local" / "Site" em vez
+  de "Imagem (tag ECR)" / "Tag móvel").
+
+### Adicionado
+
+- **`steps/resolve-artifact-image.yaml`** (backend EKS) — identidade de imagem no ECR: digest
+  (`ecr:DescribeImages`) e tag móvel `prodTag` (`ecr:BatchGetImage` + `PutImage`; `''` = não
+  mover). Script movido do record, comportamento idêntico. Exporta
+  `RELEASE_ARTIFACT_KIND=image`, `RELEASE_ARTIFACT_{TAG,URI,DIGEST}`, `RELEASE_IMAGE_REF_BY_DIGEST`,
+  `RELEASE_MOVING_TAG`, `RELEASE_SITE_URL=''`. Best-effort.
+- **`steps/resolve-artifact-static.yaml`** (frontend S3/CloudFront) — identidade de artefato
+  publicado: `RELEASE_ARTIFACT_DIGEST` = `sha256:` da árvore de arquivos de **`artifactPath`**
+  (caminho relativo + sha256 de cada arquivo, ordenação `LC_ALL=C`, excluindo os nomes em
+  **`artifactDigestExcludes`**), `RELEASE_ARTIFACT_URI` = **`artifactLocation`** (ex.:
+  `s3://<bucket>`), `RELEASE_ARTIFACT_TAG` = `Build.BuildId` (identidade do build — liga
+  `hml` → `prd`), `RELEASE_SITE_URL` = `siteUrl`; sem tag móvel. Bash puro, sem AWS.
+- **`stages/deploy-frontend.yaml`**: após o motor, em **`prd`** (perfil completo: carimbo do run,
+  captura de aprovador, artefato `prod-release`, `history.jsonl` + `DEPLOY-PRD.md`) e **`hml`**
+  (perfil reduzido: `stampRun/captureApproval: false`, artefato `hml-release`), encadeia
+  `resolve-artifact-static` (`artifactPath: $(Pipeline.Workspace)/frontend-dist`,
+  `artifactLocation: s3://$(FRONT_BUCKET)`, `artifactDigestExcludes: env-config.js` — gerado por
+  ambiente, excluído para que o mesmo build tenha o **mesmo digest em hml e prd**, prova de build
+  único —, `siteUrl: $(FRONT_SITE_URL)`) → `record-prod-release`. `hotfix/*` herda por passar
+  pelo mesmo stage. Best-effort como no backend. O record clona o repo do app por conta própria
+  (`System.AccessToken`) — não exige `checkout: self` no job.
+- **`stages/deploy.yaml`** e **`stages/rollback.yaml`** (backend): passam a encadear
+  `resolve-artifact-image` (hml com `prodTag: ''`; rollback com `imageTag` do parâmetro) →
+  `record-prod-release`. Saída do JSONL/`DEPLOY-PRD.md` idêntica à anterior + campo `artifact`.
+
+### Notas de adoção
+
+- Mesmos pré-requisitos de portal do backend: **"Allow scripts to access the OAuth token"** e
+  **Contribute** do Build Service no repo do app (ou o registro vira PR `release-record/<buildId>`).
+  O frontend não precisa de permissões ECR; no backend, as de hml (`ecr:DescribeImages`/
+  `BatchGetImage`) agora são exigidas pelo `resolve-artifact-image`.
+- Para o dashboard DORA, filtre por `artifact.kind` quando quiser separar imagens de artefatos
+  estáticos; `image.tag` e `source.committed_at` têm a mesma semântica nos dois perfis.
+
+---
+
 ## [2.3.0] - 2026-08-18
 
 Novo stack **`stacks/spa-frontend.yaml`**: esteira de **frontend SPA** (React/Vite/Angular) em
@@ -296,8 +363,8 @@ no backend é a extração do job de exclusão de branch para `utils/delete-bran
   CNAME/alias `domain_name` → `cloudfront_domain_name` (DNS fora deste root).
 - Publicar o módulo `aws_cloudfront_distribution` no repositório `Fibra.DevOps.Terraform`
   (o `source` do root já aponta para lá) — até então o `terraform init` do frontend falha.
-- `record-prod-release` para frontend (hoje é ECR-cêntrico), rollback por artefato de run
-  anterior, SCA de dependências JS (`npm audit`/Veracode SCA), bloqueio de segredos em
+- ~~`record-prod-release` para frontend (hoje é ECR-cêntrico)~~ (feito em 2.4.0), rollback por
+  artefato de run anterior, SCA de dependências JS (`npm audit`/Veracode SCA), bloqueio de segredos em
   `runtime_vars`/`env_vars`, smoke test pós-deploy e `npmAuthenticate` para feed privado.
 - Pré-requisitos de portal para o Sonar do frontend: service connection `SonarQube` e o
   projeto `<repo>-key` (criado no primeiro run se o token tiver permissão), iguais ao backend.
