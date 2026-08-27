@@ -1,4 +1,10 @@
 parameters:
+  - name: authMode
+    type: string
+    default: 'pat'            # comportamento atual preservado
+    values:
+      - 'pat'
+      - 'systemToken'
   - name: orgUrl
     type: string
     default: 'https://dev.azure.com/bancofibra/'
@@ -20,16 +26,26 @@ steps:
       script: |
         set -euo pipefail
 
-        if [ -z "${GIT_PAT:-}" ]; then
-          echo "##[error]A variável '${{ parameters.patVariable }}' está vazia."
-          echo "##[error]Confirme que o variable group com o PAT está vinculado a este pipeline."
+        # Seleciona o token conforme o modo
+        if [ "${AUTH_MODE}" = "systemToken" ]; then
+          TOKEN="${SYSTEM_ACCESSTOKEN:-}"
+          TOKEN_ORIGEM="System.AccessToken"
+          ERRO_VAZIO="System.AccessToken indisponível. Verifique se o step tem 'env: SYSTEM_ACCESSTOKEN' e se o job permite acesso ao token."
+        else
+          TOKEN="${GIT_PAT:-}"
+          TOKEN_ORIGEM="PAT (variável '${PAT_VARIABLE_NAME}')"
+          ERRO_VAZIO="A variável '${PAT_VARIABLE_NAME}' está vazia. Confirme que o variable group com o PAT está vinculado a este pipeline."
+        fi
+
+        if [ -z "${TOKEN}" ]; then
+          echo "##[error]${ERRO_VAZIO}"
           exit 1
         fi
 
-        echo "Token presente (${#GIT_PAT} caracteres)"
+        echo "Autenticando via ${TOKEN_ORIGEM} (${#TOKEN} caracteres)"
 
         ORG_NO_SCHEME="${ORG_URL#https://}"
-        git config --global url."https://pat:${GIT_PAT}@${ORG_NO_SCHEME}".insteadOf "${ORG_URL}"
+        git config --global url."https://x-access-token:${TOKEN}@${ORG_NO_SCHEME}".insteadOf "${ORG_URL}"
 
         git config --global core.askPass ""
         git config --global credential.helper ""
@@ -43,14 +59,21 @@ steps:
             echo "Acesso confirmado"
           else
             echo "##[error]Falha no acesso a ${PROBE_REPO}."
-            echo "##[error]Verifique se o PAT está válido e tem escopo de leitura em Code."
+            if [ "${AUTH_MODE}" = "systemToken" ]; then
+              echo "##[error]Verifique se o Build Service deste projeto tem Read no repositório de módulos."
+            else
+              echo "##[error]Verifique se o PAT está válido e tem escopo de leitura em Code."
+            fi
             exit 1
           fi
         else
           echo "Sonda de acesso desabilitada (verifyAccess=false)."
         fi
     env:
+      AUTH_MODE: ${{ parameters.authMode }}
       GIT_PAT: $(${{ parameters.patVariable }})
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      PAT_VARIABLE_NAME: ${{ parameters.patVariable }}
       ORG_URL: ${{ parameters.orgUrl }}
       PROBE_REPO: ${{ parameters.probeRepo }}
       VERIFY_ACCESS: ${{ parameters.verifyAccess }}
