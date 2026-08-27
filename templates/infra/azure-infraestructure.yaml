@@ -1,0 +1,153 @@
+parameters:
+  - name: lambda_description
+    type: string
+  - name: dotnet_version
+    type: string
+    default: "10.0.x"
+  - name: python_version
+    type: string
+    default: "3.12"
+  - name: product_repo
+    type: string
+
+
+variables:
+  - template: templates/variables/global-variables.yaml
+  - group: git-credentials
+
+
+stages:
+#- stage: SonarQube
+#  displayName: SonarQube Scan
+#  jobs:
+#    - template: templates/sonarqube/qa-sonar-runtime.yaml@pipelines
+#      parameters:
+#        pythonVersion: ${{ parameters.python_version }}
+#        dotnetVersion: ${{ parameters.dotnet_version }}
+
+- stage: Build
+  displayName: "Build & Package"
+#  dependsOn: SonarQube
+#  condition: succeeded()
+  jobs:
+    - job: BuildAndZip
+      pool:
+        vmImage: ubuntu-latest
+      variables:
+        - name: SYSTEM_ACCESSTOKEN
+          value: $(System.AccessToken)
+      steps:
+        - template: templates/infra/build.yaml@pipelines
+          parameters:
+            dotnet_version: ${{ parameters.dotnet_version }}
+            python_version: ${{ parameters.python_version }}
+
+- stage: DEV
+  displayName: DEV
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: TerraformDev
+    displayName: 'Create Resource Terraform DEV'
+    environment: dev
+    pool:
+      vmImage: ubuntu-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/infra/terraform-infra.yaml@pipelines
+            parameters:
+              service_account: ${{ variables.DevServiceAccountTerraform }}
+              aws_region:  ${{ variables.AwsRegion }}
+              tfstates_bucket: ${{ variables.DevtfstatesBucket }}
+              product_repo: ${{ parameters.product_repo }}
+              lambda_description: ${{ parameters.lambda_description }}
+              subnets_privates: ${{ variables.DevSubnetsPrivate }}
+              vpc_id: ${{ variables.DevVpcID }}
+              environment: dev
+
+- stage: Veracode
+  displayName: Veracode SAST
+  dependsOn: DEV
+  condition: succeeded()
+  jobs:
+    - job: SecurityScan
+      displayName: Veracode SAST
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+        - checkout: self
+        - template: templates/scanner-veracode.yaml
+          parameters:
+            appName: ${Build.Repository.Name}   
+
+- stage: HML
+  displayName: HML
+  dependsOn: Veracode
+  condition: succeeded()
+  jobs:
+  - deployment: TerraformHml
+    displayName: 'Create Resource Terraform HML'
+    environment: hml
+    pool:
+      vmImage: ubuntu-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/infra/terraform-infra.yaml@pipelines
+            parameters:
+              service_account: ${{ variables.HmlServiceAccountTerraform }}
+              aws_region:  ${{ variables.AwsRegion }}
+              tfstates_bucket: ${{ variables.HmltfstatesBucket }}
+              product_repo: ${{ parameters.product_repo }}
+              lambda_description: ${{ parameters.lambda_description }}
+              subnets_privates: ${{ variables.HmlSubnetsPrivate }}
+              vpc_id: ${{ variables.HmlVpcID }}
+              environment: hml
+
+- stage: PR_HML
+  displayName: PR DEV -> HML
+  dependsOn: HML
+  condition: succeeded()
+  jobs:
+  - template: templates/utils/create-pullrequest.yaml
+    parameters:
+      sourceBranch: 'develop'
+      targetBranch: 'homolog'
+
+- stage: PRD
+  displayName: PRD
+  dependsOn: PR_HML
+  condition: succeeded()
+  jobs:
+  - deployment: TerraformPRD
+    displayName: 'Create Resource Terraform PRD'
+    environment: prd
+    pool:
+      vmImage: ubuntu-latest
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: templates/infra/terraform-infra.yaml@pipelines
+            parameters:
+              service_account: ${{ variables.PrdServiceAccountTerraform }}
+              aws_region:  ${{ variables.PrdAwsRegion }}
+              tfstates_bucket: ${{ variables.PrdtfstatesBucket }}
+              product_repo: ${{ parameters.product_repo }}
+              lambda_description: ${{ parameters.lambda_description }}
+              subnets_privates: ${{ variables.PrdSubnetsPrivate }}
+              vpc_id: ${{ variables.PrdVpcID }}
+              environment: prd
+
+- stage: PR_PRD
+  displayName: PR HML -> PRD
+  dependsOn: PRD
+  condition: succeeded()
+  jobs:
+  - template: templates/utils/create-pullrequest.yaml
+    parameters:
+      sourceBranch: 'homolog'
+      targetBranch: 'main'
