@@ -17,6 +17,9 @@ parameters:
   - name: verifyAccess
     type: boolean
     default: true
+  - name: debug
+    type: boolean
+    default: false            # ligue só durante a investigação
 
 steps:
   - task: Bash@3
@@ -26,7 +29,10 @@ steps:
       script: |
         set -euo pipefail
 
-        # Seleciona o token conforme o modo
+        # Função para mascarar o token em qualquer saída de debug
+        mask() { sed "s|${TOKEN}|***TOKEN***|g"; }
+
+        # ── Seleção do token ─────────────────────────────────────────────
         if [ "${AUTH_MODE}" = "systemToken" ]; then
           TOKEN="${SYSTEM_ACCESSTOKEN:-}"
           TOKEN_ORIGEM="System.AccessToken"
@@ -42,8 +48,48 @@ steps:
           exit 1
         fi
 
+        # Detecta macro não expandida (variable group ausente): valor literal '$(...)'
+        case "${TOKEN}" in
+          '$('*)
+            echo "##[error]O valor do token é a macro não expandida '${TOKEN}'."
+            echo "##[error]A variável '${PAT_VARIABLE_NAME}' não existe neste pipeline (variable group não vinculado?)."
+            exit 1
+            ;;
+        esac
+
         echo "Autenticando via ${TOKEN_ORIGEM} (${#TOKEN} caracteres)"
 
+        # ── Bloco de debug: contexto do job ──────────────────────────────
+        if [ "${DEBUG_MODE}" = "True" ] || [ "${DEBUG_MODE}" = "true" ]; then
+          echo "##[group]DEBUG: contexto do job"
+          echo "Agente          : ${AGENT_NAME:-?} (${AGENT_OS:-?})"
+          echo "git version     : $(git --version)"
+          echo "Pipeline        : ${BUILD_DEFINITIONNAME:-?} | run ${BUILD_BUILDNUMBER:-?}"
+          echo "Repo do build   : ${BUILD_REPOSITORY_NAME:-?} @ ${BUILD_SOURCEBRANCH:-?}"
+          echo "Projeto         : ${SYSTEM_TEAMPROJECT:-?}"
+          echo ""
+          echo "→ Identidade autenticada pelo token:"
+          HTTP_CODE=$(curl -s -o /tmp/conn.json -w "%{http_code}" -u ":${TOKEN}" \
+            "${ORG_URL%/}/_apis/connectionData?api-version=7.1-preview" || echo "curl_fail")
+          echo "  HTTP ${HTTP_CODE}"
+          if [ "${HTTP_CODE}" = "200" ]; then
+            python3 - <<'PYEOF' < /tmp/conn.json || cat /tmp/conn.json | head -c 500
+        import sys, json
+        d = json.load(sys.stdin)
+        u = d.get("authenticatedUser", {})
+        print(f"  Identidade    : {u.get('providerDisplayName', '?')}")
+        print(f"  Id            : {u.get('id', '?')}")
+        PYEOF
+          else
+            echo "  (connectionData falhou — token pode estar inválido ou sem acesso à org)"
+          fi
+          echo ""
+          echo "→ Reescritas git configuradas:"
+          git config --global --get-regexp 'url\..*\.insteadof' | mask || echo "  (nenhuma)"
+          echo "##[endgroup]"
+        fi
+
+        # ── Configuração da reescrita ────────────────────────────────────
         ORG_NO_SCHEME="${ORG_URL#https://}"
         git config --global url."https://x-access-token:${TOKEN}@${ORG_NO_SCHEME}".insteadOf "${ORG_URL}"
 
@@ -53,16 +99,45 @@ steps:
 
         echo "Reescrita configurada para: ${ORG_URL}"
 
+        # ── Sonda de acesso ──────────────────────────────────────────────
         if [ "${VERIFY_ACCESS}" = "True" ] || [ "${VERIFY_ACCESS}" = "true" ]; then
           echo "Testando acesso a ${PROBE_REPO}..."
-          if git ls-remote "${PROBE_REPO}" HEAD >/dev/null 2>&1; then
+
+          # Traces do git apenas em modo debug (vão para stderr, capturado abaixo)
+          if [ "${DEBUG_MODE}" = "True" ] || [ "${DEBUG_MODE}" = "true" ]; then
+            export GIT_TRACE=1
+            export GIT_CURL_VERBOSE=1
+          fi
+
+          set +e
+          PROBE_OUTPUT=$(git ls-remote "${PROBE_REPO}" HEAD 2>&1)
+          PROBE_STATUS=$?
+          set -e
+          unset GIT_TRACE GIT_CURL_VERBOSE
+
+          if [ ${PROBE_STATUS} -eq 0 ]; then
             echo "Acesso confirmado"
+            if [ "${DEBUG_MODE}" = "True" ] || [ "${DEBUG_MODE}" = "true" ]; then
+              echo "##[group]DEBUG: saída completa do ls-remote"
+              echo "${PROBE_OUTPUT}" | mask
+              echo "##[endgroup]"
+            fi
           else
-            echo "##[error]Falha no acesso a ${PROBE_REPO}."
-            if [ "${AUTH_MODE}" = "systemToken" ]; then
-              echo "##[error]Verifique se o Build Service deste projeto tem Read no repositório de módulos."
+            echo "##[error]git ls-remote falhou (exit ${PROBE_STATUS})."
+            echo "##[group]Saída completa do git (token mascarado)"
+            echo "${PROBE_OUTPUT}" | mask
+            echo "##[endgroup]"
+
+            # Classificação automática do erro
+            if echo "${PROBE_OUTPUT}" | grep -q "TF401019"; then
+              echo "##[error]DIAGNÓSTICO: o token NÃO tem este repositório no escopo, ou a identidade não tem Read."
+              echo "##[error]Com 'Protect access to repositories in YAML pipelines' ativo, o repo PRECISA estar declarado em resources.repositories DO YAML EXECUTADO — verifique o branch/commit deste run e se há um 'checkout' que o referencie."
+            elif echo "${PROBE_OUTPUT}" | grep -qiE "authentication failed|401"; then
+              echo "##[error]DIAGNÓSTICO: falha de autenticação — o token está inválido, expirado ou vazio no momento do uso."
+            elif echo "${PROBE_OUTPUT}" | grep -qiE "could not resolve host|connection timed out|proxy"; then
+              echo "##[error]DIAGNÓSTICO: problema de rede/proxy do agente, não de permissão."
             else
-              echo "##[error]Verifique se o PAT está válido e tem escopo de leitura em Code."
+              echo "##[error]DIAGNÓSTICO: erro não classificado — analise a saída acima."
             fi
             exit 1
           fi
@@ -77,3 +152,4 @@ steps:
       ORG_URL: ${{ parameters.orgUrl }}
       PROBE_REPO: ${{ parameters.probeRepo }}
       VERIFY_ACCESS: ${{ parameters.verifyAccess }}
+      DEBUG_MODE: ${{ parameters.debug }}
