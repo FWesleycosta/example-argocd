@@ -102,7 +102,7 @@ steps:
             REPLACES=$(jq '[.resource_changes[]? | select(.change.actions | index("delete")) | select(.change.actions | index("create"))] | length' plan.json)
             DELETES=$(jq '[.resource_changes[]? | select(.change.actions == ["delete"])] | length' plan.json)
             {
-              echo "## 🔍 planOnly — Terraform plan de \`${{ parameters.environment }}\` (NADA foi aplicado nem publicado)"
+              echo "## planOnly — Terraform plan de \`${{ parameters.environment }}\` (NADA foi aplicado nem publicado)"
               echo ""
               echo "- **App**: \`$(Build.Repository.Name)\` · **Branch**: \`$(Build.SourceBranch)\` · **Disparado por**: $(Build.RequestedFor)"
               echo "- **import**: ${IMPORTS} · **create**: ${CREATES} · **update**: ${UPDATES} · **replace**: ${REPLACES} · **delete**: ${DELETES}"
@@ -185,7 +185,7 @@ steps:
               --cache-control "no-cache, no-store, must-revalidate" --content-type "application/javascript"
             aws s3 cp "$DIST/index.html" "s3://$BUCKET/index.html" \
               --cache-control "no-cache, no-store, must-revalidate" --content-type "text/html"
-            echo "##[section]✔ publicado em s3://$BUCKET"
+            echo "##[section]publicado em s3://$BUCKET"
 
       - ${{ if eq(parameters.cloudfront, 'true') }}:
           - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
@@ -205,4 +205,4 @@ steps:
                   --query 'Invalidation.Id' --output text)
                 echo "Invalidation $INV_ID criada na distribuicao $DIST_ID. Aguardando conclusao..."
                 aws cloudfront wait invalidation-completed --distribution-id "$DIST_ID" --id "$INV_ID"
-                echo "##[section]✔ cache invalidado. Site: $(FRONT_SITE_URL)"
+                echo "##[section]cache invalidado. Site: $(FRONT_SITE_URL)"

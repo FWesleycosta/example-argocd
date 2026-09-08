@@ -34,7 +34,7 @@ steps:
 
         echo "##[section]Aguardando rollout de '$APP' em '$NS' (timeout ${{ parameters.timeoutSeconds }}s)"
         if kubectl rollout status deployment/"$APP" -n "$NS" --timeout=${{ parameters.timeoutSeconds }}s; then
-          echo "##[section]✔ Rollout concluído — nova revisão saudável."
+          echo "##[section]Rollout concluído — nova revisão saudável."
           exit 0
         fi
 
