@@ -24,6 +24,11 @@ parameters:
   - name: artifactName
     type: string
     default: 'frontend-dist'
+  # true = o stage para no `terraform plan` (Summary + artefato tf-plan-<env>); não aplica, não
+  # publica no S3 e não registra release. Revisão do 1º run de app migrado (import de recursos).
+  - name: planOnly
+    type: boolean
+    default: false
 
 stages:
   - stage: Deploy_${{ parameters.environment }}
@@ -76,6 +81,8 @@ stages:
                       pruneStaleFiles: 'true'
                     ${{ else }}:
                       pruneStaleFiles: 'false'
+                    ${{ if eq(parameters.planOnly, true) }}:
+                      planOnly: 'true'
                     runtime_vars: ${{ parameters.runtime_vars }}
                     distDir: '$(Pipeline.Workspace)/${{ parameters.artifactName }}'
 
@@ -83,7 +90,8 @@ stages:
                 # hml reduzido); só muda a identidade: artefato estático (sem ECR), digest = sha256
                 # do dist sem o env-config.js (gerado por ambiente), referência = bucket publicado.
                 # Best-effort: nunca falha o deploy. FRONT_BUCKET/FRONT_SITE_URL vêm do motor acima.
-                - ${{ if in(parameters.environment, 'prd', 'hml') }}:
+                # planOnly: nada foi publicado → não há release a registrar.
+                - ${{ if and(in(parameters.environment, 'prd', 'hml'), eq(parameters.planOnly, false)) }}:
                     - template: ../steps/resolve-artifact-static.yaml
                       parameters:
                         artifactPath: '$(Pipeline.Workspace)/${{ parameters.artifactName }}'
