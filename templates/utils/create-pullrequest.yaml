@@ -118,7 +118,7 @@ jobs:
               echo "$(date -Is) status=$FINAL_STATUS mergeStatus=$CUR_MERGE"
 
               if [ "$FINAL_STATUS" = "completed" ]; then
-                echo "##[section]✔ PR #$PR_ID concluido com sucesso ($SOURCE -> $TARGET)"
+                echo "##[section]PR #$PR_ID concluido com sucesso ($SOURCE -> $TARGET)"
                 exit 0
               fi
               if [ "$FINAL_STATUS" = "abandoned" ] || [ "$CUR_MERGE" = "conflicts" ] || [ "$CUR_MERGE" = "failure" ]; then
@@ -159,7 +159,7 @@ jobs:
 
           [ "$FINAL_STATUS" = "completed" ] || fail "PR #$PR_ID nao atingiu o status 'completed' a tempo (status=$FINAL_STATUS)."
 
-          echo "##[section]✔ PR #$PR_ID concluido com sucesso ($SOURCE -> $TARGET)"
+          echo "##[section]PR #$PR_ID concluido com sucesso ($SOURCE -> $TARGET)"
         env:
           AZURE_DEVOPS_EXT_PAT: $(System.AccessToken)
           REVIEWERS_RAW: ${{ parameters.reviewers }}
