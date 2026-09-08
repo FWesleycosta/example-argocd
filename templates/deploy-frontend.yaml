@@ -68,6 +68,16 @@ steps:
         dns_name: ${{ parameters.dns_name }}
         cloudfront_enabled: '${{ parameters.cloudfront }}'
         access_logging_bucket: ${{ parameters.accessLoggingBucket }}
+      # Migração de app que já tinha Terraform próprio: bucket `<app>-<env>` e OAC `oac-<bucket>`
+      # já existem na conta com o state novo vazio → import blocks (no-op em steady state).
+      postInitSteps:
+        - template: steps/terraform-import-frontend.yaml
+          parameters:
+            serviceAccount: ${{ parameters.serviceAccountTerraform }}
+            awsRegion: ${{ parameters.awsRegion }}
+            workingDirectory: ${{ parameters.terraformWorkDir }}
+            cloudfront: ${{ parameters.cloudfront }}
+            accessLoggingBucket: ${{ parameters.accessLoggingBucket }}
 
   - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
     displayName: 'Ler outputs do Terraform'
