@@ -1,0 +1,98 @@
+parameters:
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: tfstatesBucket
+    type: string
+  - name: keyBucketPath
+    type: string
+  - name: workDir
+    type: string
+  - name: folder
+    type: string
+    default: terraform
+  - name: environment
+    type: string
+
+
+steps:
+  - bash: |
+      cat > backend.tf <<EOF
+      terraform {
+        backend "s3" {
+          bucket  = "${{ parameters.tfstatesBucket }}"
+          key     = "tfstate-$(Build.Repository.Name)-${{ parameters.environment}}"
+          region  = "${{ parameters.awsRegion }}"
+          encrypt = true
+        }
+      }
+      EOF
+    workingDirectory: ${{ parameters.workDir }}
+    displayName: "${{ parameters.folder }}-Configure Remote State (S3)"
+
+  - task: TerraformInstaller@1
+    displayName: "${{ parameters.folder }}-Install Terraform"
+    continueOnError: true
+    inputs:
+      terraformVersion: 'latest'
+
+  - task: TerraformTask@5
+    displayName: "${{ parameters.folder }}-Terraform Init"
+    continueOnError: false
+    inputs:
+      provider: 'aws'
+      command: 'init'
+      commandOptions: '-upgrade'
+      backendServiceAWS:    ${{ parameters.serviceAccount }}
+      backendAWSBucketName: ${{ parameters.tfstatesBucket }}
+      backendAWSKey:        tfstate-$(Build.Repository.Name)-${{ parameters.keyBucketPath }}
+      workingDirectory:     ${{ parameters.workDir }}
+
+  - task: TerraformTask@5
+    displayName: "${{ parameters.folder }}-Terraform Validate"
+    continueOnError: false
+    inputs:
+      provider: 'aws'
+      command: 'validate'
+      environmentServiceNameAWS: ${{ parameters.serviceAccount }}
+      workingDirectory:          ${{ parameters.workDir }}
+
+  - task: TerraformTask@5
+    name: terraformPlan_${{ replace(parameters.folder, '/', '_') }}
+    displayName: "${{ parameters.folder }}-Terraform Plan"
+    continueOnError: false
+    inputs:
+      provider: 'aws'
+      command:  'plan'
+      commandOptions: >-
+        -out=tfplan
+        -detailed-exitcode
+        -var-file="${{ parameters.workDir }}/terraform.auto.tfvars"
+      backendServiceAWS:         ${{ parameters.serviceAccount }}
+      backendAWSBucketName:      ${{ parameters.tfstatesBucket }}
+      environmentServiceNameAWS: ${{ parameters.serviceAccount }}
+      workingDirectory:          ${{ parameters.workDir }}
+
+  - script: |
+      echo "##[section] Saída do terraform show (o que será criado/modificado):"
+      cd "${{ parameters.workDir }}"
+      /opt/hostedtoolcache/terraform/$(ls /opt/hostedtoolcache/terraform/ | tail -1)/x64/terraform show -no-color tfplan || \
+      terraform show -no-color tfplan || \
+      echo "##[warning] terraform show falhou — verifique se tfplan foi gerado"
+    displayName: "${{ parameters.folder }}-Show Plan Details"
+    continueOnError: true
+
+  - task: TerraformTask@5
+    displayName: "${{ parameters.folder }}-Terraform Apply"
+    condition: >
+      and(
+        eq('${{ parameters.folder }}', 'terraform'),
+        eq(variables['terraformPlan_${{ replace(parameters.folder, '/', '_') }}.changesPresent'], 'true')
+      )
+    inputs:
+      provider: 'aws'
+      command:  'apply'
+      commandOptions: '-auto-approve tfplan'
+      environmentServiceNameAWS: ${{ parameters.serviceAccount }}
+      workingDirectory:          ${{ parameters.workDir }}
