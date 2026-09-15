@@ -1,4 +1,3 @@
-# ---- injetadas pela esteira (_app.auto.tfvars.json) ----
 variable "app_name" {
   description = "Nome da aplicação (Build.Repository.Name)"
   type        = string
@@ -14,7 +13,6 @@ variable "project_name" {
   type        = string
 }
 
-# ---- injetadas pela esteira (_pipeline.auto.tfvars.json / deploy-frontend.yaml) ----
 variable "environment" {
   description = "Ambiente: dev, hml, prd, sdx"
   type        = string
@@ -65,7 +63,6 @@ variable "owner" {
   default     = ""
 }
 
-# ---- opcionais (defaults da plataforma) ----
 variable "base_domain" {
   description = "Domínio base público"
   type        = string
@@ -92,6 +89,17 @@ variable "price_class" {
   validation {
     condition     = contains(["PriceClass_All", "PriceClass_200", "PriceClass_100"], var.price_class)
     error_message = "price_class deve ser PriceClass_All, PriceClass_200 ou PriceClass_100."
+  }
+}
+
+variable "minimum_protocol_version" {
+  description = "Security policy do viewer certificate do CloudFront (minimum_protocol_version). Default TLSv1.3_2025."
+  type        = string
+  default     = "TLSv1.3_2025"
+
+  validation {
+    condition     = contains(["TLSv1", "TLSv1_2016", "TLSv1.1_2016", "TLSv1.2_2018", "TLSv1.2_2019", "TLSv1.2_2021", "TLSv1.2_2025", "TLSv1.3_2025"], var.minimum_protocol_version)
+    error_message = "minimum_protocol_version deve ser um dos valores suportados pelo CloudFront: TLSv1, TLSv1_2016, TLSv1.1_2016, TLSv1.2_2018, TLSv1.2_2019, TLSv1.2_2021, TLSv1.2_2025 ou TLSv1.3_2025."
   }
 }
 
