@@ -108,7 +108,7 @@ stages:
 
                       echo "##[section]Deletando namespace '$NS' (workloads, ingress, configmaps)..."
                       kubectl delete namespace "$NS" --ignore-not-found=true --timeout=600s
-                      echo "##[section]✔ Namespace '$NS' removido (ou já não existia)."
+                      echo "##[section]Namespace '$NS' removido (ou já não existia)."
 
                 - template: ../steps/terraform-destroy.yaml
                   parameters:

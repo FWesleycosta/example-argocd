@@ -160,6 +160,81 @@ flowchart TD
 
 ---
 
+## [2.7.0] - 2026-09-08
+
+**Migração de frontends que já tinham Terraform próprio**: ao trocar a pipeline de um SPA para
+o `stacks/spa-frontend.yaml`, o `terraform apply` falhava com **`BucketAlreadyOwnedByYou`**
+(bucket `<app>-<env>`) e **`OriginAccessControlAlreadyExists`** (OAC `oac-<bucket>`, nome
+único por conta). Causa: a esteira gera o backend do zero (`tfstate-<app>-<env>` /
+`<app>/terraform.tfstate`, bucket criado vazio pelo `ensureBackend`) e o `init -reconfigure`
+não migra nada do state antigo — para o Terraform, o app nunca foi aplicado, e recursos de nome
+determinístico já existem na conta. A esteira agora **adota** esses recursos via `import`
+blocks antes do plan, e ganha um **`planOnly`** para revisar o 1º run. **Compatível (MINOR)**:
+parâmetros novos com default; apps pinados não mudam de comportamento (o import é no-op quando
+o state já gerencia os recursos).
+
+### Adicionado
+
+- **`steps/terraform-import-frontend.yaml`** — roda entre `init` e `validate` (via
+  `postInitSteps`, abaixo). Para cada endereço do root `manifests/terraform-frontend`, se o
+  recurso **existe na AWS** e **não está no state** (`terraform state list`), gera um bloco
+  `import { to, id }` em `_migrate_imports.tf`: `aws_s3_bucket.site` e seus sub-recursos
+  (public access block, versioning, SSE, ownership controls, policy, logging — todos pelo nome
+  do bucket; sub-recurso sem configuração na AWS **não** é importado, o apply cria via `Put*`
+  sem colisão), `module.cloudfront[0].aws_cloudfront_origin_access_control.this[0]` (lookup
+  por nome `oac-<bucket>`) e `module.cloudfront[0].aws_cloudfront_distribution.this[0]`
+  (lookup por origem `<bucket>.s3*`). A adoção passa pelo **plan** (aparece como
+  `N to import` ao lado dos updates) e é efetivada no **apply** — nada escreve no state fora
+  do fluxo. **Idempotente**: steady state = 1 `state list`, zero chamadas AWS.
+  Guardas: bucket com `403` (nome global de outro dono) → **falha**; **2+ distribuições** com
+  origem no bucket → **falha** (import ambíguo); `cdn.cloudfront=false` com distribuição/OAC
+  existentes → **warning** (a bucket policy deixa de autorizar o OAC e a distribuição órfã
+  para de servir); service connection sem `cloudfront:ListDistributions` /
+  `ListOriginAccessControls` → **warning** e adoção de CloudFront pulada (comportamento
+  anterior). Requer Terraform ≥ 1.5 (esteira usa 1.9.8).
+- **`steps/terraform-apply.yaml`**: parâmetro **`postInitSteps`** (`stepList`, default `[]`)
+  — steps injetados entre `terraform init` e `validate` (state acessível, plan ainda não
+  rodou). Genérico; o backend não usa (ainda).
+- **`stacks/spa-frontend.yaml`** → `stages/deploy-frontend.yaml` → `deploy-frontend.yaml` →
+  `hotfix/hotfix-frontend.yaml`: parâmetro **`planOnly`** (boolean, default `false`, exposto
+  no "Run pipeline"). Com `true`, cada `Deploy_<env>` **para no `terraform plan`**: publica
+  o resumo na aba **Summary** (contagem de import/create/update/replace/delete + lista de
+  endereços, warning se houver replace/delete) e o plan completo no artefato
+  **`tf-plan-<env>`**; **não** aplica, **não** publica no S3, **não** invalida CloudFront e
+  **não** registra release (`resolve-artifact-static`/`record-prod-release` ficam fora do
+  stage). O Environment gate continua valendo (o stage é o mesmo). Para aplicar, rode de novo
+  sem o parâmetro.
+
+### Notas de migração (procedimento por app)
+
+1. Apontar a pipeline do app para o stack **e rodar com `planOnly: true`** (manual). Ler na
+   Summary: os `N to import` esperados (bucket + sub-recursos + OAC + distribuição) e os
+   **updates in-place de convergência** para a paved road (bucket policy com OAC restrito ao
+   ARN, TLS 1.2, managed cache/headers policies, fallback SPA, alias
+   `<dns_name>-<env>.<base_domain>`). Nenhum deles força replacement — nome do bucket e id da
+   distribuição são os mesmos — mas mudam o comportamento do site.
+2. Se o plan trouxer **replace/delete inesperado** (o Summary avisa), parar e ajustar antes.
+   Alias diferente do antigo ⇒ reapontar o **DNS** por fora (a esteira não gerencia DNS).
+3. Rodar sem `planOnly` → o apply importa + converge. Depois, **aposentar a pipeline e o state
+   antigos do app**: dois states nos mesmos recursos é risco de destroy cruzado. Recursos que
+   o root novo não declara (Route53, WAF, response headers policy custom, website config)
+   ficam **órfãos** na conta — limpar manualmente.
+4. Steady state: o step registra "State já gerencia … — nada a importar" e não toca na AWS.
+
+### Trade-offs
+
+- Import automático em vez de procedimento manual por app: elimina `terraform import` à mão
+  para cada frontend migrado, ao custo de ~8 chamadas AWS **só** no run de adoção e de mais
+  lógica na esteira. Não adota nada fora do root — deliberado: o Terraform só passa a
+  gerenciar o que a paved road declara.
+- `import` blocks (via plan/apply) em vez de `terraform import` na CLI: auditável na Summary e
+  atômico com o apply; exige TF ≥ 1.5.
+- `planOnly` é um parâmetro do run (afeta todos os `Deploy_<env>` daquele run), não um step de
+  aprovação entre plan e apply — mantém o modelo de gate por Environment sem introduzir
+  approval manual no meio do job.
+
+---
+
 ## [2.6.1] - 2026-08-20
 
 **CloudFront sem estourar o limite de response headers policies**: o módulo

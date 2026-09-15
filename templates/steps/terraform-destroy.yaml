@@ -131,7 +131,7 @@ steps:
 
       COUNT=$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' destroy-plan.json)
       {
-        echo "## 🔥 Sandbox destroy — recursos que SERÃO destruídos"
+        echo "## Sandbox destroy — recursos que SERÃO destruídos"
         echo ""
         echo "- **App**: \`$(Build.Repository.Name)\` · **Branch**: \`$(Build.SourceBranch)\` · **Disparado por**: $(Build.RequestedFor)"
         echo "- **State**: \`s3://${{ parameters.backendBucket }}/${{ parameters.backendKey }}\`"
@@ -211,13 +211,13 @@ steps:
         REMAINING=$(terraform state list 2>/dev/null | wc -l | tr -d ' ')
         {
           if [ "$REMAINING" -eq 0 ]; then
-            echo "## ✅ Sandbox destroy — resultado"
+            echo "## Sandbox destroy — resultado"
             echo ""
             echo "**State vazio: os ${PLANNED} recurso(s) planejados foram destruídos.**"
             echo ""
             jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | "- ~~`\(.address)`~~ _(\(.type))_"' destroy-plan.json 2>/dev/null || true
           else
-            echo "## ⚠️ Sandbox destroy — resultado PARCIAL"
+            echo "## Sandbox destroy — resultado PARCIAL"
             echo ""
             echo "**${REMAINING} recurso(s) AINDA no state (de ${PLANNED} planejados):**"
             echo ""

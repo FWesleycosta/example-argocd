@@ -184,6 +184,17 @@ Deploy_<env> (stages/deploy-frontend.yaml → deploy-frontend.yaml):
   policy própria é opt-in `create_response_headers_policy = true` (exigida para CORS/security
   custom, com precondition que barra customização sem o opt-in). Suítes `tests/*.tftest.hcl` offline (TF ≥ 1.6).
   Detalhes na entrada `2.3.0` do `CHANGELOG.md`.
+- **Migração de app que já tinha Terraform próprio (`2.7.0`)**: o state da esteira nasce vazio
+  (`backend.tf` gerado + `init -reconfigure`, nada é migrado do state antigo), então bucket
+  `<app>-<env>` e OAC `oac-<bucket>` colidem (`BucketAlreadyOwnedByYou`,
+  `OriginAccessControlAlreadyExists`). `steps/terraform-import-frontend.yaml` roda entre
+  `init` e `validate` (hook `postInitSteps` do `terraform-apply.yaml`) e gera `import` blocks
+  (`_migrate_imports.tf`) só para o que existe na AWS e falta no state — bucket + sub-recursos,
+  OAC por nome, distribuição por origem; 2+ distribuições no bucket ⇒ falha; steady state =
+  no-op sem chamadas AWS. **`planOnly: true`** (stack → stage → motor, run manual) para no
+  plan e publica o resumo na Summary + artefato `tf-plan-<env>`: use no 1º run de cada app
+  migrado para revisar imports e updates de convergência. O import **não** aposenta o state
+  antigo nem adota recursos fora do root — procedimento na entrada `2.7.0` do `CHANGELOG.md`.
 
 ## Contratos que quebram silenciosamente
 

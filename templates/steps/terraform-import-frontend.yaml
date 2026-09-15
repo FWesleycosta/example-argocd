@@ -1,0 +1,165 @@
+# Adoção de recursos pré-existentes do frontend (S3 + CloudFront) — migração de projetos que já
+# tinham Terraform próprio (outro state) para a esteira.
+#
+# Problema que resolve: a esteira gera o backend do zero (tfstate-<app>-<env>/<app>/terraform.tfstate);
+# um app migrado chega com esse state VAZIO e recursos de nome determinístico já criados na conta —
+# o apply falha com BucketAlreadyOwnedByYou (bucket `<app>-<env>`) e OriginAccessControlAlreadyExists
+# (OAC `oac-<bucket>`, nome único por conta), ou cria uma 2ª distribuição para o mesmo bucket.
+#
+# O que faz: para cada endereço do root manifests/terraform-frontend, se o recurso EXISTE na AWS e
+# NÃO está no state, gera um bloco `import { to, id }` em _migrate_imports.tf. A adoção passa pelo
+# plan (aparece como "N to import" ao lado dos updates de convergência) e é efetivada no apply —
+# nada é escrito no state fora do fluxo normal. Idempotente: já no state → não gera; steady state
+# = uma chamada `terraform state list` e zero chamadas AWS.
+#
+# Pré-requisito: rodar DEPOIS do `terraform init` (usa `state list`) e ANTES do plan — é o
+# `postInitSteps` do steps/terraform-apply.yaml. Requer Terraform >= 1.5 (import blocks).
+#
+# O que NÃO faz: não converge configuração (o plan seguinte mostra os updates in-place para a paved
+# road — revise no 1º run, use `planOnly`), não desativa o state antigo do app (dois states nos
+# mesmos recursos = risco; aposente a pipeline antiga) e não adota recursos fora do root (Route53,
+# WAF, policies custom ficam órfãos na conta).
+parameters:
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: workingDirectory
+    type: string
+  - name: cloudfront            # 'true' | 'false' — mesmo valor de cloudfront_enabled do root
+    type: string
+    default: 'true'
+  - name: accessLoggingBucket   # vazio = aws_s3_bucket_logging.site tem count 0 (não importar)
+    type: string
+    default: ''
+  - name: importsFile
+    type: string
+    default: '_migrate_imports.tf'
+
+steps:
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'Adotar recursos pré-existentes (S3/CloudFront → import blocks)'
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        cd "${{ parameters.workingDirectory }}"
+
+        BUCKET="$(jq -r '.bucket_name' _app.auto.tfvars.json)"
+        CF="${{ parameters.cloudfront }}"
+        LOGGING_BUCKET="${{ parameters.accessLoggingBucket }}"
+        OUT="${{ parameters.importsFile }}"
+        rm -f "$OUT"
+
+        [[ -n "$BUCKET" && "$BUCKET" != "null" ]] || { echo "##[error]bucket_name ausente em _app.auto.tfvars.json"; exit 1; }
+
+        ADDR_BUCKET='aws_s3_bucket.site'
+        ADDR_OAC='module.cloudfront[0].aws_cloudfront_origin_access_control.this[0]'
+        ADDR_DIST='module.cloudfront[0].aws_cloudfront_distribution.this[0]'
+
+        # `state list` num backend sem objeto de state retorna vazio (não é erro).
+        STATE_LIST="$(terraform state list 2>/dev/null || true)"
+        in_state() { grep -Fxq -- "$1" <<<"$STATE_LIST"; }
+
+        # Atalho de steady state: bucket (e distribuição, se habilitada) já gerenciados → nada a fazer.
+        if in_state "$ADDR_BUCKET" && { [[ "$CF" != "true" ]] || in_state "$ADDR_DIST"; }; then
+          echo "State já gerencia $ADDR_BUCKET$([[ "$CF" == "true" ]] && echo " e $ADDR_DIST") — nada a importar."
+          exit 0
+        fi
+
+        echo "##[section]Procurando recursos pré-existentes fora do state (bucket: $BUCKET, cloudfront: $CF)"
+        IMPORTS=()
+        add_import() {
+          local addr="$1" id="$2"
+          if in_state "$addr"; then echo "  = já no state: $addr"; else IMPORTS+=("$addr|$id"); echo "  + importar:    $addr  <-  $id"; fi
+        }
+
+        # ---- S3: bucket e sub-recursos (todos importam pelo nome do bucket) ----
+        # Sub-recursos só são importados se a configuração existir: quando não existe, o apply cria
+        # via Put* sem colisão. Só o bucket e o OAC/distribuição colidem de fato.
+        set +e
+        HEAD_OUT="$(aws s3api head-bucket --bucket "$BUCKET" 2>&1)"; HEAD_RC=$?
+        set -e
+        if [[ $HEAD_RC -eq 0 ]]; then
+          add_import "$ADDR_BUCKET" "$BUCKET"
+          if aws s3api get-public-access-block --bucket "$BUCKET" >/dev/null 2>&1; then
+            add_import 'aws_s3_bucket_public_access_block.site' "$BUCKET"; fi
+          VSTATUS="$(aws s3api get-bucket-versioning --bucket "$BUCKET" --query 'Status' --output text 2>/dev/null || echo None)"
+          if [[ "$VSTATUS" != "None" && -n "$VSTATUS" ]]; then
+            add_import 'aws_s3_bucket_versioning.site' "$BUCKET"; fi
+          if aws s3api get-bucket-encryption --bucket "$BUCKET" >/dev/null 2>&1; then
+            add_import 'aws_s3_bucket_server_side_encryption_configuration.site' "$BUCKET"; fi
+          if aws s3api get-bucket-ownership-controls --bucket "$BUCKET" >/dev/null 2>&1; then
+            add_import 'aws_s3_bucket_ownership_controls.site' "$BUCKET"; fi
+          if aws s3api get-bucket-policy --bucket "$BUCKET" >/dev/null 2>&1; then
+            add_import 'aws_s3_bucket_policy.site' "$BUCKET"; fi
+          if [[ -n "$LOGGING_BUCKET" ]]; then
+            LTARGET="$(aws s3api get-bucket-logging --bucket "$BUCKET" --query 'LoggingEnabled.TargetBucket' --output text 2>/dev/null || echo None)"
+            if [[ "$LTARGET" != "None" && -n "$LTARGET" ]]; then
+              add_import 'aws_s3_bucket_logging.site[0]' "$BUCKET"; fi
+          fi
+        elif grep -q '(404)' <<<"$HEAD_OUT"; then
+          echo "  bucket '$BUCKET' não existe — será criado pelo apply."
+        elif grep -q '(403)' <<<"$HEAD_OUT"; then
+          echo "##[error]bucket '$BUCKET' existe mas NÃO pertence a esta conta/credencial (403). Nome global do S3 em uso por outro dono — não é caso de import."
+          exit 1
+        else
+          echo "##[error]head-bucket '$BUCKET' falhou: $HEAD_OUT"
+          exit 1
+        fi
+
+        # ---- CloudFront: OAC (nome único por conta) e distribuição (origem = este bucket) ----
+        # Independe do bucket existir: uma migração parcial pode ter deixado só o OAC/distribuição.
+        # Sem permissão de List* na service connection: avisa e segue (comportamento anterior da
+        # esteira — o apply falha com OriginAccessControlAlreadyExists, e o warning explica o motivo).
+        set +e
+        OAC_JSON="$(aws cloudfront list-origin-access-controls \
+          --query "OriginAccessControlList.Items[?Name=='oac-${BUCKET}'].Id" --output json 2>&1)"; OAC_RC=$?
+        DIST_JSON="$(aws cloudfront list-distributions \
+          --query "DistributionList.Items[?Origins.Items[?starts_with(DomainName, '${BUCKET}.s3')]].Id" --output json 2>&1)"; DIST_RC=$?
+        set -e
+        OAC_ID=""; DIST_IDS=""
+        if [[ $OAC_RC -ne 0 || $DIST_RC -ne 0 ]]; then
+          echo "##[warning]Não foi possível listar OAC/distribuições do CloudFront (service connection sem cloudfront:ListOriginAccessControls / cloudfront:ListDistributions?). Adoção de CloudFront PULADA. Detalhe: ${OAC_JSON} ${DIST_JSON}"
+        else
+          OAC_ID="$(jq -r '.[]?' <<<"$OAC_JSON" | head -n1)"
+          DIST_IDS="$(jq -r '.[]?' <<<"$DIST_JSON")"
+        fi
+        DIST_COUNT=$(grep -c . <<<"$DIST_IDS" || true)
+
+        if [[ "$CF" == "true" ]]; then
+          if [[ -n "$OAC_ID" ]]; then add_import "$ADDR_OAC" "$OAC_ID"; else echo "  OAC 'oac-${BUCKET}' não encontrado — será criado pelo apply."; fi
+          if [[ "$DIST_COUNT" -eq 1 ]]; then
+            add_import "$ADDR_DIST" "$DIST_IDS"
+          elif [[ "$DIST_COUNT" -gt 1 ]]; then
+            echo "##[error]${DIST_COUNT} distribuições CloudFront têm origem no bucket '$BUCKET' ($(tr '\n' ' ' <<<"$DIST_IDS" | sed 's/ $//')). Import ambíguo — remova as excedentes (ou importe manualmente) antes de seguir."
+            exit 1
+          else
+            echo "  nenhuma distribuição com origem em '$BUCKET' encontrada — será criada pelo apply."
+          fi
+        else
+          if [[ "$DIST_COUNT" -gt 0 ]]; then
+            echo "##[warning]cdn.cloudfront=false, mas existe(m) distribuição(ões) com origem em '$BUCKET' ($(tr '\n' ' ' <<<"$DIST_IDS" | sed 's/ $//')) fora do state. A bucket policy deixará de autorizar o OAC e essa distribuição vai parar de servir o site — habilite cdn.cloudfront ou remova-a manualmente."
+          fi
+          if [[ -n "$OAC_ID" ]]; then
+            echo "##[warning]OAC 'oac-${BUCKET}' existe na conta mas cdn.cloudfront=false — fica órfão (não importado)."
+          fi
+        fi
+
+        # ---- Gerar import blocks ----
+        if [[ ${#IMPORTS[@]} -eq 0 ]]; then
+          echo "Nenhum recurso pré-existente fora do state — nada a importar."
+          exit 0
+        fi
+        {
+          echo "# GERADO pela esteira (steps/terraform-import-frontend.yaml) — recursos pré-existentes fora do state."
+          echo "# Adotados no apply deste run; nos runs seguintes já estão no state e este arquivo não é gerado."
+          for entry in "${IMPORTS[@]}"; do
+            addr="${entry%%|*}"; id="${entry#*|}"
+            printf 'import {\n  to = %s\n  id = "%s"\n}\n\n' "$addr" "$id"
+          done
+        } > "$OUT"
+        echo "##[section]$OUT gerado (${#IMPORTS[@]} import(s)):"; cat "$OUT"
+        echo "##[warning]${#IMPORTS[@]} recurso(s) pré-existente(s) serão IMPORTADOS para o state neste apply. O plan abaixo inclui os updates in-place para convergir à paved road (bucket policy, TLS, cache/headers policies, alias) — revise antes de aplicar em prd (parâmetro planOnly). Aposente o Terraform/state antigo do app: dois states nos mesmos recursos é risco de destroy cruzado."

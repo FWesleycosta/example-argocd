@@ -46,6 +46,13 @@ parameters:
     type: boolean
     default: false
     displayName: 'DESTRUIR o sandbox (terraform destroy: S3 + CloudFront) — só branches sandbox/*'
+  # Run manual com planOnly=true: cada Deploy_<env> para no `terraform plan` (Summary + artefato
+  # tf-plan-<env>) sem aplicar nem publicar. Use no 1º run de um app que já tinha Terraform
+  # próprio: o plan mostra os recursos pré-existentes a IMPORTAR e os updates de convergência.
+  - name: planOnly
+    type: boolean
+    default: false
+    displayName: 'Somente terraform plan (não aplica infra nem publica o site) — revisão de migração'
   - name: sistema
     type: string
     default: ''
@@ -169,6 +176,7 @@ stages:
               veracode: ${{ parameters.veracode }}
               sistema: ${{ parameters.sistema }}
               owner: ${{ parameters.owner }}
+              planOnly: ${{ parameters.planOnly }}
 
       - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
           - template: ../stages/deploy-frontend.yaml
@@ -180,6 +188,7 @@ stages:
               sistema: ${{ parameters.sistema }}
               owner: ${{ parameters.owner }}
               resourceSuffix: ${{ parameters.resourceSuffix }}
+              planOnly: ${{ parameters.planOnly }}
 
           - template: ../stages/veracode.yaml
             parameters:
@@ -204,6 +213,7 @@ stages:
               sistema: ${{ parameters.sistema }}
               owner: ${{ parameters.owner }}
               resourceSuffix: ${{ parameters.resourceSuffix }}
+              planOnly: ${{ parameters.planOnly }}
 
           - stage: PR_Main
             displayName: 'Abrir PR (release → main)'
@@ -225,6 +235,7 @@ stages:
               sistema: ${{ parameters.sistema }}
               owner: ${{ parameters.owner }}
               resourceSuffix: ${{ parameters.resourceSuffix }}
+              planOnly: ${{ parameters.planOnly }}
 
       - ${{ else }}:
           - template: ../stages/deploy-frontend.yaml
@@ -237,3 +248,4 @@ stages:
               sistema: ${{ parameters.sistema }}
               owner: ${{ parameters.owner }}
               resourceSuffix: ${{ parameters.resourceSuffix }}
+              planOnly: ${{ parameters.planOnly }}
