@@ -112,8 +112,6 @@ stages:
                     dd_lang: ${{ parameters.observability.dd_lang }}
                     dd_lib_version: ${{ parameters.observability.dd_lib_version }}
 
-                # Registro de release (DORA): 1) identidade do artefato (imagem ECR: digest + tag
-                # móvel `prod` só em prd) → 2) registro (history.jsonl, DEPLOY-PRD.md, artefato).
                 - ${{ if in(parameters.environment, 'prd', 'hml') }}:
                     - template: ../steps/resolve-artifact-image.yaml
                       parameters:
