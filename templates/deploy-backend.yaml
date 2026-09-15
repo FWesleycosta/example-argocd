@@ -117,10 +117,11 @@ steps:
       sourceDir: '$(Build.SourcesDirectory)/templates/manifests/k8s'
       outputDir: '$(Build.SourcesDirectory)/k8s'
       namespace: '${{ parameters.k8sNamespace }}'
-      configMapName: '$(Build.Repository.Name)-app-vars'
+      configMapName: '$(Build.Repository.Name)-app-vars${{ parameters.resourceSuffix }}'
       envVars: ${{ parameters.env_vars }}
       substitutions:
         PLACEHOLDER_APP_NAME: '$(Build.Repository.Name)'
+        PLACEHOLDER_RESOURCE_SUFFIX: '${{ parameters.resourceSuffix }}'
         PLACEHOLDER_NAMESPACE: '${{ parameters.k8sNamespace }}'
         PLACEHOLDER_ECR_IMAGE: '${{ parameters.awsAccID }}.dkr.ecr.${{ parameters.awsRegion }}.amazonaws.com/$(Build.Repository.Name):$(Build.BuildId)'
         PLACEHOLDER_ENVIRONMENT: ${{ parameters.environment }}
@@ -145,4 +146,4 @@ steps:
       clusterName: ${{ parameters.clusterName }}
       namespace: '${{ parameters.k8sNamespace }}'
       manifestsDir: '$(Build.SourcesDirectory)/k8s'
-      workloadName: '$(Build.Repository.Name)'
+      workloadName: '$(Build.Repository.Name)${{ parameters.resourceSuffix }}'
