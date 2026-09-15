@@ -1,24 +1,3 @@
-# Adoção de recursos pré-existentes do frontend (S3 + CloudFront) — migração de projetos que já
-# tinham Terraform próprio (outro state) para a esteira.
-#
-# Problema que resolve: a esteira gera o backend do zero (tfstate-<app>-<env>/<app>/terraform.tfstate);
-# um app migrado chega com esse state VAZIO e recursos de nome determinístico já criados na conta —
-# o apply falha com BucketAlreadyOwnedByYou (bucket `<app>-<env>`) e OriginAccessControlAlreadyExists
-# (OAC `oac-<bucket>`, nome único por conta), ou cria uma 2ª distribuição para o mesmo bucket.
-#
-# O que faz: para cada endereço do root manifests/terraform-frontend, se o recurso EXISTE na AWS e
-# NÃO está no state, gera um bloco `import { to, id }` em _migrate_imports.tf. A adoção passa pelo
-# plan (aparece como "N to import" ao lado dos updates de convergência) e é efetivada no apply —
-# nada é escrito no state fora do fluxo normal. Idempotente: já no state → não gera; steady state
-# = uma chamada `terraform state list` e zero chamadas AWS.
-#
-# Pré-requisito: rodar DEPOIS do `terraform init` (usa `state list`) e ANTES do plan — é o
-# `postInitSteps` do steps/terraform-apply.yaml. Requer Terraform >= 1.5 (import blocks).
-#
-# O que NÃO faz: não converge configuração (o plan seguinte mostra os updates in-place para a paved
-# road — revise no 1º run, use `planOnly`), não desativa o state antigo do app (dois states nos
-# mesmos recursos = risco; aposente a pipeline antiga) e não adota recursos fora do root (Route53,
-# WAF, policies custom ficam órfãos na conta).
 parameters:
   - name: serviceAccount
     type: string
@@ -26,10 +5,10 @@ parameters:
     type: string
   - name: workingDirectory
     type: string
-  - name: cloudfront            # 'true' | 'false' — mesmo valor de cloudfront_enabled do root
+  - name: cloudfront
     type: string
     default: 'true'
-  - name: accessLoggingBucket   # vazio = aws_s3_bucket_logging.site tem count 0 (não importar)
+  - name: accessLoggingBucket
     type: string
     default: ''
   - name: importsFile
