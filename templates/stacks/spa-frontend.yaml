@@ -46,13 +46,6 @@ parameters:
     type: boolean
     default: false
     displayName: 'DESTRUIR o sandbox (terraform destroy: S3 + CloudFront) — só branches sandbox/*'
-  # Run manual com planOnly=true: cada Deploy_<env> para no `terraform plan` (Summary + artefato
-  # tf-plan-<env>) sem aplicar nem publicar. Use no 1º run de um app que já tinha Terraform
-  # próprio: o plan mostra os recursos pré-existentes a IMPORTAR e os updates de convergência.
-  - name: planOnly
-    type: boolean
-    default: false
-    displayName: 'Somente terraform plan (não aplica infra nem publica o site) — revisão de migração'
   - name: sistema
     type: string
     default: ''
@@ -65,14 +58,15 @@ parameters:
     type: string
     default: ''
     displayName: 'Sufixo de recursos AWS (somente sandbox; vazio usa -sdx)'
+  - name: planOnly
+    type: boolean
+    default: false
+    displayName: 'Somente terraform plan (não aplica infra nem publica artefato)'
 
 variables:
   - group: git-credentials   # GIT_PAT para o terraform init clonar módulos privados (Fibra.DevOps.Terraform)
 
 stages:
-  # destroySandbox=true: o run vira SÓ destroy — e apenas em branches sandbox/*. Em
-  # qualquer outra branch o run FALHA num guard explícito (nunca cai no fluxo de deploy).
-  # Mesmo padrão do backend (stacks/dotnet-backend.yaml / stages/destroy-sandbox.yaml).
   - ${{ if eq(parameters.destroySandbox, true) }}:
       - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/sandbox/') }}:
           - template: ../stages/destroy-sandbox-frontend.yaml
@@ -147,7 +141,6 @@ stages:
                   lintCommand: ${{ parameters.quality.lint_command }}
                   testCommand: ${{ parameters.quality.test_command }}
                   coverageReport: ${{ coalesce(parameters.quality.coverage_report, 'coverage/lcov.info') }}
-                  # mode=block -> lint/testes/gate bloqueiam; qualquer outro valor (warn/ausente) -> só reportam
                   ${{ if eq(parameters.quality.mode, 'block') }}:
                     enforce: true
                     breakOnQualityGate: true
@@ -194,8 +187,7 @@ stages:
             parameters:
               dependsOn: [Deploy_hml]
               veracode: ${{ parameters.veracode }}
-              # Veracode SAST para JS: enviar código-fonte, sem dependências, bundle nem sourcemaps
-              defaultExcludePatterns: |
+              excludePatterns: |
                   !**/node_modules/**
                   !**/dist/**
                   !**/build/**
