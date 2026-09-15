@@ -55,9 +55,12 @@ steps:
         [ -n "$k" ] && SUBS["$k"]="$v"
       done < <(echo '${{ convertToJson(parameters.substitutions) }}' | jq -r 'to_entries[] | "\(.key)\t\(.value)"')
 
-      # nenhum token pode ficar vazio
+      # nenhum token pode ficar vazio — PLACEHOLDER_RESOURCE_SUFFIX é '' fora de sdx
       for key in "${!SUBS[@]}"; do
-        [ -z "${SUBS[$key]}" ] && { echo "##[error]Valor vazio para o token: $key"; exit 1; }
+        [ -z "${SUBS[$key]}" ] && [ "$key" != "PLACEHOLDER_RESOURCE_SUFFIX" ] && {
+          echo "##[error]Valor vazio para o token: $key"
+          exit 1
+        }
       done
 
       # substitui em todos os manifests
