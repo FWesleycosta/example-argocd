@@ -1,5 +1,3 @@
-# Certificado wildcard em us-east-1 (obrigatório para CloudFront). Só consultado quando
-# cloudfront_enabled e acm_certificate_arn não foi informado.
 data "aws_acm_certificate" "this" {
   count    = local.lookup_cert
   provider = aws.us_east_1
@@ -9,7 +7,6 @@ data "aws_acm_certificate" "this" {
   most_recent = true
 }
 
-# Policy do bucket: leitura pelo CloudFront (OAC, restrita à distribuição) + deny sem TLS.
 data "aws_iam_policy_document" "bucket" {
   statement {
     sid     = "DenyInsecureTransport"
