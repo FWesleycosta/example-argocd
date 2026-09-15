@@ -63,16 +63,14 @@ stages:
                         kubectl describe deployment/"$APP" -n "$NS" | tail -n 40 || true
                         exit 1
                       fi
-                      echo "##[section]Rollback concluído. '$NS' rodando $IMAGE."
+                      echo "##[section]✔ Rollback concluído. '$NS' rodando $IMAGE."
 
-                - template: ../steps/resolve-artifact-image.yaml
+                - template: ../steps/record-prod-release.yaml
                   parameters:
+                    environment: ${{ parameters.environment }}
                     serviceAccount: ${{ variables.serviceAccount }}
                     awsRegion: ${{ variables.awsRegion }}
                     awsAccID: ${{ variables.awsAccID }}
                     imageTag: ${{ parameters.imageTag }}
-                - template: ../steps/record-prod-release.yaml
-                  parameters:
-                    environment: ${{ parameters.environment }}
                     deployType: rollback
                     stampRun: false
