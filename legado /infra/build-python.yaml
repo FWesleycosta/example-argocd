@@ -1,0 +1,138 @@
+parameters:
+  - name: python_version
+    type: string
+    default: "3.12"
+
+  - name: pip_extra_index_url
+    type: string
+    default: ""
+
+steps:
+  - task: UsePythonVersion@0
+    displayName: "[python] Selecionar Python ${{ parameters.python_version }}"
+    condition: eq(variables['LAMBDA_RUNTIME'], 'python')
+    inputs:
+      versionSpec: ${{ parameters.python_version }}
+      addToPath: true
+
+  - task: PipAuthenticate@1
+    displayName: "[python] Autenticar Azure Artifacts (pip)"
+    condition: and(eq(variables['LAMBDA_RUNTIME'], 'python'), ne('${{ parameters.pip_extra_index_url }}', ''))
+    inputs:
+      artifactFeeds: "FibraPackages"
+
+  - script: |
+      set -e
+
+      SRC_DIR="$(Build.SourcesDirectory)/$(LAMBDA_SRC_PATH)"
+      PUBLISH_DIR="$(Build.BinariesDirectory)/publish"
+
+      echo "##[section] Source dir: $SRC_DIR"
+      echo "##[section] Python: $(python3 --version)"
+
+      if [ ! -d "$SRC_DIR" ]; then
+        echo "##[error] Diretório não encontrado: $SRC_DIR"
+        exit 1
+      fi
+
+      rm -rf "$PUBLISH_DIR"
+      mkdir -p "$PUBLISH_DIR"
+
+      # ── Determinar versão Python para cross-compile ──
+      PY_VER="${PYTHON_VERSION:-${{ parameters.python_version }}}"
+      echo "##[section] Python version para pip: $PY_VER"
+
+      # ── Instalar dependências ──
+      REQ_FILE="$SRC_DIR/requirements.txt"
+      if [ -f "$REQ_FILE" ]; then
+        echo "##[section] Instalando dependências de $REQ_FILE"
+
+        PIP_ARGS=(
+          --target "$PUBLISH_DIR"
+          --requirement "$REQ_FILE"
+          --platform manylinux2014_x86_64
+          --only-binary=:all:
+          --implementation cp
+          --python-version "$PY_VER"
+          --upgrade
+          --no-cache-dir
+        )
+
+        pip install "${PIP_ARGS[@]}"
+
+      else
+        echo "##[warning] Nenhum requirements.txt encontrado – prosseguindo sem deps externas"
+      fi
+
+      # ── Copiar código-fonte ──
+      # Detecta se src_path aponta para a raiz do repo
+      REAL_SRC=$(cd "$SRC_DIR" && pwd)
+      REAL_ROOT=$(cd "$(Build.SourcesDirectory)" && pwd)
+
+      if [ "$REAL_SRC" = "$REAL_ROOT" ]; then
+        echo "##[section] src_path é a raiz – copiando com exclusões"
+
+        # Copia apenas arquivos Python + módulos, excluindo infra/testes/docs
+        rsync -a \
+          --include='*.py' \
+          --include='*/' \
+          --exclude='config/' \
+          --exclude='terraform/' \
+          --exclude='.git/' \
+          --exclude='.gitignore' \
+          --exclude='*.yml' \
+          --exclude='*.yaml' \
+          --exclude='*.md' \
+          --exclude='test_*' \
+          --exclude='tests/' \
+          --exclude='__pycache__/' \
+          --exclude='.venv/' \
+          --exclude='.env' \
+          "$SRC_DIR/" "$PUBLISH_DIR/"
+
+        # Também copia arquivos não-.py que o Lambda pode precisar
+        # (ex: .json, .cfg, .ini, .txt que não seja requirements.txt no root)
+        find "$SRC_DIR" -maxdepth 1 \
+          \( -name "*.json" -o -name "*.cfg" -o -name "*.ini" \) \
+          -exec cp {} "$PUBLISH_DIR/" \; 2>/dev/null || true
+
+        # Copia requirements.txt para referência (não afeta runtime)
+        # mas NÃO inclui no zip final (será removido abaixo)
+
+      else
+        echo "##[section] src_path é subdiretório – copiando tudo"
+        cp -r "$SRC_DIR"/. "$PUBLISH_DIR/"
+      fi
+
+      # ── Limpar artefatos desnecessários ──
+      find "$PUBLISH_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+      find "$PUBLISH_DIR" -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
+      find "$PUBLISH_DIR" -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
+      find "$PUBLISH_DIR" -name "*.pyc" -delete 2>/dev/null || true
+      rm -f "$PUBLISH_DIR/requirements.txt" 2>/dev/null || true
+
+      # ── Validar que o handler existe ──
+      if ! find "$PUBLISH_DIR" -name "handler.py" | grep -q .; then
+        echo "##[warning] handler.py não encontrado no pacote! Verifique src_path."
+      fi
+
+      echo "##[section] Conteúdo do pacote:"
+      find "$PUBLISH_DIR" -type f | head -40
+
+      # ── Gerar ZIP ──
+      mkdir -p "$(Build.ArtifactStagingDirectory)/zip"
+      pushd "$PUBLISH_DIR"
+        zip -r9 "$(Build.ArtifactStagingDirectory)/zip/$(Build.Repository.Name).zip" .
+      popd
+
+      ZIP_SIZE=$(du -h "$(Build.ArtifactStagingDirectory)/zip/$(Build.Repository.Name).zip" | cut -f1)
+      echo "##[section] Zip gerado: $(Build.Repository.Name).zip ($ZIP_SIZE)"
+
+      # ── Validação: Lambda tem limite de 250 MB descomprimido ──
+      UNZIPPED_MB=$(du -sm "$PUBLISH_DIR" | cut -f1)
+      if [ "$UNZIPPED_MB" -gt 250 ]; then
+        echo "##[warning] Pacote descomprimido tem ${UNZIPPED_MB}MB – excede limite de 250MB do Lambda!"
+      fi
+    displayName: "[python] Instalar deps, empacotar & Zip"
+    condition: eq(variables['LAMBDA_RUNTIME'], 'python')
+ 
