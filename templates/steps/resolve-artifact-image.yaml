@@ -1,18 +1,4 @@
-# templates/steps/resolve-artifact-image.yaml
-# Identidade do artefato de release quando ele é uma IMAGEM no ECR (backend EKS):
-# resolve o digest da tag e (opcionalmente) move a tag móvel `prodTag` para ela.
-# Exporta variáveis RELEASE_* consumidas por steps/record-prod-release.yaml.
-# Best-effort: falhas viram warning e RELEASE_ARTIFACT_DIGEST vazio — nunca bloqueia o deploy.
-#
-# Saídas (##vso[task.setvariable]):
-#   RELEASE_ARTIFACT_KIND      = image
-#   RELEASE_ARTIFACT_TAG       = <imageTag>
-#   RELEASE_ARTIFACT_URI       = <acct>.dkr.ecr.<region>.amazonaws.com/<imageName>:<imageTag>
-#   RELEASE_ARTIFACT_DIGEST    = sha256:... (vazio se não resolvido)
-#   RELEASE_IMAGE_REF_BY_DIGEST= <registry>/<imageName>@<digest> (vazio se sem digest)
-#   RELEASE_MOVING_TAG         = <prodTag> (vazio se desabilitado)
-#   RELEASE_SITE_URL           = '' (não se aplica)
-parameters:
+=parameters:
   - name: serviceAccount
     type: string
   - name: awsRegion
@@ -27,7 +13,7 @@ parameters:
     default: '$(Build.BuildId)'
   - name: prodTag
     type: string
-    default: 'prod'      # '' = não mover tag móvel (perfil hml)
+    default: 'prod'      
 
 steps:
   - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
