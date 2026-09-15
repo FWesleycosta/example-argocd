@@ -1,5 +1,5 @@
 #################################
-# S3 — bucket do site (privado; servido pelo CloudFront via OAC)
+# S3
 #################################
 resource "aws_s3_bucket" "site" {
   bucket = var.bucket_name
@@ -54,19 +54,20 @@ resource "aws_s3_bucket_policy" "site" {
 }
 
 #################################
-# CloudFront (opcional: cloudfront_enabled) — módulo reutilizável do Fibra.DevOps.Terraform
+# CloudFront
 #################################
 module "cloudfront" {
   source = "git::https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform//modules/aws_cloudfront_distribution"
+
   count  = local.cf_count
 
-  name                 = var.bucket_name
-  origin_domain_name   = aws_s3_bucket.site.bucket_regional_domain_name
-  aliases              = [local.domain_name]
-  acm_certificate_arn  = local.certificate_arn
-  price_class          = var.price_class
-  cors_allowed_origins = var.cors_allowed_origins
-  # defaults do módulo: OAC, CachingOptimized + CORS-S3Origin, http2and3, security headers,
-  # fallback SPA 403/404 → /index.html, TLSv1.2_2021
-  tags = local.tags
+  name                     = var.bucket_name
+  origin_domain_name       = aws_s3_bucket.site.bucket_regional_domain_name
+  aliases                  = [local.domain_name]
+  acm_certificate_arn      = local.certificate_arn
+  price_class              = var.price_class
+  cors_allowed_origins     = var.cors_allowed_origins
+  minimum_protocol_version = var.minimum_protocol_version
+  tags                     = local.tags
 }
+ 
