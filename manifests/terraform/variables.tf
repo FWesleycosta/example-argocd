@@ -1,23 +1,23 @@
 variable "app_name" {
-  description = "Nome da aplicação (vem do repositório)"
-  type        = string
+    description = "Nome da aplicação (vem do repositório)"
+    type = string
 }
 
 variable "namespace" {
-  description = "Nome do namespace onde a aplicação vai rodar no EKS"
-  type        = string
+    description = "Nome do namespace onde a aplicação vai rodar no EKS"
+    type = string
 }
 
 variable "alb_shared_dns" {
-  type = string
+  type    = string
 }
 
 variable "api_gateway_vpc_link" {
-  type = string
+  type    = string
 }
 
 variable "alb_shared_listener" {
-  type = string
+  type    = string
 }
 
 variable "domain_name" {
@@ -34,12 +34,12 @@ variable "base_path" {
 
 variable "api_type" {
   description = "public or private"
-  type        = string
-  default     = "private"
+  type = string
+  default = "private"
 }
 
 variable "vpc_endpoint_apigw" {
-  type = string
+  type    = string
 }
 
 variable "domain_internal_name" {
@@ -64,13 +64,13 @@ variable "ssm_parameters" {
 variable "dynamodb_tables" {
   description = "Lista de tabelas DynamoDB a serem criadas"
   type = list(object({
-    table_name   = string
-    billing_mode = optional(string, "PAY_PER_REQUEST")
-    hash_key     = string
-    range_key    = optional(string)
+    table_name               = string
+    billing_mode             = optional(string, "PAY_PER_REQUEST")
+    hash_key                 = string
+    range_key                = optional(string)
     # Quando definido (ex.: "ttl"), habilita TTL na tabela apontando para esse atributo numérico (epoch em segundos).
     ttl_attribute_name = optional(string)
-    attributes         = list(object({ name = string, type = string }))
+    attributes               = list(object({ name = string, type = string }))
     global_secondary_indexes = optional(list(object({
       name               = string
       hash_key           = string
@@ -118,9 +118,9 @@ variable "endpoint_type" {
 }
 
 variable "security_policy" {
-  description = "Minimum TLS security policy for the domain. Use a TLS_1_2 (or newer) policy for production workloads; TLS_1_0 is deprecated and should only be used for legacy clients that cannot be upgraded. Note that the available policies differ by endpoint_type: REGIONAL domains support the SecurityPolicy_TLS13_* / SecurityPolicy_TLS12_* values, while EDGE domains support the *_EDGE values and the legacy TLS_1_0 / TLS_1_2 aliases. O default aceita TLS 1.2 E 1.3 (PFS + pos-quantica) para nao quebrar clientes TLS 1.2 existentes; TLS 1.3-only (SecurityPolicy_TLS13_1_3_2025_09) e opt-in por app, apos validar $context.tlsVersion nos access logs."
+  description = "Minimum TLS security policy. Applied to private REST APIs (aws_api_gateway_rest_api.security_policy) and to public custom domains. Use a TLS_1_2 (or newer) policy for production workloads; TLS_1_0 is deprecated and should only be used for legacy clients that cannot be upgraded. Note that the available policies differ by endpoint_type: REGIONAL/PRIVATE support the SecurityPolicy_TLS13_* / SecurityPolicy_TLS12_* values, while EDGE domains support the *_EDGE values and the legacy TLS_1_0 / TLS_1_2 aliases."
   type        = string
-  default     = "SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09"
+  default     = "SecurityPolicy_TLS13_1_2_PQ_2025_09"
 
   validation {
     condition     = contains(["TLS_1_0", "TLS_1_2", "SecurityPolicy_TLS13_1_3_2025_09", "SecurityPolicy_TLS13_1_3_FIPS_2025_09", "SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09", "SecurityPolicy_TLS13_1_2_FIPS_PQ_2025_09", "SecurityPolicy_TLS13_1_2_FIPS_PFS_PQ_2025_09", "SecurityPolicy_TLS13_1_2_PQ_2025_09", "SecurityPolicy_TLS13_1_2_2021_06", "SecurityPolicy_TLS13_2025_EDGE", "SecurityPolicy_TLS12_PFS_2025_EDGE", "SecurityPolicy_TLS12_2018_EDGE"], var.security_policy)
@@ -129,7 +129,7 @@ variable "security_policy" {
 }
 
 variable "endpoint_access_mode" {
-  description = "Endpoint access mode (BASIC or STRICT). Required by the newer SecurityPolicy_TLS13_*/SecurityPolicy_TLS12_* security policies; ignored for the legacy TLS_1_0/TLS_1_2 policies. STRICT impoe SNI host matching: invocar API privada sem custom domain/private DNS (ex.: URL do VPC endpoint com header Host) QUEBRA. Migracao recomendada pela AWS: enhanced policy + BASIC -> validar access logs -> STRICT (opt-in por app; voltar de STRICT para BASIC custa ~15 min de indisponibilidade)."
+  description = "Endpoint access mode for the custom domain (BASIC or STRICT). Required by the newer SecurityPolicy_TLS13_*/SecurityPolicy_TLS12_* security policies; ignored for the legacy TLS_1_0/TLS_1_2 policies. BASIC keeps the standard behavior; STRICT enforces stricter TLS handling."
   type        = string
   default     = "BASIC"
 
@@ -144,9 +144,9 @@ variable "certificate_arn" {
 }
 
 variable "queue_name" {
-  type = list(object({
-    queue_name        = string
-    fifo_queue        = optional(string, "false")
+  type = list(object ({
+    queue_name = string
+    fifo_queue = optional(string, "false")
     dlq_queue_name    = optional(string, "")
     max_receive_count = optional(number, 3)
   }))
@@ -155,9 +155,9 @@ variable "queue_name" {
 
 
 variable "topic_name" {
-  type = list(object({
-    topic_name                  = string
-    fifo_topic                  = optional(string, "false")
+  type = list(object ({
+    topic_name = string
+    fifo_topic = optional(string, "false")
     content_based_deduplication = optional(string, "false")
   }))
   default = []
@@ -176,23 +176,23 @@ variable "sns_sqs_subscriptions" {
 }
 
 variable "resource_suffix" {
-  type    = string
+  type = string
   default = ""
 }
 
 variable "project_name" {
   description = "Nome do projeto (vem do repositório)"
-  type        = string
+  type = string
 }
 
 variable "sistema" {
   description = "Sistema/dominio de negocio ao qual a aplicacao pertence (tag de governanca)"
-  type        = string
-  default     = ""
+  type    = string
+  default = ""
 }
 
 variable "owner" {
   description = "Time/pessoa responsavel pela aplicacao (tag de governanca)"
-  type        = string
-  default     = ""
+  type    = string
+  default = ""
 }
