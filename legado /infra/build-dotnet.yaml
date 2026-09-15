@@ -1,0 +1,67 @@
+parameters:
+  - name: dotnet_version
+    type: string
+    default: "10.0.x"
+  - name: vsts_feed_url
+    type: string
+    default: "https://pkgs.dev.azure.com/bancofibra/_packaging/FibraPackages/nuget/v3/index.json"
+
+steps:
+  - task: UseDotNet@2
+    displayName: "Instalar .NET ${{ parameters.dotnet_version }}"
+    condition: eq(variables['LAMBDA_RUNTIME'], 'dotnet')
+    inputs:
+      version: ${{ parameters.dotnet_version }}
+
+  - task: NuGetAuthenticate@1
+    displayName: "Autenticar Azure Artifacts"
+    condition: eq(variables['LAMBDA_RUNTIME'], 'dotnet')
+
+  - script: |
+      set -e
+
+      CSPROJ="$(Build.SourcesDirectory)/$(LAMBDA_SRC_PATH)"
+      PROJ_DIR=$(dirname "$CSPROJ")
+      echo "##[section] Projeto: $CSPROJ"
+
+      cat > "$PROJ_DIR/nuget.config" <<NUGETEOF
+      <?xml version="1.0" encoding="utf-8"?>
+      <configuration>
+        <packageSources>
+          <clear />
+          <add key="nuget.org"     value="https://api.nuget.org/v3/index.json" />
+          <add key="FibraPackages" value="${{ parameters.vsts_feed_url }}" />
+        </packageSources>
+      </configuration>
+      NUGETEOF
+
+      echo "##[section] nuget.config criado em: $PROJ_DIR/nuget.config"
+      cat "$PROJ_DIR/nuget.config"
+
+      dotnet restore "$CSPROJ" \
+        --runtime linux-x64 \
+        --configfile "$PROJ_DIR/nuget.config" \
+        --verbosity detailed
+
+      dotnet publish "$CSPROJ" \
+        --configuration Release \
+        --output "$(Build.BinariesDirectory)/publish" \
+        --runtime linux-x64 \
+        --self-contained false \
+        --no-restore
+
+      # ── Zip ──
+      mkdir -p "$(Build.ArtifactStagingDirectory)/zip"
+      pushd "$(Build.BinariesDirectory)/publish"
+        zip -r "$(Build.ArtifactStagingDirectory)/zip/$(Build.Repository.Name).zip" .
+      popd
+
+      echo "##[section] Zip gerado: $(Build.Repository.Name).zip"
+    displayName: "[dotnet] Restore, Build & Zip"
+    condition: eq(variables['LAMBDA_RUNTIME'], 'dotnet')
+    env:
+      NUGET_CREDENTIALPROVIDER_SESSIONTOKENCACHE_ENABLED: "true"
+      VSS_NUGET_EXTERNAL_FEED_ENDPOINTS: >
+        {"endpointCredentials":[{"endpoint":"${{ parameters.vsts_feed_url }}","username":"build","password":"$(System.AccessToken)"}]}
+      NUGET_CERT_REVOCATION_MODE: no
+      DOTNET_NUGET_SIGNATURE_VERIFICATION: false
