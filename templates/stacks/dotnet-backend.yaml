@@ -52,9 +52,6 @@ variables:
   - group: git-credentials
 
 stages:
-  # destroySandbox=true: o run vira SÓ destroy — e apenas em branches sandbox/*. Em
-  # qualquer outra branch o run FALHA num guard explícito (nunca cai no fluxo de deploy).
-  # Tem precedência sobre rollbackImageTag.
   - ${{ if eq(parameters.destroySandbox, true) }}:
       - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/sandbox/') }}:
           - template: ../stages/destroy-sandbox.yaml
