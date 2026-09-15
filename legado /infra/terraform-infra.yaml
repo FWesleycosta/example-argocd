@@ -1,0 +1,57 @@
+parameters:
+  - name: environment
+    type: string
+  - name: lambda_description
+    type: string
+  - name: service_account
+    type: string
+  - name: tfstates_bucket
+    type: string
+  - name: aws_region
+    type: string
+  - name: product_repo
+    type: string
+  - name: subnets_privates
+    type: string
+    default: ''
+  - name: vpc_id
+    type: string
+    default: ''
+
+
+steps:
+  - checkout: self
+    persistCredentials: true
+
+  - download: current
+    artifact: lambda-zip
+    displayName: "Download ZIP"
+
+  - script: |
+      mkdir -p "$(Build.SourcesDirectory)/terraform/zip"
+      cp $(Pipeline.Workspace)/lambda-zip/*.zip "$(Build.SourcesDirectory)/terraform/zip/"
+      echo "##[section] ZIP copiado para $(Build.SourcesDirectory)/terraform/zip/"
+      ls -la "$(Build.SourcesDirectory)/terraform/zip/"
+    displayName: "Copiar ZIP para terraform/zip"
+
+  - template: generate-tfvars.yaml
+    parameters:
+      environment:        ${{ parameters.environment }}
+      lambda_description: ${{ parameters.lambda_description }}
+      aws_region:         ${{ parameters.aws_region }}
+      subnets_privates:   ${{ parameters.subnets_privates }}
+      vpc_id:             ${{ parameters.vpc_id }}
+
+  - template: setup-git-auth.yaml
+    parameters:
+      authMode: 'systemToken'
+
+  - template: terraform.yaml
+    parameters:
+      serviceAccount: ${{ parameters.service_account }}
+      awsRegion:      ${{ parameters.aws_region }}
+      tfstatesBucket: ${{ parameters.tfstates_bucket }}
+      keyBucketPath:  ${{ parameters.product_repo }}
+      workDir:        $(Build.SourcesDirectory)/terraform
+      folder:         terraform
+      environment:    ${{ parameters.environment }}
