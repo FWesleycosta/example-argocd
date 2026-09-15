@@ -1,7 +1,3 @@
-# templates/sonarqube/qa-sonar-node.yaml
-# Steps de qualidade para frontend Node (JS/TS): instala dependências, lint, testes com
-# cobertura (lcov), análise SonarQube (scanner CLI) e Quality Gate como build breaker —
-# equivalente do qa-sonar-dotnet.yaml para o stack spa-frontend.
 parameters:
   - name: sonarServiceConnection
     type: string
