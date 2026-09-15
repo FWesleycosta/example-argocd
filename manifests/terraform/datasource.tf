@@ -9,4 +9,3 @@ data "aws_sqs_queue" "existing" {
   for_each = local.external_queue_names
   name     = "${local.sqs_name_prefix}-${each.value}"
 }
-
