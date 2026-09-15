@@ -32,8 +32,6 @@ parameters:
   - name: tolerableErrorPatterns
     type: string
     default: ''
-  # Steps injetados entre `init` e `validate` (state acessível, plan ainda não rodou) — ex.:
-  # steps/terraform-import-frontend.yaml gera import blocks de recursos pré-existentes.
   - name: postInitSteps
     type: stepList
     default: []
@@ -119,7 +117,8 @@ steps:
       workingDirectory: ${{ parameters.workingDirectory }}
       lockTimeout: ${{ parameters.lockTimeout }}
 
-  - ${{ parameters.postInitSteps }}
+  - ${{ each step in parameters.postInitSteps }}:
+      - ${{ step }}
 
   - template: terraform/validate.yaml
     parameters:
