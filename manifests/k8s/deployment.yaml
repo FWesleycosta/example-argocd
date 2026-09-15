@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: PLACEHOLDER_APP_NAME
+  name: PLACEHOLDER_APP_NAMEPLACEHOLDER_RESOURCE_SUFFIX
   namespace: PLACEHOLDER_NAMESPACE
   labels:
-    app: PLACEHOLDER_APP_NAME
+    app: PLACEHOLDER_APP_NAMEPLACEHOLDER_RESOURCE_SUFFIX
     environment: PLACEHOLDER_ENVIRONMENT
 spec:
   revisionHistoryLimit: 10
   progressDeadlineSeconds: 300
   selector:
     matchLabels:
-      app: PLACEHOLDER_APP_NAME
+      app: PLACEHOLDER_APP_NAMEPLACEHOLDER_RESOURCE_SUFFIX
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -24,7 +24,7 @@ spec:
         admission.datadoghq.com/PLACEHOLDER_DD_LANG-lib.version: "PLACEHOLDER_DD_LIB_VERSION"
       labels:
         admission.datadoghq.com/enabled: "true"
-        app: PLACEHOLDER_APP_NAME
+        app: PLACEHOLDER_APP_NAMEPLACEHOLDER_RESOURCE_SUFFIX
     spec:
       affinity:
         nodeAffinity:
@@ -42,7 +42,7 @@ spec:
           imagePullPolicy: Always
           envFrom:
             - configMapRef:
-                name: PLACEHOLDER_APP_NAME-app-vars
+                name: PLACEHOLDER_APP_NAME-app-varsPLACEHOLDER_RESOURCE_SUFFIX
           ports:
             - containerPort: 8080
           resources:
