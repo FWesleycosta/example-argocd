@@ -1,5 +1,5 @@
 resource "aws_iam_role" "app_name" {
-  name = "eks-pod-identity-${var.app_name}${var.resource_suffix}"
+  name = "pod-ide-${var.app_name}${var.resource_suffix}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -105,6 +105,7 @@ resource "aws_iam_policy" "app_name" {
             "s3:GetObject",
             "ses:SendEmail",
             "s3:DeleteObject",
+            "sqs:ReceiveMessage",
             "sqs:ListQueueTags",
             "sqs:GetQueueAttributes",
             "sqs:GetQueueUrl",
@@ -167,16 +168,16 @@ resource "aws_eks_pod_identity_association" "app_name" {
 
 module "aws_api_gateway_domain_name" {
   source = "git::https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform//modules/aws_api_gateway_domain_name"
-  count  = local.is_public
+  count = local.is_public
 
-  domain_name          = "${var.environment}-api-${var.domain_name}"
-  endpoint_type        = var.endpoint_type
-  security_policy      = var.security_policy
+  domain_name = "${var.environment}-api-${var.domain_name}"
+  endpoint_type = var.endpoint_type
+  security_policy = var.security_policy
   endpoint_access_mode = var.endpoint_access_mode
-  certificate_arn      = var.certificate_arn
-  certificate_domain   = null
+  certificate_arn = var.certificate_arn
+  certificate_domain =  null
 
-  tags = local.tags
+  tags               = local.tags
 
 }
 
@@ -204,7 +205,7 @@ resource "aws_cloudwatch_log_group" "api_gateway" {
 
 
 resource "aws_api_gateway_rest_api" "app_name" {
-  count       = local.is_public
+  count = local.is_public
   name        = "${var.app_name}${var.resource_suffix}"
   description = var.app_name
 
@@ -246,7 +247,7 @@ resource "aws_api_gateway_method" "proxy" {
   }
 
   lifecycle {
-    ignore_changes = [authorization, authorizer_id, api_key_required]
+    ignore_changes = [ authorization, authorizer_id, api_key_required ]
   }
 }
 
@@ -254,12 +255,12 @@ resource "aws_api_gateway_method_settings" "all" {
   count       = local.is_public
   rest_api_id = aws_api_gateway_rest_api.app_name[count.index].id
   stage_name  = aws_api_gateway_stage.default[count.index].stage_name
-  method_path = "*/*"
+  method_path = "*/*"  
 
   settings {
     logging_level      = "INFO"
-    metrics_enabled    = false
-    data_trace_enabled = false
+    metrics_enabled    = false     
+    data_trace_enabled = false    
   }
 
   depends_on = [aws_api_gateway_account.this]
@@ -351,7 +352,7 @@ resource "aws_api_gateway_base_path_mapping" "app_name" {
   stage_name  = aws_api_gateway_stage.default[count.index].stage_name
   domain_name = module.aws_api_gateway_domain_name[count.index].domain_name
   #domain_name = data.aws_api_gateway_domain_name.api_bancofibra_com_br[count.index].domain_name
-  base_path = "${var.base_path}${var.resource_suffix}"
+  base_path   = "${var.base_path}${var.resource_suffix}"
 }
 
 #################################
@@ -366,7 +367,7 @@ resource "aws_api_gateway_usage_plan" "app_name" {
     api_id = aws_api_gateway_rest_api.app_name[count.index].id
     stage  = aws_api_gateway_stage.default[count.index].stage_name
   }
-  tags = local.tags
+  tags               = local.tags
 }
 
 #################################
@@ -377,7 +378,7 @@ resource "aws_api_gateway_api_key" "app_name" {
   name        = "${var.app_name}${var.resource_suffix}"
   description = "API Key para ${var.app_name}"
   enabled     = true
-  tags        = local.tags
+  tags               = local.tags
 
 }
 
@@ -413,7 +414,7 @@ resource "aws_api_gateway_integration" "root" {
   connection_type         = "VPC_LINK"
   connection_id           = var.api_gateway_vpc_link
   integration_target      = var.alb_shared_listener
-}
+}  
 
 
 
@@ -425,12 +426,12 @@ resource "aws_api_gateway_integration" "root" {
 
 resource "aws_api_gateway_base_path_mapping" "this" {
   count       = local.is_private
-  api_id      = aws_api_gateway_rest_api.this[count.index].id
-  stage_name  = aws_api_gateway_stage.this[count.index].stage_name
-  domain_name = local.full_domain_name
+  api_id        = aws_api_gateway_rest_api.this[count.index].id
+  stage_name    = aws_api_gateway_stage.this[count.index].stage_name
+  domain_name   = local.full_domain_name
   base_path   = "${var.base_path}${var.resource_suffix}"
 
-  depends_on = [
+  depends_on = [ 
     aws_api_gateway_rest_api.this,
     aws_api_gateway_stage.this
   ]
@@ -441,11 +442,7 @@ resource "aws_api_gateway_rest_api" "this" {
 
   name        = "${var.app_name}${var.resource_suffix}"
   description = var.app_name
-  # security_policy e endpoint_access_mode andam EM PAR (mesma regra do custom domain
-  # público acima): STRICT só é aceito pelas policies novas (SecurityPolicy_TLS13_*/
-  # TLS12_*). Sem o security_policy, a API cai na policy default/legada e o CreateRestApi
-  # falha com "Endpoint access mode is not supported for this security policy".
-  security_policy      = var.security_policy
+  security_policy  = var.security_policy
   endpoint_access_mode = var.endpoint_access_mode
 
   endpoint_configuration {
@@ -453,7 +450,7 @@ resource "aws_api_gateway_rest_api" "this" {
     vpc_endpoint_ids = [var.vpc_endpoint_apigw]
   }
 
-  tags = local.tags
+tags               = local.tags
 }
 
 resource "aws_api_gateway_rest_api_policy" "this" {
@@ -466,10 +463,10 @@ resource "aws_api_gateway_rest_api_policy" "this" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect    = "Allow"
+        Effect = "Allow"
         Principal = "*"
-        Action    = "execute-api:Invoke"
-        Resource  = "${aws_api_gateway_rest_api.this[count.index].execution_arn}/*/*/*"
+        Action   = "execute-api:Invoke"
+        Resource = "${aws_api_gateway_rest_api.this[count.index].execution_arn}/*/*/*"
         Condition = {
           StringEquals = {
             "aws:SourceVpce" = var.vpc_endpoint_apigw
@@ -488,7 +485,7 @@ resource "aws_api_gateway_rest_api_policy" "this" {
 # RESOURCE /{proxy+}
 #################################
 resource "aws_api_gateway_resource" "this" {
-  count = local.is_private
+  count       = local.is_private
 
   depends_on = [
     aws_api_gateway_rest_api.this
@@ -518,7 +515,7 @@ resource "aws_api_gateway_method" "this" {
   }
 
   lifecycle {
-    ignore_changes = [authorization, authorizer_id, api_key_required, request_parameters]
+    ignore_changes = [ authorization, authorizer_id, api_key_required, request_parameters ]
   }
 }
 
@@ -537,10 +534,10 @@ resource "aws_api_gateway_integration" "this" {
   depends_on = [
     aws_api_gateway_method.this
   ]
-  uri                = "http://${var.alb_shared_dns}:80/{proxy}"
-  connection_type    = "VPC_LINK"
-  connection_id      = var.api_gateway_vpc_link
-  integration_target = var.alb_shared_listener
+  uri                     = "http://${var.alb_shared_dns}:80/{proxy}"
+  connection_type         = "VPC_LINK"
+  connection_id           = var.api_gateway_vpc_link
+  integration_target      = var.alb_shared_listener
 
   request_parameters = {
     "integration.request.path.proxy" = "method.request.path.proxy"
@@ -573,7 +570,7 @@ resource "aws_api_gateway_deployment" "this" {
 # STAGE + ACCESS LOGS
 #################################
 resource "aws_api_gateway_stage" "this" {
-  count         = local.is_private
+  count = local.is_private
   rest_api_id   = aws_api_gateway_rest_api.this[count.index].id
   deployment_id = aws_api_gateway_deployment.this[count.index].id
   stage_name    = "default"
@@ -588,10 +585,10 @@ resource "aws_api_gateway_stage" "this" {
   }
 
   lifecycle {
-    ignore_changes = [
+    ignore_changes = [ 
       deployment_id,
       variables,
-    ]
+     ]
   }
 
   #access_log_settings {
@@ -611,7 +608,7 @@ resource "aws_api_gateway_stage" "this" {
   depends_on = [
     aws_api_gateway_deployment.this
   ]
-}
+} 
 
 
 resource "aws_ssm_parameter" "this" {
@@ -626,44 +623,44 @@ resource "aws_ssm_parameter" "this" {
 }
 
 resource "aws_dynamodb_table" "this" {
-  for_each = { for t in var.dynamodb_tables : t.table_name => t }
+    for_each = { for t in var.dynamodb_tables : t.table_name => t }
 
-  name         = "${each.value.table_name}${var.resource_suffix}"
-  billing_mode = each.value.billing_mode
-  hash_key     = each.value.hash_key
-  range_key    = each.value.range_key
+    name         = "${each.value.table_name}${var.resource_suffix}"
+    billing_mode = each.value.billing_mode
+    hash_key     = each.value.hash_key
+    range_key    = each.value.range_key
 
-  dynamic "attribute" {
-    for_each = each.value.attributes
-    content {
-      name = attribute.value.name
-      type = attribute.value.type
+    dynamic "attribute" {
+        for_each = each.value.attributes
+        content {
+          name = attribute.value.name
+          type = attribute.value.type
+        }
     }
-  }
 
-  dynamic "global_secondary_index" {
-    for_each = each.value.global_secondary_indexes
-    content {
-      name               = global_secondary_index.value.name
-      hash_key           = global_secondary_index.value.hash_key
-      range_key          = global_secondary_index.value.range_key
-      projection_type    = global_secondary_index.value.projection_type
-      non_key_attributes = global_secondary_index.value.non_key_attributes
-      read_capacity      = global_secondary_index.value.read_capacity
-      write_capacity     = global_secondary_index.value.write_capacity
+    dynamic "global_secondary_index" {
+        for_each = each.value.global_secondary_indexes
+        content {
+          name               = global_secondary_index.value.name
+          hash_key           = global_secondary_index.value.hash_key
+          range_key          = global_secondary_index.value.range_key
+          projection_type    = global_secondary_index.value.projection_type
+          non_key_attributes = global_secondary_index.value.non_key_attributes
+          read_capacity      = global_secondary_index.value.read_capacity
+          write_capacity     = global_secondary_index.value.write_capacity
+        }
     }
-  }
 
-  # ttl opcional: null/erro em trimspace → try devolve ""; coalesce(null,"") falha no TF recente ("" é “vazio”).
-  dynamic "ttl" {
-    for_each = [for v in [try(trimspace(each.value.ttl_attribute_name), "")] : v if v != ""]
-    content {
-      enabled        = true
-      attribute_name = ttl.value
+    # ttl opcional: null/erro em trimspace → try devolve ""; coalesce(null,"") falha no TF recente ("" é “vazio”).
+    dynamic "ttl" {
+        for_each = [for v in [try(trimspace(each.value.ttl_attribute_name), "")] : v if v != ""]
+        content {
+          enabled        = true
+          attribute_name = ttl.value
+        }
     }
-  }
 
-  tags = local.tags
+    tags = local.tags
 }
 
 #################################
@@ -715,15 +712,15 @@ resource "aws_s3_bucket_cors_configuration" "app_buckets" {
 }
 
 module "secrets" {
-  source = "git::https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform//modules/aws_secret_manager"
+  source   = "git::https://dev.azure.com/bancofibra/Fibra.DevOps/_git/Fibra.DevOps.Terraform//modules/aws_secret_manager"
 
   for_each = { for s in local.secrets_named : s.name => s }
 
   name                    = each.value.effective_name
   description             = each.value.description
-  initial_secret_string   = jsonencode({ for key in each.value.keys : key => "PREENCHER" })
+  initial_secret_string   = jsonencode({ for key in each.value.keys : key => "PREENCHER"})
   recovery_window_in_days = 7
-  tags                    = local.tags
+  tags    = local.tags
 }
 
 
@@ -769,7 +766,7 @@ module "aws_sqs_queue" {
   tags = local.tags
 }
 
-#########################################
+#########################################       
 #         AWS SNS
 ########################################
 
@@ -807,4 +804,4 @@ module "aws_sns_sqs_subscription" {
   ]
 }
 
-
+ 
