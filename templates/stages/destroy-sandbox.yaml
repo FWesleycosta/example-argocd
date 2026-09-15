@@ -1,18 +1,3 @@
-# DESTROY do sandbox (sdx) — stage ÚNICO do run quando o app roda com destroySandbox=true
-# numa branch sandbox/* (roteado em stacks/dotnet-backend.yaml, mesmo padrão do rollback).
-#
-# Ordem: carimbo do run → delete do namespace K8s (o workload solta a pod identity/IAM role
-# antes de o Terraform destruí-las; o ingress deletado dispara a limpeza das regras no ALB
-# compartilhado) → steps/terraform-destroy.yaml (plan -destroy com relatório na Summary e
-# artefato `sandbox-destroy` ANTES do apply; relatório do resultado DEPOIS).
-#
-# O que NÃO é tocado: bucket de tfstate (state vira vazio, histórico versionado), ECR
-# (imagens compartilhadas com dev) e aws_api_gateway_account (singleton da conta — sai do
-# state e permanece). Secrets destruídos entram na recovery window (7 dias): recriar o
-# MESMO sandbox nesse intervalo falha na criação do secret — aguarde ou use outro suffix.
-#
-# `condition: Build.Reason == Manual`: mesmo que um app fixe destroySandbox: true no YAML
-# por engano, um push de CI nunca destrói — só "Run pipeline" manual.
 parameters:
   - name: networking
     type: object
@@ -108,7 +93,7 @@ stages:
 
                       echo "##[section]Deletando namespace '$NS' (workloads, ingress, configmaps)..."
                       kubectl delete namespace "$NS" --ignore-not-found=true --timeout=600s
-                      echo "##[section]Namespace '$NS' removido (ou já não existia)."
+                      echo "##[section]✔ Namespace '$NS' removido (ou já não existia)."
 
                 - template: ../steps/terraform-destroy.yaml
                   parameters:
