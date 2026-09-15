@@ -24,8 +24,6 @@ parameters:
   - name: artifactName
     type: string
     default: 'frontend-dist'
-  # true = o stage para no `terraform plan` (Summary + artefato tf-plan-<env>); não aplica, não
-  # publica no S3 e não registra release. Revisão do 1º run de app migrado (import de recursos).
   - name: planOnly
     type: boolean
     default: false
@@ -57,8 +55,6 @@ stages:
                   artifact: ${{ parameters.artifactName }}
                   displayName: 'Baixar artefato ${{ parameters.artifactName }}'
 
-                # O root manifests/terraform-frontend consome módulos privados do
-                # Fibra.DevOps.Terraform via git:: — o init precisa do GIT_PAT (grupo git-credentials).
                 - template: ../infra/setup-git-auth.yaml
 
                 - template: ../deploy-frontend.yaml
@@ -68,7 +64,6 @@ stages:
                     sistema: ${{ parameters.sistema }}
                     owner: ${{ parameters.owner }}
                     serviceAccount: ${{ variables.serviceAccount }}
-                    serviceAccountTerraform: ${{ variables.serviceAccountTerraform }}
                     awsRegion: ${{ variables.awsRegion }}
                     awsAccID: ${{ variables.awsAccID }}
                     accessLoggingBucket: ${{ variables.accessLoggingWorkloads }}
@@ -86,11 +81,6 @@ stages:
                     runtime_vars: ${{ parameters.runtime_vars }}
                     distDir: '$(Pipeline.Workspace)/${{ parameters.artifactName }}'
 
-                # Registro de release (DORA) — mesmo record e mesmos perfis do backend (prd completo,
-                # hml reduzido); só muda a identidade: artefato estático (sem ECR), digest = sha256
-                # do dist sem o env-config.js (gerado por ambiente), referência = bucket publicado.
-                # Best-effort: nunca falha o deploy. FRONT_BUCKET/FRONT_SITE_URL vêm do motor acima.
-                # planOnly: nada foi publicado → não há release a registrar.
                 - ${{ if and(in(parameters.environment, 'prd', 'hml'), eq(parameters.planOnly, false)) }}:
                     - template: ../steps/resolve-artifact-static.yaml
                       parameters:
@@ -105,3 +95,4 @@ stages:
                           stampRun: false
                           captureApproval: false
                           artifactName: 'hml-release'
+ 
