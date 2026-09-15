@@ -18,13 +18,16 @@ parameters:
   - name: owner
     type: string
     default: ''
+  - name: planOnly
+    type: boolean
+    default: false
 
 stages:
   - template: ../stages/veracode.yaml
     parameters:
       dependsOn: [Build]
       veracode: ${{ parameters.veracode }}
-      defaultExcludePatterns: |
+      excludePatterns: |
         !**/node_modules/**
         !**/dist/**
         !**/build/**
@@ -40,6 +43,7 @@ stages:
       runtime_vars: ${{ parameters.config.runtime_vars.prd }}
       sistema: ${{ parameters.sistema }}
       owner: ${{ parameters.owner }}
+      planOnly: ${{ parameters.planOnly }}
 
   - stage: Approve_PR_Main
     displayName: 'Approve PR hotfix -> main'
@@ -66,10 +70,3 @@ stages:
         parameters:
           sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
           targetBranch: main
-
-  - stage: Delete_Hotfix_Branch
-    displayName: 'Delete hotfix branch'
-    dependsOn: PR_PRD
-    condition: succeeded()
-    jobs:
-      - template: ../utils/delete-branch.yaml
