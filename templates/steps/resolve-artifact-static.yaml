@@ -1,20 +1,3 @@
-# templates/steps/resolve-artifact-static.yaml
-# Identidade do artefato de release quando ele é ESTÁTICO publicado (frontend S3/CloudFront):
-# digest = sha256 da árvore de arquivos de `artifactPath` (caminho relativo + sha256 de cada
-# arquivo, ordenação LC_ALL=C — estável entre agentes), excluindo os nomes em
-# `artifactDigestExcludes` (arquivos gerados por ambiente, ex.: env-config.js — assim o MESMO
-# build tem o MESMO digest em hml e prd: build único verificável).
-# Exporta variáveis RELEASE_* consumidas por steps/record-prod-release.yaml.
-# Best-effort: falhas viram warning e RELEASE_ARTIFACT_DIGEST vazio — nunca bloqueia o deploy.
-#
-# Saídas (##vso[task.setvariable]):
-#   RELEASE_ARTIFACT_KIND      = static
-#   RELEASE_ARTIFACT_TAG       = <artifactTag>        (Build.BuildId por default — identidade do build)
-#   RELEASE_ARTIFACT_URI       = <artifactLocation>   (ex.: s3://<bucket>)
-#   RELEASE_ARTIFACT_DIGEST    = sha256:... (vazio se não calculado)
-#   RELEASE_IMAGE_REF_BY_DIGEST= ''  (não se aplica)
-#   RELEASE_MOVING_TAG         = ''  (não há registry)
-#   RELEASE_SITE_URL           = <siteUrl>
 parameters:
   - name: artifactPath
     type: string
@@ -23,7 +6,7 @@ parameters:
     default: ''
   - name: artifactDigestExcludes
     type: string
-    default: ''          # nomes de arquivo separados por vírgula
+    default: ''          
   - name: siteUrl
     type: string
     default: ''
