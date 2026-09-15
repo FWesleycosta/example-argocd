@@ -1,4 +1,4 @@
-parameters:
+=parameters:
   - name: environment
     type: string
     default: 'prd'
@@ -456,12 +456,19 @@ steps:
               rm -rf "$WORK"; sleep $((ATTEMPT * 2)); continue
             fi
 
+            # HML/CI: não abrir PR. Cada run gerava release-record/<BuildId> e um PR
+            # órfão (o stage PR_Main fica skipped no CI). O registro já está no artefato.
+            if [ "$ENVIRONMENT" != "prd" ]; then
+              echo "##[warning]Push direto em '${BRANCH}' bloqueado (branch policy). Registro de ${ENVIRONMENT} não publicado no git — sem PR de fallback. Veja o artefato do pipeline."
+              rm -rf "$WORK"; return 0
+            fi
+
             FALLBACK="release-record/$(Build.BuildId)"
             if git -C "$WORK" -c "$AUTH_CFG" push --quiet origin "HEAD:refs/heads/${FALLBACK}" 2>/dev/null; then
               PR_RESP=$(curl -sS -X POST \
                 -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
                 -H "Content-Type: application/json" \
-                -d "{\"sourceRefName\":\"refs/heads/${FALLBACK}\",\"targetRefName\":\"refs/heads/${BRANCH}\",\"title\":\"chore(release): registro de ${DEPLOY_TYPE} ${TAG} em prd\",\"description\":\"Registro automático do deploy em produção gerado pela esteira (record-prod-release). Build $(Build.BuildId).\"}" \
+                -d "{\"sourceRefName\":\"refs/heads/${FALLBACK}\",\"targetRefName\":\"refs/heads/${BRANCH}\",\"title\":\"chore(release): registro de ${DEPLOY_TYPE} ${TAG} em ${ENVIRONMENT}\",\"description\":\"Registro automático do deploy em ${ENVIRONMENT} gerado pela esteira (record-prod-release). Build $(Build.BuildId).\"}" \
                 "$(System.CollectionUri)$(System.TeamProject)/_apis/git/repositories/$(Build.Repository.ID)/pullrequests?api-version=7.1" || true)
               PR_ID=$(echo "$PR_RESP" | jq -r '.pullRequestId // empty' 2>/dev/null)
               if [ -n "$PR_ID" ]; then
