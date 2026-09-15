@@ -1,7 +1,3 @@
-# templates/sonarqube/quality-gate.yaml
-# Steps: aguarda o processamento da análise no servidor SonarQube (report-task.txt gerado
-# pelo SonarQubeAnalyze), imprime a tabela do Quality Gate e falha o job se o gate reprovar
-# (breakOnQualityGate=true). Compartilhado por qa-sonar-dotnet.yaml e qa-sonar-node.yaml.
 parameters:
   - name: breakOnQualityGate
     type: boolean
