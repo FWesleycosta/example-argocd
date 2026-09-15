@@ -15,9 +15,9 @@ parameters:
   - name: timeoutInMinutes
     type: number
     default: 120
-  - name: defaultExcludePatterns
+  - name: excludePatterns
     type: string
-    default: ''      # usado só se o app não informar veracode.excludePatterns (ex.: stack de frontend exclui node_modules/dist)
+    default: ''
 
 stages:
   - stage: Veracode
@@ -32,7 +32,7 @@ stages:
         steps:
           - template: ../veracode/scanner-veracode.yaml
             parameters:
-              excludePatterns: ${{ coalesce(parameters.veracode.excludePatterns, parameters.defaultExcludePatterns) }}
+              ${{ if ne(parameters.excludePatterns, '') }}:
+                excludePatterns: ${{ parameters.excludePatterns }}
               ${{ each par in parameters.veracode }}:
-                ${{ if ne(par.key, 'excludePatterns') }}:
-                  ${{ par.key }}: ${{ par.value }}
+                ${{ par.key }}: ${{ par.value }}
