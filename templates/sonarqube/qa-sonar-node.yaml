@@ -55,7 +55,9 @@ parameters:
     default: true
   - name: enforce
     type: boolean
-    default: true      # false = lint e testes que falham viram warning (job SucceededWithIssues) e o pipeline segue
+    default: true      # false = lint, testes e cobertura ausente viram warning (job SucceededWithIssues) e o pipeline segue
+                       # true  = lint/testes com rc != 0 falham o job; coverageReport ausente tambem falha (sem lcov o Sonar
+                       #         reporta 0% e um gate sem condicao de cobertura deixaria passar)
 
 steps:
   - task: NodeTool@0
@@ -126,19 +128,28 @@ steps:
           ${{ parameters.testCommand }}
           RC=$?
 
-          REPORT="$(Build.SourcesDirectory)/${{ parameters.coverageReport }}"
-          if [ -f "$REPORT" ]; then
-            echo "##[section]Cobertura: $REPORT ($(wc -l < "$REPORT") linhas)"
-          else
-            echo "##[warning]Relatorio de cobertura '${{ parameters.coverageReport }}' nao encontrado — o Sonar vai reportar 0% de cobertura. Configure o runner para gerar lcov (jest: coverageReporters lcov; vitest: coverage.reporter lcov)."
-          fi
-
           if [ "$RC" -ne 0 ]; then
             if [ "${ENFORCE,,}" = "true" ]; then
               echo "##[error]Testes falharam (rc=$RC). quality.mode=block: bloqueando."
               exit "$RC"
             fi
             echo "##vso[task.logissue type=warning]Testes falharam (rc=$RC), mas quality.mode=warn: seguindo sem bloquear. Corrija e mude para quality.mode: block."
+            echo "##vso[task.complete result=SucceededWithIssues;]"
+          fi
+
+          # Cobertura local (LH/LF do lcov): numero bruto, antes das exclusoes do Sonar. O valor
+          # oficial (com sonar.exclusions / coverage.exclusions) sai no step 'Avaliar Quality Gate'.
+          REPORT="$(Build.SourcesDirectory)/${{ parameters.coverageReport }}"
+          if [ -f "$REPORT" ]; then
+            LOCAL_COV=$(awk -F: '/^LF:/ { lf += $2 } /^LH:/ { lh += $2 } END { if (lf > 0) printf "%.1f%% (%d/%d linhas)", lh * 100 / lf, lh, lf; else print "sem linhas instrumentadas" }' "$REPORT")
+            echo "##[section]Cobertura local (lcov, antes das exclusoes do Sonar): $LOCAL_COV"
+          else
+            MSG="Relatorio de cobertura '${{ parameters.coverageReport }}' nao encontrado — o Sonar vai reportar 0% de cobertura. Configure o runner para gerar lcov (jest: coverageReporters lcov; vitest: coverage.reporter lcov) ou ajuste quality.coverage_report."
+            if [ "${ENFORCE,,}" = "true" ]; then
+              echo "##[error]$MSG quality.mode=block: bloqueando."
+              exit 1
+            fi
+            echo "##vso[task.logissue type=warning]$MSG quality.mode=warn: seguindo sem bloquear."
             echo "##vso[task.complete result=SucceededWithIssues;]"
           fi
         displayName: 'Testes + cobertura'
