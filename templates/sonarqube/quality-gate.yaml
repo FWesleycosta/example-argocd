@@ -108,6 +108,44 @@ steps:
           echo ""
         fi
 
+        # Cobertura MEDIDA na analise (API de measures), independente de o gate do projeto ter
+        # condicao de cobertura. Serve para calibrar o threshold antes de ligar o modo bloqueante
+        # e para denunciar 0% (lcov ausente / sem testes) que o gate sozinho nao mostraria.
+        COMPONENT_KEY=$(echo "$RESP" | jq -r '.task.componentKey // empty')
+        BRANCH=$(echo "$RESP" | jq -r '.task.branch // empty')
+        MEASURES_JSON=""
+        if [ -n "$COMPONENT_KEY" ]; then
+          MEASURES_JSON=$(curl -s -u "$AUTH" -G "$SONAR_URL/api/measures/component" \
+            --data-urlencode "component=$COMPONENT_KEY" \
+            ${BRANCH:+--data-urlencode "branch=$BRANCH"} \
+            --data-urlencode "metricKeys=coverage,new_coverage,lines_to_cover,uncovered_lines,new_lines_to_cover" || true)
+        fi
+        # .value = metrica geral; .period/.periods = metrica de novo codigo (varia com a versao do Sonar)
+        measure() {
+          echo "$MEASURES_JSON" | jq -r --arg k "$1" \
+            '.component.measures[]? | select(.metric == $k) | (.value // .period.value // .periods[0].value // empty)' 2>/dev/null || true
+        }
+        COV_ALL=$(measure coverage)
+        COV_NEW=$(measure new_coverage)
+        LINES_TO_COVER=$(measure lines_to_cover)
+        UNCOVERED=$(measure uncovered_lines)
+        NEW_LINES_TO_COVER=$(measure new_lines_to_cover)
+
+        echo "##[section]-------------------- COBERTURA MEDIDA --------------------"
+        echo ""
+        echo "  Geral       : ${COV_ALL:-n/d}%  (linhas a cobrir: ${LINES_TO_COVER:-n/d}, descobertas: ${UNCOVERED:-n/d})"
+        echo "  Novo código : ${COV_NEW:-n/d}%  (linhas novas a cobrir: ${NEW_LINES_TO_COVER:-n/d})"
+        echo ""
+        if [ -z "$COV_ALL" ]; then
+          echo "##vso[task.logissue type=warning]Sonar nao retornou a metrica 'coverage' (branch: ${BRANCH:-main}). Nenhum relatorio lcov/cobertura foi importado na analise."
+        elif awk -v c="$COV_ALL" 'BEGIN { exit !(c + 0 == 0) }'; then
+          echo "##vso[task.logissue type=warning]Cobertura medida = 0%. Causas comuns: relatorio de cobertura ausente, script 'test' inexistente (--if-present) ou runner sem reporter lcov. O Quality Gate so barra isso se tiver condicao de cobertura."
+        fi
+        # Disponiveis para steps seguintes do mesmo job (ex.: publicar no Summary).
+        echo "##vso[task.setvariable variable=SONAR_COVERAGE]${COV_ALL:-}"
+        echo "##vso[task.setvariable variable=SONAR_NEW_COVERAGE]${COV_NEW:-}"
+        echo ""
+
         echo "  RESULTADO GERAL: $GATE_STATUS"
         if [ -n "${DASHBOARD_URL:-}" ]; then
           echo "  Dashboard: $DASHBOARD_URL"

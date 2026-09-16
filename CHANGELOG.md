@@ -186,6 +186,57 @@ flowchart TD
 
  ---
 
+## [3.10.0] - 2026-09-16
+
+Cobertura de testes medida e visível em todo run, e fechamento de bypasses do Sonar no stack
+de frontend (`quality.mode` inválido, `quality` parcial, lcov ausente em `block`).
+
+### Adicionado
+
+- **`templates/sonarqube/quality-gate.yaml`** (compartilhado por .NET e Node): bloco
+  **COBERTURA MEDIDA** logo após a tabela do gate, lido da API `api/measures/component`
+  (`coverage`, `new_coverage`, `lines_to_cover`, `uncovered_lines`, `new_lines_to_cover`) da
+  branch analisada. Aparece **sempre**, mesmo que o Quality Gate do projeto não tenha condição
+  de cobertura — é o número para calibrar o threshold antes de ligar `quality.mode: block`.
+  Cobertura `0%` ou métrica ausente emite `##[warning]` nomeando as causas (lcov não gerado,
+  script `test` inexistente, reporter sem lcov). **Não altera o veredito** do gate. Exporta
+  `SONAR_COVERAGE` e `SONAR_NEW_COVERAGE` como variáveis do job.
+- **`templates/sonarqube/qa-sonar-node.yaml`**: o step `Testes + cobertura` imprime a
+  cobertura **local** do lcov (`LH/LF`, antes das exclusões do Sonar) para comparação rápida
+  com o valor oficial do gate.
+
+### Alterado
+
+- **`spa-frontend.yaml` — `quality.mode` inválido falha o `Validate`.** Antes, qualquer valor
+  diferente de `block` (typo, `strict`, `true`) caía silenciosamente em modo aviso. Agora só
+  `warn` | `block` são aceitos (comparação case-insensitive do ADO).
+- **`spa-frontend.yaml` — `lint_command`/`test_command` passam por `coalesce`.** Como o objeto
+  `quality` **substitui** o default inteiro, `quality: { mode: block }` chegava ao scanner com
+  os dois comandos vazios e **pulava lint e testes** em modo bloqueante. Chave ausente ou vazia
+  agora cai no default (`npm run lint --if-present` / `npm test --if-present -- --coverage`).
+  **Deixa de ser possível desligar lint/testes pelo stack**; app sem os scripts no
+  `package.json` continua pulado pelo `--if-present`. `qa-sonar-node.yaml` chamado direto
+  mantém `'' = pular`.
+- **`qa-sonar-node.yaml` — lcov ausente com `enforce: true` (`quality.mode: block`) agora
+  falha o job.** Antes era só warning e o Sonar recebia 0% de cobertura; um gate sem condição
+  de cobertura deixava passar. Em `warn` segue como warning (`SucceededWithIssues`).
+
+### Notas de adoção
+
+- Apontar `ref: refs/tags/v3.10.0`. YAML da app não muda para quem usa os defaults.
+- **Apps em `quality.mode: block` sem lcov** passam a falhar no step `Testes + cobertura`.
+  Corrija o runner (jest: `coverageReporters: ['lcov']`; vitest: `coverage.reporter: ['lcov']`)
+  ou ajuste `quality.coverage_report`.
+- **Apps que usavam `lint_command: ''`/`test_command: ''` para pular** voltam a rodar os
+  defaults. Em `warn` o efeito é no máximo job amarelo.
+- Para calibrar o gate: rode em `warn`, leia **COBERTURA MEDIDA** no step `Avaliar Quality
+  Gate`, configure no Sonar condição de **novo código** (80%, Sonar way) e uma **geral** um
+  pouco abaixo do medido, subindo aos poucos; só então mude para `block`.
+- Backend .NET recebe apenas o bloco informativo de cobertura (`quality-gate.yaml` é
+  compartilhado); nenhuma mudança de veredito.
+
+---
+
 ## [3.9.0] - 2026-09-11
 
 Defaults TLS mais novos na API Gateway privada e no CloudFront da SPA.

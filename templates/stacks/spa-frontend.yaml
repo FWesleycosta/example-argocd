@@ -29,8 +29,10 @@ parameters:
   # mode: 'warn'  = lint, testes e Quality Gate rodam e REPORTAM (job fica amarelo), mas nunca
   #                 bloqueiam — default para adoção sem quebrar pipelines existentes.
   #       'block' = tudo vira gate (recomendado depois que o app estabilizar lint/testes/Sonar).
-  # ATENÇÃO: objeto passado parcialmente SUBSTITUI o default inteiro (não há merge) — se
-  # sobrescrever, informe todas as chaves. lint_command/test_command vazios = pular.
+  # ATENÇÃO: objeto passado parcialmente SUBSTITUI o default inteiro (não há merge). Chave
+  # ausente ou vazia cai no default abaixo (coalesce) — NÃO é possível desligar lint/testes pelo
+  # stack; app sem script 'lint'/'test' no package.json já é pulado pelo --if-present.
+  # mode fora de warn|block falha o stage Validate (não cai silenciosamente em warn).
   - name: quality
     type: object
     default:
@@ -116,7 +118,12 @@ stages:
                   - script: |
                       echo "##[warning]Parametro 'owner' nao informado. A tag 'Owner' dos recursos AWS ficara vazia."
                     displayName: 'Alertar owner nao informado'
-              - ${{ if ne(parameters.quality.mode, 'block') }}:
+              - ${{ if not(in(parameters.quality.mode, 'warn', 'block')) }}:
+                  - script: |
+                      echo "##[error]quality.mode='${{ parameters.quality.mode }}' invalido. Valores aceitos: warn | block. Um valor desconhecido NAO cai em modo aviso: corrija o azure-pipelines.yml."
+                      exit 1
+                    displayName: 'quality.mode invalido'
+              - ${{ elseif ne(parameters.quality.mode, 'block') }}:
                   - script: |
                       echo "##[warning]quality.mode='${{ parameters.quality.mode }}': lint, testes e Quality Gate do Sonar SO REPORTAM (nao bloqueiam). Use quality.mode: block para transformar em gate."
                     displayName: 'Alertar gates de qualidade em modo aviso'
@@ -138,8 +145,8 @@ stages:
                 parameters:
                   nodeVersion: ${{ coalesce(parameters.frontend.node_version, '20.x') }}
                   installCommand: ${{ coalesce(parameters.frontend.install_command, '') }}
-                  lintCommand: ${{ parameters.quality.lint_command }}
-                  testCommand: ${{ parameters.quality.test_command }}
+                  lintCommand: ${{ coalesce(parameters.quality.lint_command, 'npm run lint --if-present') }}
+                  testCommand: ${{ coalesce(parameters.quality.test_command, 'npm test --if-present -- --coverage') }}
                   coverageReport: ${{ coalesce(parameters.quality.coverage_report, 'coverage/lcov.info') }}
                   ${{ if eq(parameters.quality.mode, 'block') }}:
                     enforce: true
