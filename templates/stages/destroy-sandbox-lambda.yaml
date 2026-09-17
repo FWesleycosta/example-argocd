@@ -1,0 +1,81 @@
+parameters:
+  - name: lambda
+    type: object
+  - name: resources
+    type: object
+    default: {}
+  - name: ssm_parameters
+    type: object
+    default: []
+  - name: sistema
+    type: string
+    default: ''
+  - name: owner
+    type: string
+    default: ''
+  - name: resourceSuffix
+    type: string
+    default: ''
+
+stages:
+  - stage: Destroy_sdx
+    displayName: 'Destroy sandbox lambda (sdx)'
+    condition: eq(variables['Build.Reason'], 'Manual')
+    jobs:
+      - deployment: destroy
+        displayName: 'Destroy sandbox lambda (sdx)'
+        environment: sdx
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          - template: ../variables/env/sdx.yaml
+            parameters:
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  path: s/app
+                - checkout: templates
+                  persistCredentials: true
+                  path: s/templates
+
+                - template: ../infra/setup-git-auth.yaml
+
+                - bash: |
+                    set -euo pipefail
+                    echo "##vso[build.updatebuildnumber]$(Build.Repository.Name)-destroy${{ variables.resourceSuffix }}-$(Build.BuildId)"
+                    echo "##vso[build.addbuildtag]destroy"
+                    echo "##vso[build.addbuildtag]sdx"
+                  displayName: 'Carimbar destroy (run name + tags)'
+
+                # Sem pacote: o hash fica nulo e o plan -destroy não precisa do zip.
+                - template: ../steps/lambda-prepare.yaml
+                  parameters:
+                    lambda: ${{ parameters.lambda }}
+                    resources: ${{ parameters.resources }}
+                    resourceSuffix: ${{ variables.resourceSuffix }}
+                    packageDir: ''
+
+                - template: ../steps/terraform-destroy.yaml
+                  parameters:
+                    serviceAccount: ${{ variables.serviceAccount }}
+                    awsRegion: ${{ variables.awsRegion }}
+                    workingDirectory: $(Pipeline.Workspace)/terraform
+                    backendBucket: 'tfstate-$(Build.Repository.Name)-sdx'
+                    ${{ if or(eq(variables.resourceSuffix, ''), eq(variables.resourceSuffix, '-sdx')) }}:
+                      backendKey: '$(Build.Repository.Name)/terraform.tfstate'
+                    ${{ else }}:
+                      backendKey: '$(Build.Repository.Name)${{ variables.resourceSuffix }}/terraform.tfstate'
+                    tfVars:
+                      environment: sdx
+                      aws_region: ${{ variables.awsRegion }}
+                      resource_suffix: ${{ variables.resourceSuffix }}
+                      sistema: ${{ parameters.sistema }}
+                      owner: ${{ parameters.owner }}
+                      subnet_ids_csv: '${{ variables.subnetsPrivate }}'
+                      vpc_id: '${{ variables.vpcId }}'
+                      lambda: ${{ parameters.lambda }}
+                      resources: ${{ parameters.resources }}
+                      ssm_parameters: ${{ parameters.ssm_parameters }}

@@ -186,6 +186,101 @@ flowchart TD
 
  ---
 
+## [4.0.0] - 2026-09-15
+
+Novo stack de **AWS Lambda** (.NET), limpeza de templates mortos, remoção de parâmetros de
+diagnóstico do `setup-git-auth` e correção de três regressões introduzidas em `main` depois
+da `3.9.0`. O MAJOR vem de uma única mudança de fluxo: o hotfix de **SPA** deixou de excluir
+a branch ao final.
+
+### Adicionado
+
+- **Stack `stacks/dotnet-lambda.yaml`** — substitui o `azure-pipelines-infrastructure.yaml`
+  legado das lambdas. O app declara só dados (`lambda`, `resources`, `config`); o Terraform
+  que morava em `terraform/` de cada repositório passa a ser o root
+  **`manifests/terraform-lambda/`** da plataforma. Mesmo roteamento por branch, Sonar,
+  Veracode, gate de GMUD, PRs de promoção, hotfix, sandbox (`Deploy_sdx` +
+  `destroySandbox`), `planOnly` e registro de release (`kind: lambda`) do backend/frontend.
+  - `dotnet/build-lambda-dotnet.yaml`: `dotnet publish` framework-dependent (RID derivado de
+    `lambda.architecture`), zip único `<repo>.zip` no artefato `lambda-package`; falha acima
+    de 50 MB zipado / 250 MB descompactado (limites do upload direto).
+  - `deploy-lambda.yaml` (motor) + `steps/lambda-prepare.yaml` + `stages/deploy-lambda.yaml`
+    + `stages/destroy-sandbox-lambda.yaml` + `hotfix/hotfix-lambda-dotnet.yaml`. O deploy
+    verifica `State/LastUpdateStatus` de cada função e publica a tabela na Summary.
+  - **`manifests/terraform-lambda/`**: N funções de um pacote (`lambda.handlers`), role única
+    com policy restrita ao declarado, VPC opcional (`subnetsPrivate`/`vpcId` do ambiente),
+    SSM/secrets (prefixo `/sdx` no sandbox), SQS+DLQ, SNS, assinaturas, triggers SQS→função,
+    Step Functions (ASL em `infra/` do app, `templatefile` com `lambda_arns`/`sns_arns`/
+    `sqs_arns`) e EventBridge Pipes. Recursos nativos do provider (só a função usa o módulo
+    `aws_lambda_function`) para a suíte `tests/*.tftest.hcl` rodar offline (18 runs,
+    `mock_provider` nos lookups externos). `lambda` e `resources` são objetos com atributos
+    `optional()`: chave omitida usa o default.
+  - `steps/resolve-artifact-static.yaml`: parâmetro `artifactKind` (default `static`);
+    `record-prod-release` rotula `lambda` como `static` (artefato/build).
+  - `examples/azure-pipelines-lambda.yml`.
+
+### Alterado
+
+- **Hotfix de SPA (`hotfix/hotfix-frontend.yaml`)**: o stage `Delete_Hotfix_Branch`
+  foi removido. O fluxo termina em `PR_PRD`; a branch `hotfix/*` **não é mais
+  excluída** automaticamente. O hotfix de backend mantém a exclusão, agora com o job
+  inline em `hotfix/hotfix-backend-dotnet.yaml` (antes em `utils/delete-branch.yaml`).
+  Comportamento do backend inalterado.
+
+### Removido
+
+- **Templates do fluxo Lambda legado** em `templates/infra/`:
+  `azure-infraestructure.yaml`, `generate-tfvars.yaml`, `terraform-infra.yaml`,
+  `terraform.yaml`. Eram órfãos (nenhum stack os alcançava) e referenciavam
+  caminhos inexistentes (`templates/infra/build.yaml@pipelines`,
+  `variables/global-variables.yaml`). Fica só `infra/setup-git-auth.yaml`.
+- **`steps/rollout-verify.yaml`**: apagado. A chamada em `stages/deploy.yaml` já
+  estava comentada; o débito "deploy verde com pod em CrashLoop" segue aberto, e
+  reativá-lo agora exige reescrever o step.
+- **`utils/delete-branch.yaml`**: apagado; lógica internalizada no hotfix de backend
+  (ver Alterado).
+- **`infra/setup-git-auth.yaml`**: parâmetros `authMode` (`pat`/`systemToken`) e
+  `debug` removidos. Só o modo PAT via variable group `git-credentials` permanece;
+  o probe com classificação de erro (TF401019/401/proxy) e o bloco de debug saíram.
+  Nenhum stack expunha esses parâmetros ao app.
+
+### Corrigido
+
+Regressões introduzidas em `main` em 2026-09-15, sem tag publicada com elas:
+
+- **`steps/record-prod-release.yaml` e `steps/resolve-artifact-image.yaml`**: a chave
+  raiz tinha virado `=parameters:`, o que faz o template não declarar parâmetro
+  nenhum e quebra a expansão de `Deploy_hml`/`Deploy_prd` (backend e SPA) e de
+  `Rollback_prd`.
+- **`stages/rollback.yaml`**: a chamada ao `resolve-artifact-image.yaml` havia sido
+  removida e os parâmetros dele (`serviceAccount`, `awsRegion`, `awsAccID`,
+  `imageTag`) ficaram na chamada ao `record-prod-release.yaml`, que não os declara.
+  Restaurada a sequência `resolve → record`; sem ela o registro de rollback sairia
+  com `kind: unknown`.
+- **`veracode/scanner-veracode.yaml`**: arquivo inteiro deslocado 2 espaços,
+  inclusive `parameters:`/`steps:` na raiz. Reindentado; sem mudança de conteúdo.
+
+### Notas de adoção
+
+- Apontar `ref: refs/tags/v4.0.0`. O YAML da app **não muda**: nenhum parâmetro de
+  `stacks/*` foi removido ou renomeado.
+- **Lambda migrada do legado**: o state da esteira nasce vazio (bucket `tfstate-<app>-<env>`,
+  não o `tfstates-<conta>` compartilhado) e os nomes coincidem com os antigos
+  (`<repo>-<handler>`, `sqs-<env>-<region>-<fila>`), então o 1º apply falha com
+  `ResourceConflictException`/`QueueAlreadyExists`. Rode com `planOnly: true`, importe os
+  recursos no novo state (ou destrua pelo pipeline legado antes) — não há import
+  automático como no frontend (`2.7.0`).
+- **SPA com `hotfix/*`**: excluir a branch manualmente após o merge do `PR_PRD`,
+  ou aguardar a reintrodução do stage.
+- Quem usava `authMode: systemToken` ou `debug: true` chamando
+  `infra/setup-git-auth.yaml` diretamente (fora dos stacks) precisa remover os
+  parâmetros.
+- Validar via **Preview API** um app em `release/*` (hml) e um run com
+  `rollbackImageTag` antes de cortar a tag: as correções acima foram validadas só
+  por parse de YAML e conferência de nomes de parâmetros.
+
+---
+
 ## [3.9.0] - 2026-09-11
 
 Defaults TLS mais novos na API Gateway privada e no CloudFront da SPA.

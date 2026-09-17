@@ -1,0 +1,240 @@
+# Stack de AWS Lambda (.NET, pacote zip com N handlers). Mesmo roteamento por branch do
+# backend/frontend; o motor é deploy-lambda.yaml + manifests/terraform-lambda (a infra que no
+# modelo legado morava em terraform/ de cada repositório de lambda).
+parameters:
+  # --- função (stage Build + Terraform) ---
+  # src_path (obrigatório): csproj publicado; handlers (obrigatório): <chave>: 'Assembly::Tipo::Metodo'.
+  # Demais chaves são opcionais (default no root Terraform): dotnet_version '10.0.x',
+  # function_name_prefix (vazio = nome do repositório), runtime dotnet10, architecture x86_64,
+  # memory_size 512, timeout 30, tracing_config PassThrough, description, log_retention_days 30,
+  # layer_arns []. Chave omitida usa o default (o objeto NÃO precisa vir completo).
+  - name: lambda
+    type: object
+
+  # --- recursos AWS (todas as chaves opcionais): sqs, sns_topics, sns_sqs_subscriptions,
+  # secrets, sqs_triggers, step_functions, pipes — contrato em manifests/terraform-lambda/README.md
+  - name: resources
+    type: object
+    default: {}
+
+  # env_vars: iguais nos três ambientes; env_vars_by_env.<env>: sobrescrevem por ambiente;
+  # ssm_parameters.<env>: a esteira seleciona o do ambiente do stage. Chave omitida = vazio.
+  - name: config
+    type: object
+    default:
+      env_vars: []
+      env_vars_by_env:
+        dev: []
+        hml: []
+        prd: []
+      ssm_parameters:
+        dev: []
+        hml: []
+        prd: []
+
+  - name: veracode
+    type: object
+    default: {}
+  - name: destroySandbox
+    type: boolean
+    default: false
+    displayName: 'DESTRUIR o sandbox (terraform destroy: funções, filas, tópicos...) — só branches sandbox/*'
+  - name: planOnly
+    type: boolean
+    default: false
+    displayName: 'Somente terraform plan (não aplica infra nem atualiza funções)'
+  - name: sistema
+    type: string
+    default: ''
+    displayName: 'Sistema/dominio de negocio (tag de governanca AWS)'
+  - name: owner
+    type: string
+    default: ''
+    displayName: 'Time/pessoa responsavel pela aplicacao (tag de governanca AWS)'
+  - name: resourceSuffix
+    type: string
+    default: ''
+    displayName: 'Sufixo de recursos AWS (somente sandbox; vazio usa -sdx)'
+
+variables:
+  - group: git-credentials   # GIT_PAT para o terraform init clonar módulos privados (Fibra.DevOps.Terraform)
+
+stages:
+  - ${{ if eq(parameters.destroySandbox, true) }}:
+      - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/sandbox/') }}:
+          - template: ../stages/destroy-sandbox-lambda.yaml
+            parameters:
+              lambda: ${{ parameters.lambda }}
+              resources: ${{ parameters.resources }}
+              ssm_parameters: ${{ parameters.config.ssm_parameters.dev }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+      - ${{ else }}:
+          - stage: Destroy_guard
+            displayName: 'destroySandbox bloqueado — branch não é sandbox/*'
+            jobs:
+              - job: Guard
+                displayName: 'Bloquear destroy fora de sandbox/*'
+                pool:
+                  vmImage: ubuntu-latest
+                steps:
+                  - script: |
+                      echo "##[error]destroySandbox=true só é permitido em branches sandbox/* (branch atual: $(Build.SourceBranch)). Nenhum stage de deploy ou destroy foi executado."
+                      exit 1
+                    displayName: 'destroySandbox fora de sandbox/*'
+
+  - ${{ else }}:
+      - stage: Validate
+        displayName: 'Validar parametros'
+        jobs:
+          - job: ValidateLambda
+            displayName: 'Validar lambda/config'
+            pool:
+              vmImage: ubuntu-latest
+            steps:
+              - ${{ if eq(parameters.lambda.src_path, '') }}:
+                  - script: |
+                      echo "##[error]lambda.src_path e obrigatorio (caminho do csproj, ex.: src/Minha.Lambda/Minha.Lambda.csproj)"
+                      exit 1
+                    displayName: 'lambda.src_path ausente'
+              - ${{ else }}:
+                  - script: |
+                      echo "lambda.src_path ok: '${{ parameters.lambda.src_path }}'"
+                    displayName: 'lambda.src_path ok'
+
+              - ${{ if eq(parameters.lambda.handlers, '') }}:
+                  - script: |
+                      echo "##[error]lambda.handlers e obrigatorio: <chave>: 'Assembly::Namespace.Tipo::Metodo' (uma funcao por chave)"
+                      exit 1
+                    displayName: 'lambda.handlers ausente'
+
+              - ${{ if and(ne(parameters.lambda.architecture, ''), ne(parameters.lambda.architecture, 'x86_64'), ne(parameters.lambda.architecture, 'arm64')) }}:
+                  - script: |
+                      echo "##[error]lambda.architecture deve ser x86_64 ou arm64 (recebido: '${{ parameters.lambda.architecture }}')"
+                      exit 1
+                    displayName: 'lambda.architecture invalida'
+
+              - ${{ if eq(parameters.sistema, '') }}:
+                  - script: |
+                      echo "##[warning]Parametro 'sistema' nao informado. A tag 'Sistema' dos recursos AWS ficara vazia."
+                    displayName: 'Alertar sistema nao informado'
+              - ${{ if eq(parameters.owner, '') }}:
+                  - script: |
+                      echo "##[warning]Parametro 'owner' nao informado. A tag 'Owner' dos recursos AWS ficara vazia."
+                    displayName: 'Alertar owner nao informado'
+
+      - stage: SonarQube
+        displayName: 'Analisar qualidade com SonarQube'
+        dependsOn: Validate
+        condition: succeeded()
+        jobs:
+          - job: SonarQubeScan
+            displayName: 'Analisar código .NET'
+            pool:
+              vmImage: ubuntu-latest
+            steps:
+              - checkout: self
+                fetchDepth: 0
+                displayName: 'Obter código-fonte completo'
+              - template: ../sonarqube/qa-sonar-dotnet.yaml
+                parameters:
+                  dotnetVersion: ${{ coalesce(parameters.lambda.dotnet_version, '10.0.x') }}
+
+      - stage: Build
+        displayName: 'Compilar e empacotar Lambda'
+        dependsOn: SonarQube
+        condition: succeeded()
+        jobs:
+          - template: ../dotnet/build-lambda-dotnet.yaml
+            parameters:
+              csprojPath: ${{ parameters.lambda.src_path }}
+              dotnetVersion: ${{ coalesce(parameters.lambda.dotnet_version, '10.0.x') }}
+              architecture: ${{ coalesce(parameters.lambda.architecture, 'x86_64') }}
+
+      - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/') }}:
+          - template: ../hotfix/hotfix-lambda-dotnet.yaml
+            parameters:
+              lambda: ${{ parameters.lambda }}
+              resources: ${{ parameters.resources }}
+              config: ${{ parameters.config }}
+              veracode: ${{ parameters.veracode }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              planOnly: ${{ parameters.planOnly }}
+
+      - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+          - template: ../stages/deploy-lambda.yaml
+            parameters:
+              environment: hml
+              dependsOn: [Build]
+              lambda: ${{ parameters.lambda }}
+              resources: ${{ parameters.resources }}
+              env_vars: ${{ parameters.config.env_vars }}
+              env_vars_env: ${{ parameters.config.env_vars_by_env.hml }}
+              ssm_parameters: ${{ parameters.config.ssm_parameters.hml }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+              planOnly: ${{ parameters.planOnly }}
+
+          - template: ../stages/veracode.yaml
+            parameters:
+              dependsOn: [Deploy_hml]
+              veracode: ${{ parameters.veracode }}
+
+          - template: ../stages/deploy-lambda.yaml
+            parameters:
+              environment: prd
+              dependsOn: [Deploy_hml, Veracode]
+              condition: and(succeeded(), eq(variables['Build.Reason'], 'Manual'))
+              lambda: ${{ parameters.lambda }}
+              resources: ${{ parameters.resources }}
+              env_vars: ${{ parameters.config.env_vars }}
+              env_vars_env: ${{ parameters.config.env_vars_by_env.prd }}
+              ssm_parameters: ${{ parameters.config.ssm_parameters.prd }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+              planOnly: ${{ parameters.planOnly }}
+
+          - stage: PR_Main
+            displayName: 'Abrir PR (release → main)'
+            dependsOn: Deploy_prd
+            condition: and(succeeded(), eq(variables['Build.Reason'], 'Manual'))
+            jobs:
+              - template: ../utils/create-pullrequest.yaml
+                parameters:
+                  sourceBranch: ${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
+                  targetBranch: main
+
+      - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/sandbox/') }}:
+          - template: ../stages/deploy-lambda.yaml
+            parameters:
+              environment: sdx
+              dependsOn: [Build]
+              lambda: ${{ parameters.lambda }}
+              resources: ${{ parameters.resources }}
+              env_vars: ${{ parameters.config.env_vars }}
+              env_vars_env: ${{ parameters.config.env_vars_by_env.dev }}
+              ssm_parameters: ${{ parameters.config.ssm_parameters.dev }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+              planOnly: ${{ parameters.planOnly }}
+
+      - ${{ else }}:
+          - template: ../stages/deploy-lambda.yaml
+            parameters:
+              environment: dev
+              dependsOn: [Build]
+              condition: and(succeeded('Build'), or(eq(variables['Build.SourceBranch'], 'refs/heads/develop'), eq(variables['Build.SourceBranch'], 'refs/heads/sandbox')))
+              lambda: ${{ parameters.lambda }}
+              resources: ${{ parameters.resources }}
+              env_vars: ${{ parameters.config.env_vars }}
+              env_vars_env: ${{ parameters.config.env_vars_by_env.dev }}
+              ssm_parameters: ${{ parameters.config.ssm_parameters.dev }}
+              sistema: ${{ parameters.sistema }}
+              owner: ${{ parameters.owner }}
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+              planOnly: ${{ parameters.planOnly }}

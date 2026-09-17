@@ -1,0 +1,165 @@
+# Motor de deploy de AWS Lambda (.NET): prepara o root manifests/terraform-lambda no workdir,
+# roda terraform init → validate → plan → apply e verifica o estado das funções.
+# Chamado por stages/deploy-lambda.yaml (um stage por ambiente).
+parameters:
+  - name: environment
+    type: string
+  - name: resourceSuffix
+    type: string
+    default: ''
+  - name: sistema
+    type: string
+    default: ''
+  - name: owner
+    type: string
+    default: ''
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: subnetsPrivate
+    type: string
+    default: ''
+  - name: vpcId
+    type: string
+    default: ''
+  - name: lambda
+    type: object
+  - name: resources
+    type: object
+    default: {}
+  - name: env_vars
+    type: object
+    default: []
+  - name: env_vars_env
+    type: object
+    default: []
+  - name: ssm_parameters
+    type: object
+    default: []
+  - name: packageDir
+    type: string
+    default: '$(Pipeline.Workspace)/lambda-package'
+  - name: appDir
+    type: string
+    default: '$(Pipeline.Workspace)/s/app'
+  - name: terraformSourceDir
+    type: string
+    default: '$(Pipeline.Workspace)/s/templates/manifests/terraform-lambda'
+  - name: terraformWorkDir
+    type: string
+    default: '$(Pipeline.Workspace)/terraform'
+  - name: planOnly
+    type: boolean
+    default: false
+
+steps:
+  - template: steps/lambda-prepare.yaml
+    parameters:
+      lambda: ${{ parameters.lambda }}
+      resources: ${{ parameters.resources }}
+      resourceSuffix: ${{ parameters.resourceSuffix }}
+      appDir: ${{ parameters.appDir }}
+      packageDir: ${{ parameters.packageDir }}
+      terraformSourceDir: ${{ parameters.terraformSourceDir }}
+      terraformWorkDir: ${{ parameters.terraformWorkDir }}
+
+  - template: steps/terraform-apply.yaml
+    parameters:
+      serviceAccount: ${{ parameters.serviceAccount }}
+      awsRegion: ${{ parameters.awsRegion }}
+      workingDirectory: ${{ parameters.terraformWorkDir }}
+      backendBucket: 'tfstate-$(Build.Repository.Name)-${{ parameters.environment }}'
+      ${{ if or(eq(parameters.resourceSuffix, ''), eq(parameters.resourceSuffix, '-sdx')) }}:
+        backendKey: '$(Build.Repository.Name)/terraform.tfstate'
+      ${{ else }}:
+        backendKey: '$(Build.Repository.Name)${{ parameters.resourceSuffix }}/terraform.tfstate'
+      planOnly: ${{ parameters.planOnly }}
+      tfVars:
+        environment: ${{ parameters.environment }}
+        aws_region: ${{ parameters.awsRegion }}
+        resource_suffix: ${{ parameters.resourceSuffix }}
+        sistema: ${{ parameters.sistema }}
+        owner: ${{ parameters.owner }}
+        subnet_ids_csv: '${{ parameters.subnetsPrivate }}'
+        vpc_id: '${{ parameters.vpcId }}'
+        lambda: ${{ parameters.lambda }}
+        resources: ${{ parameters.resources }}
+        environment_variables_common: ${{ parameters.env_vars }}
+        environment_variables_env: ${{ parameters.env_vars_env }}
+        ssm_parameters: ${{ parameters.ssm_parameters }}
+
+  - ${{ if eq(parameters.planOnly, true) }}:
+      - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+        displayName: 'planOnly: publicar plan (Summary + artefato) e encerrar'
+        inputs:
+          awsCredentials: ${{ parameters.serviceAccount }}
+          regionName: ${{ parameters.awsRegion }}
+          scriptType: inline
+          inlineScript: |
+            set -euo pipefail
+            cd "${{ parameters.terraformWorkDir }}"
+            terraform show -no-color tfplan > plan.txt
+            terraform show -json tfplan > plan.json
+            CREATES=$(jq '[.resource_changes[]? | select(.change.actions == ["create"])] | length' plan.json)
+            UPDATES=$(jq '[.resource_changes[]? | select(.change.actions == ["update"])] | length' plan.json)
+            REPLACES=$(jq '[.resource_changes[]? | select(.change.actions | index("delete")) | select(.change.actions | index("create"))] | length' plan.json)
+            DELETES=$(jq '[.resource_changes[]? | select(.change.actions == ["delete"])] | length' plan.json)
+            {
+              echo "## planOnly — Terraform plan de \`${{ parameters.environment }}\` (NADA foi aplicado)"
+              echo ""
+              echo "- **App**: \`$(Build.Repository.Name)\` · **Branch**: \`$(Build.SourceBranch)\` · **Disparado por**: $(Build.RequestedFor)"
+              echo "- **create**: ${CREATES} · **update**: ${UPDATES} · **replace**: ${REPLACES} · **delete**: ${DELETES}"
+              echo ""
+              jq -r '.resource_changes[]? | select(.change.actions != ["no-op"]) | "- `\(.address)` — \(.change.actions | join(","))"' plan.json
+              echo ""
+              echo "_Plan completo no artefato \`tf-plan-${{ parameters.environment }}\` (plan.txt). Para aplicar, rode novamente sem planOnly._"
+            } > plan-summary.md
+            cat plan-summary.md
+            echo "##vso[task.uploadsummary]${{ parameters.terraformWorkDir }}/plan-summary.md"
+            echo "##vso[artifact.upload artifactname=tf-plan-${{ parameters.environment }}]${{ parameters.terraformWorkDir }}/plan.txt"
+            echo "##vso[artifact.upload artifactname=tf-plan-${{ parameters.environment }}]${{ parameters.terraformWorkDir }}/plan.json"
+            if [[ "$REPLACES" -gt 0 || "$DELETES" -gt 0 ]]; then
+              echo "##[warning]O plan contém ${REPLACES} replace(s) e ${DELETES} delete(s) — revise antes de rodar sem planOnly."
+            fi
+
+  - ${{ if eq(parameters.planOnly, false) }}:
+      - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+        displayName: 'Verificar funções (State/LastUpdateStatus)'
+        inputs:
+          awsCredentials: ${{ parameters.serviceAccount }}
+          regionName: ${{ parameters.awsRegion }}
+          scriptType: inline
+          inlineScript: |
+            set -euo pipefail
+            cd "${{ parameters.terraformWorkDir }}"
+            NAMES=$(terraform output -json function_names | jq -r '.[]' | sort)
+            [ -n "$NAMES" ] || { echo "##[error]Output function_names vazio."; exit 1; }
+
+            FAIL=0
+            SUMMARY="funcoes-summary.md"
+            {
+              echo "## Lambda — \`${{ parameters.environment }}\` · build $(Build.BuildId)"
+              echo ""
+              echo "| Função | State | Última atualização | Runtime | Memória | Timeout |"
+              echo "|---|---|---|---|---|---|"
+            } > "$SUMMARY"
+            for FN in $NAMES; do
+              CFG=$(aws lambda get-function-configuration --function-name "$FN" \
+                --query '{State:State,Status:LastUpdateStatus,Reason:LastUpdateStatusReason,Runtime:Runtime,Memory:MemorySize,Timeout:Timeout}' --output json)
+              STATE=$(echo "$CFG" | jq -r .State); STATUS=$(echo "$CFG" | jq -r .Status)
+              echo "| \`$FN\` | $STATE | $STATUS | $(echo "$CFG" | jq -r .Runtime) | $(echo "$CFG" | jq -r .Memory) MB | $(echo "$CFG" | jq -r .Timeout)s |" >> "$SUMMARY"
+              if [ "$STATE" != "Active" ] || [ "$STATUS" != "Successful" ]; then
+                echo "##[error]$FN: State=$STATE LastUpdateStatus=$STATUS ($(echo "$CFG" | jq -r '.Reason // "-"'))"
+                FAIL=1
+              else
+                echo "  $FN: Active / Successful"
+              fi
+            done
+            echo "##vso[task.uploadsummary]${{ parameters.terraformWorkDir }}/$SUMMARY"
+
+            LIST=$(echo "$NAMES" | paste -sd, -)
+            echo "##vso[task.setvariable variable=LAMBDA_FUNCTIONS]$LIST"
+            echo "##vso[task.setvariable variable=LAMBDA_ARTIFACT_URI]lambda://${{ parameters.awsRegion }}/$LIST"
+            [ "$FAIL" -eq 0 ] || exit 1
+            echo "##[section]$(echo "$NAMES" | wc -l | tr -d ' ') função(ões) ativas em ${{ parameters.environment }}."

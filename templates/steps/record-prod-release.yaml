@@ -113,7 +113,7 @@ steps:
           TAG="${TAG:-$(Build.BuildId)}"
         fi
         case "$ARTIFACT_KIND" in
-          static) REF_LABEL="Artefato" ;;
+          static|lambda) REF_LABEL="Artefato" ;;
           *)      REF_LABEL="Imagem" ;;
         esac
 
@@ -203,7 +203,7 @@ steps:
           echo "Build ID:       $(Build.BuildId)"
           echo "Build Number:   $(Build.BuildNumber)"
           echo ""
-          if [ "$ARTIFACT_KIND" = "static" ]; then
+          if [ "$ARTIFACT_KIND" = "static" ] || [ "$ARTIFACT_KIND" = "lambda" ]; then
             echo "Artefato:       build $TAG"
             echo "Local:          $IMAGE_URI"
             echo "Digest:         $DIGEST"
@@ -230,7 +230,7 @@ steps:
           echo "| Data (UTC) | $DEPLOYED_AT |"
           echo "| Disparado por | $(Build.RequestedFor) |"
           echo "| Pipeline | [Build $(Build.BuildId)]($PIPELINE_URL) |"
-          if [ "$ARTIFACT_KIND" = "static" ]; then
+          if [ "$ARTIFACT_KIND" = "static" ] || [ "$ARTIFACT_KIND" = "lambda" ]; then
             echo "| Artefato | build \`$TAG\` |"
             echo "| Local | \`$IMAGE_URI\` |"
             echo "| Digest | \`$DIGEST\` |"
@@ -377,7 +377,7 @@ steps:
 
               LAST_PRD="$(jq -s '[.[] | select(.environment == "prd")] | last // empty' "$HIST" 2>/dev/null)"
               # Rótulos por perfil: backend = imagem no ECR; frontend (static) = build publicado no S3.
-              if [ "$ARTIFACT_KIND" = "static" ]; then
+              if [ "$ARTIFACT_KIND" = "static" ] || [ "$ARTIFACT_KIND" = "lambda" ]; then
                 TAG_LABEL="Artefato (build)"; TAG_COL="Build (artefato)"
               else
                 TAG_LABEL="Imagem (tag ECR)"; TAG_COL="Tag"

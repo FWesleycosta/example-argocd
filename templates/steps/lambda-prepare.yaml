@@ -1,0 +1,101 @@
+# Prepara o workdir do Terraform de uma Lambda: copia o root (manifests/terraform-lambda), o
+# pacote zip (quando há) e os ASL de step functions do repo do app; gera _app.auto.tfvars.json
+# e valida o tamanho dos nomes das funções. Usado pelo deploy (deploy-lambda.yaml) e pelo
+# destroy do sandbox (stages/destroy-sandbox-lambda.yaml).
+parameters:
+  - name: lambda
+    type: object
+  - name: resources
+    type: object
+    default: {}
+  - name: resourceSuffix
+    type: string
+    default: ''
+  - name: appDir
+    type: string
+    default: '$(Pipeline.Workspace)/s/app'
+  - name: packageDir            # '' = sem pacote (destroy)
+    type: string
+    default: ''
+  - name: terraformSourceDir
+    type: string
+    default: '$(Pipeline.Workspace)/s/templates/manifests/terraform-lambda'
+  - name: terraformWorkDir
+    type: string
+    default: '$(Pipeline.Workspace)/terraform'
+
+steps:
+  - bash: |
+      set -euo pipefail
+      TF_TEMPLATES="${{ parameters.terraformSourceDir }}"
+      WORK="${{ parameters.terraformWorkDir }}"
+      APP_DIR="${{ parameters.appDir }}"
+      PACKAGE_DIR="${{ parameters.packageDir }}"
+
+      [ -d "$TF_TEMPLATES" ] || { echo "##[error]Terraform templates not found: $TF_TEMPLATES"; exit 1; }
+      mkdir -p "$WORK"
+      cp -r "$TF_TEMPLATES"/. "$WORK/"
+      rm -rf "$WORK/tests"
+
+      # ---- pacote ----
+      PACKAGE_FILE="package/$(Build.Repository.Name).zip"
+      mkdir -p "$WORK/package"
+      if [ -n "$PACKAGE_DIR" ]; then
+        COUNT=$(find "$PACKAGE_DIR" -maxdepth 1 -name '*.zip' | wc -l | tr -d ' ')
+        if [ "$COUNT" -ne 1 ]; then
+          echo "##[error]Esperado exatamente 1 zip em $PACKAGE_DIR (artefato do Build); encontrados: $COUNT."
+          ls -la "$PACKAGE_DIR" || true
+          exit 1
+        fi
+        ZIP=$(find "$PACKAGE_DIR" -maxdepth 1 -name '*.zip' | head -1)
+        PACKAGE_FILE="package/$(basename "$ZIP")"
+        cp "$ZIP" "$WORK/$PACKAGE_FILE"
+        echo "##[section]Pacote: $PACKAGE_FILE ($(du -h "$ZIP" | cut -f1))"
+      else
+        echo "##[section]Sem pacote (o hash fica nulo; o código das funções não é alterado)."
+      fi
+
+      # ---- definições de step functions (infra/*.asl.json do app) ----
+      SF_JSON='${{ convertToJson(parameters.resources.step_functions) }}'
+      mkdir -p "$WORK/definitions"
+      if [ -n "$SF_JSON" ] && [ "$SF_JSON" != "null" ] && [ "$SF_JSON" != '""' ]; then
+        for FILE in $(echo "$SF_JSON" | jq -r '.[].definition_file'); do
+          SRC="$APP_DIR/infra/$FILE"
+          if [ ! -f "$SRC" ]; then
+            echo "##[error]Step function: definição '$FILE' não encontrada em infra/ do repositório do app (resources.step_functions[].definition_file)."
+            exit 1
+          fi
+          cp "$SRC" "$WORK/definitions/$FILE"
+          echo "##[section]Definição copiada: infra/$FILE"
+        done
+      fi
+
+      # ---- identidade e validação de nomes ----
+      APP="$(Build.Repository.Name)"
+      PROJECT="$(System.TeamProject)"
+      PREFIX="${{ parameters.lambda.function_name_prefix }}"
+      PREFIX="${PREFIX:-$APP}"
+      SUFFIX="${{ parameters.resourceSuffix }}"
+      HANDLERS_JSON='${{ convertToJson(parameters.lambda.handlers) }}'
+      if [ -z "$HANDLERS_JSON" ] || [ "$HANDLERS_JSON" = "null" ] || [ "$HANDLERS_JSON" = '""' ] || [ "$(echo "$HANDLERS_JSON" | jq 'length')" = "0" ]; then
+        echo "##[error]lambda.handlers vazio: declare ao menos uma função (<chave>: 'Assembly::Tipo::Metodo')."
+        exit 1
+      fi
+      FAIL=0
+      for KEY in $(echo "$HANDLERS_JSON" | jq -r 'keys[]'); do
+        NAME="${PREFIX}-${KEY}${SUFFIX}"
+        if [ "${#NAME}" -gt 64 ]; then
+          echo "##[error]Nome de função '$NAME' tem ${#NAME} caracteres (máx. 64). Informe lambda.function_name_prefix mais curto (máx. para '$KEY': $((64 - ${#KEY} - 1 - ${#SUFFIX})))."
+          FAIL=1
+        else
+          echo "  $NAME (${#NAME}/64)"
+        fi
+      done
+      [ "$FAIL" -eq 0 ] || exit 1
+
+      cd "$WORK"
+      jq -n --arg app "$APP" --arg project "$PROJECT" --arg prefix "$PREFIX" --arg pkg "$PACKAGE_FILE" \
+        '{app_name: $app, project_name: $project, function_name_prefix: $prefix, package_file: $pkg}' > _app.auto.tfvars.json
+      echo "_app.auto.tfvars.json:"; cat _app.auto.tfvars.json
+      echo "##[section]Terraform workdir:"; ls -la "$WORK"
+    displayName: 'Preparar Terraform (lambda): root, pacote, definições e tfvars'
