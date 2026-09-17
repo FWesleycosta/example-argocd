@@ -1,5 +1,6 @@
-# Motor de deploy de AWS Lambda (.NET): prepara o root manifests/terraform-lambda no workdir,
-# roda terraform init → validate → plan → apply e verifica o estado das funções.
+# Motor de deploy de AWS Lambda (.NET, Node.js, Python): prepara o root manifests/terraform-lambda no
+# workdir, roda terraform init → validate → plan → apply, verifica o estado das funções e roda o
+# smoke test (lambda.smoke_tests). Datadog APM entra só quando o stage manda (prd).
 # Chamado por stages/deploy-lambda.yaml (um stage por ambiente).
 parameters:
   - name: environment
@@ -53,7 +54,29 @@ parameters:
     type: boolean
     default: false
 
+  # --- Datadog APM: o stage só liga em prd (stages/deploy-lambda.yaml); valores de variables/env/prd.yaml ---
+  - name: datadogTracing
+    type: boolean
+    default: false
+  - name: datadogSite
+    type: string
+    default: ''
+  - name: datadogApiKeySecretArn
+    type: string
+    default: ''
+  - name: datadogExtensionLayerVersion
+    type: string
+    default: ''
+  - name: datadogTracerLayerVersion      # já escolhida por runtime pelo stage
+    type: string
+    default: ''
+
 steps:
+  - ${{ if and(eq(parameters.datadogTracing, true), or(eq(parameters.datadogSite, ''), eq(parameters.datadogApiKeySecretArn, ''), eq(parameters.datadogExtensionLayerVersion, ''), eq(parameters.datadogTracerLayerVersion, ''))) }}:
+      - script: |
+          echo "##[warning]Datadog APM previsto para '${{ parameters.environment }}', mas variables/env/${{ parameters.environment }}.yaml não tem datadogSite, datadogApiKeySecretArn, datadogExtensionLayerVersion e datadogTracerLayerVersion<Runtime> preenchidos. O deploy segue SEM instrumentação."
+        displayName: 'Datadog não configurado no ambiente (aviso)'
+
   - template: steps/lambda-prepare.yaml
     parameters:
       lambda: ${{ parameters.lambda }}
@@ -88,6 +111,14 @@ steps:
         environment_variables_common: ${{ parameters.env_vars }}
         environment_variables_env: ${{ parameters.env_vars_env }}
         ssm_parameters: ${{ parameters.ssm_parameters }}
+        release_version: '$(Build.BuildId)'
+        ${{ if and(eq(parameters.datadogTracing, true), ne(parameters.datadogSite, ''), ne(parameters.datadogApiKeySecretArn, ''), ne(parameters.datadogExtensionLayerVersion, ''), ne(parameters.datadogTracerLayerVersion, '')) }}:
+          datadog:
+            enabled: true
+            site: ${{ parameters.datadogSite }}
+            api_key_secret_arn: ${{ parameters.datadogApiKeySecretArn }}
+            extension_layer_version: ${{ parameters.datadogExtensionLayerVersion }}
+            tracer_layer_version: ${{ parameters.datadogTracerLayerVersion }}
 
   - ${{ if eq(parameters.planOnly, true) }}:
       - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
@@ -163,3 +194,12 @@ steps:
             echo "##vso[task.setvariable variable=LAMBDA_ARTIFACT_URI]lambda://${{ parameters.awsRegion }}/$LIST"
             [ "$FAIL" -eq 0 ] || exit 1
             echo "##[section]$(echo "$NAMES" | wc -l | tr -d ' ') função(ões) ativas em ${{ parameters.environment }}."
+
+      # Prova que o código executa (State/LastUpdateStatus não provam). Sem lambda.smoke_tests: warning.
+      - template: steps/lambda-smoke-test.yaml
+        parameters:
+          serviceAccount: ${{ parameters.serviceAccount }}
+          awsRegion: ${{ parameters.awsRegion }}
+          environment: ${{ parameters.environment }}
+          lambda: ${{ parameters.lambda }}
+          terraformWorkDir: ${{ parameters.terraformWorkDir }}

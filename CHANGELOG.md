@@ -231,6 +231,26 @@ a branch ao final.
     - Veracode com exclusões por runtime (`node_modules`, `.venv`, caches) na release e no
       hotfix (`hotfix-lambda.yaml` ganha `veracodeExcludePatterns`).
     - Exemplos: `examples/azure-pipelines-lambda-node.yml` e `-python.yml`.
+  - **Smoke test pós-deploy** (`steps/lambda-smoke-test.yaml`, chamado pelo motor após a
+    verificação de `State/LastUpdateStatus`, em todos os ambientes): o app declara
+    `lambda.smoke_tests[]` (`handler` de `lambda.handlers`, `payload` objeto ou string JSON,
+    `environments` opcional) e a esteira invoca cada função (`RequestResponse`, `--log-type
+    Tail`); `FunctionError`, `StatusCode != 200` ou falha da chamada **derrubam o stage**, com
+    resposta truncada, cauda do log e tabela na Summary. Sem `smoke_tests`: warning. O payload
+    roda também em **prd** — deve ser inócuo. Não há rollback automático.
+  - **Datadog APM só em `prd`, só trace** (`variable "datadog"` no root; `stages/deploy-lambda.yaml`
+    envia os valores **apenas** no stage de `prd`, então dev/hml/sdx nunca recebem layer nem
+    `DD_*`): layers públicas da Datadog (tracer do runtime — `dd-trace-dotnet` /
+    `Datadog-Node<NN>-x` / `Datadog-Python<XYZ>`, `-ARM` em arm64 — e `Datadog-Extension`),
+    `AWS_LAMBDA_EXEC_WRAPPER=/opt/datadog_wrapper` (handler declarado não muda), `DD_SITE`,
+    `DD_API_KEY_SECRET_ARN`, `DD_ENV=prd`, `DD_SERVICE=<app>`, `DD_VERSION=<BuildId>`,
+    `DD_TRACE_ENABLED=true`, `DD_SERVERLESS_LOGS_ENABLED=false`, `DD_ENHANCED_METRICS=false`.
+    Role ganha `secretsmanager:GetSecretValue` só no segredo da API key. Opt-out por app:
+    `lambda.datadog_tracing: false`. **Variáveis novas nos 4 `variables/env/*.yaml`**
+    (`datadogSite`, `datadogApiKeySecretArn`, `datadogExtensionLayerVersion`,
+    `datadogTracerLayerVersion{Dotnet,Node,Python}`), vazias em todos — enquanto o `prd.yaml`
+    não for preenchido, o deploy de prd emite warning e segue **sem** instrumentação.
+    Testes: 4 runs no `setup.tftest.hcl`, 3 no `validations.tftest.hcl`.
   - `deploy-lambda.yaml` (motor) + `steps/lambda-prepare.yaml` + `stages/deploy-lambda.yaml`
     + `stages/destroy-sandbox-lambda.yaml` + `hotfix/hotfix-lambda.yaml`. O deploy
     verifica `State/LastUpdateStatus` de cada função e publica a tabela na Summary.
@@ -289,6 +309,11 @@ Regressões introduzidas em `main` em 2026-09-15, sem tag publicada com elas:
 
 ### Notas de adoção
 
+- **Datadog (prd)**: preencher `datadogSite`, `datadogApiKeySecretArn` e as versões das layers em
+  `templates/variables/env/prd.yaml` antes de esperar traces; até lá o stage avisa e não instrumenta.
+  Validar num run real de prd que `AWS_LAMBDA_EXEC_WRAPPER=/opt/datadog_wrapper` instrumenta os
+  três runtimes (é o método documentado pela Datadog; alternativa é redirecionar o handler).
+- **Smoke test**: declarar `lambda.smoke_tests` com payload inócuo; ele roda em prd.
 - Apontar `ref: refs/tags/v4.0.0`. O YAML da app **não muda**: nenhum parâmetro de
   `stacks/*` foi removido ou renomeado.
 - **Lambda migrada do legado**: o state da esteira nasce vazio (bucket `tfstate-<app>-<env>`,

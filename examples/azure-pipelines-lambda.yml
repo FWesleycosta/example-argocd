@@ -48,6 +48,14 @@ extends:
         salvar-sybase: 'Fibra.Operacoes.Boletador.FCT::Fibra.Operacoes.Boletador.FCT.Handlers.SalvarSybaseHandler::ExecutarAsync'
         salvar-pg: 'Fibra.Operacoes.Boletador.FCT::Fibra.Operacoes.Boletador.FCT.Handlers.SalvarPgHandler::ExecutarAsync'
         notificar-tesouraria: 'Fibra.Operacoes.Boletador.FCT::Fibra.Operacoes.Boletador.FCT.Handlers.NotificarTesourariaHandler::ExecutarAsync'
+      # Smoke test pós-deploy: a esteira invoca cada handler abaixo com o payload e FALHA o stage se
+      # houver FunctionError. Roda em todos os ambientes, inclusive prd — use um evento INÓCUO que o
+      # handler reconheça (ex.: {"ping": true} → responde sem efeito colateral). Sem esta lista, só warning.
+      smoke_tests:
+        - handler: iniciar-processamento
+          payload: { ping: true }
+          # environments: [dev, hml]    # opcional: restringe onde roda
+      # datadog_tracing: false          # opt-out do APM Datadog em prd (default: instrumentado, só trace)
 
     # ---- recursos AWS (todas as chaves opcionais) ------------------------------------
     # Nomes de fila/tópico são LÓGICOS: a esteira aplica sqs-<env>-<region>-<nome>[<suffix>].

@@ -30,6 +30,10 @@ resource "aws_iam_role" "lambda" {
       condition     = !local.vpc_enabled || var.vpc_id != ""
       error_message = "subnet_ids_csv informado sem vpc_id (variables/env/<env>.yaml: vpcId)."
     }
+    precondition {
+      condition     = !local.datadog_enabled || local.datadog_tracer_layer_name != ""
+      error_message = "Datadog habilitado mas não há layer de tracer para o runtime '${var.lambda.runtime}' (suportados: dotnet*, nodejs*, python*)."
+    }
   }
 }
 
@@ -118,7 +122,7 @@ module "lambda" {
   subnet_ids         = local.vpc_enabled ? local.subnet_ids : null
   security_group_ids = local.vpc_enabled ? [aws_security_group.lambda[0].id] : null
   log_retention_days = var.lambda.log_retention_days
-  layer_arns         = var.lambda.layer_arns
+  layer_arns         = concat(var.lambda.layer_arns, local.datadog_layer_arns) # Datadog só em prd (local vazio nos demais)
 
   tags = merge(local.tags, { Funcao = local.function_names[each.key] })
 

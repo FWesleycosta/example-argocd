@@ -45,3 +45,26 @@ variables:
     value: 'subnet-,subnet-'
   - name: vpcId
     value: 'vpc-'
+
+  # --- Datadog APM para Lambda (stages/deploy-lambda.yaml): só prd é instrumentado, e SÓ TRACE
+  # (logs e enhanced metrics desligados no root Terraform). Enquanto qualquer valor abaixo estiver
+  # vazio, o deploy de prd emite warning e segue sem instrumentação — preencha os quatro que se
+  # aplicam (site, segredo e Extension + tracer do runtime em uso):
+  #   datadogSite: site da conta (datadoghq.com, us5.datadoghq.com, datadoghq.eu...)
+  #   datadogApiKeySecretArn: ARN do segredo no Secrets Manager com a API key (a role da função
+  #     ganha GetSecretValue só nele; segredo com CMK exige kms:Decrypt à parte)
+  #   versões das layers públicas da Datadog (conta 464622532012) na região sa-east-1 — número
+  #     da versão, não ARN: Datadog-Extension, dd-trace-dotnet, Datadog-Node<NN>-x, Datadog-Python<XYZ>
+  #     (docs.datadoghq.com/serverless/aws_lambda/installation). Bump = mudança neste arquivo. ---
+  - name: datadogSite
+    value: ''
+  - name: datadogApiKeySecretArn
+    value: ''
+  - name: datadogExtensionLayerVersion
+    value: ''
+  - name: datadogTracerLayerVersionDotnet
+    value: ''
+  - name: datadogTracerLayerVersionNode
+    value: ''
+  - name: datadogTracerLayerVersionPython
+    value: ''

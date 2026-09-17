@@ -46,6 +46,9 @@ extends:
       handlers:
         conciliar: 'src.handlers.conciliar.handler'    # src/handlers/conciliar.py define handler(event, context)
         relatorio: 'src.handlers.relatorio.handler'
+      smoke_tests:                      # invocação pós-deploy; FunctionError falha o stage (payload inócuo!)
+        - handler: relatorio
+          payload: { ping: true }
 
     resources:
       sns_topics:

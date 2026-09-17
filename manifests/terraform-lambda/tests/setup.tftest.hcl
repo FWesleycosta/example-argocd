@@ -254,3 +254,117 @@ run "sem_recursos_opcionais" {
     error_message = "tracing_config=Active deve anexar a policy do X-Ray."
   }
 }
+
+########################################
+# Datadog APM: só quando a esteira envia datadog.enabled (prd). Layers do tracer do runtime +
+# Extension, env DD_* e permissão de ler o segredo da API key. Default: nada disso existe.
+########################################
+
+run "datadog_desligado_por_default" {
+  command = plan
+
+  assert {
+    condition     = length(local.datadog_layer_arns) == 0 && length(local.datadog_env_vars) == 0
+    error_message = "Sem datadog.enabled não pode haver layer nem variável DD_*."
+  }
+  assert {
+    condition     = !anytrue([for s in local.lambda_policy_statements : s.sid == "DatadogApiKey"])
+    error_message = "Sem datadog.enabled não pode haver statement DatadogApiKey."
+  }
+}
+
+run "datadog_tracing_em_prd_dotnet" {
+  command = plan
+
+  variables {
+    environment     = "prd"
+    release_version = "4711"
+    datadog = {
+      enabled                 = true
+      site                    = "datadoghq.com"
+      api_key_secret_arn      = "arn:aws:secretsmanager:us-east-2:123456789012:secret:datadog/api-key-AbCdEf"
+      extension_layer_version = "83" # como o Azure DevOps interpola números
+      tracer_layer_version    = "21"
+    }
+  }
+
+  assert {
+    condition = local.datadog_layer_arns == tolist([
+      "arn:aws:lambda:us-east-2:464622532012:layer:dd-trace-dotnet:21",
+      "arn:aws:lambda:us-east-2:464622532012:layer:Datadog-Extension:83",
+    ])
+    error_message = "dotnet x86_64 deve receber dd-trace-dotnet + Datadog-Extension, tracer primeiro."
+  }
+  assert {
+    condition     = local.env_vars["AWS_LAMBDA_EXEC_WRAPPER"] == "/opt/datadog_wrapper" && local.env_vars["DD_ENV"] == "prd" && local.env_vars["DD_SERVICE"] == "fibra-operacoes-boletador-fct" && local.env_vars["DD_VERSION"] == "4711"
+    error_message = "Wrapper, DD_ENV, DD_SERVICE e DD_VERSION devem vir da esteira."
+  }
+  assert {
+    condition     = local.env_vars["DD_TRACE_ENABLED"] == "true" && local.env_vars["DD_SERVERLESS_LOGS_ENABLED"] == "false" && local.env_vars["DD_ENHANCED_METRICS"] == "false"
+    error_message = "Só trace: logs e enhanced metrics desligados."
+  }
+  assert {
+    condition     = local.env_vars["LOG_LEVEL"] == "Information" && local.env_vars["REGIAO"] == "dev"
+    error_message = "As env vars do app continuam presentes ao lado das DD_*."
+  }
+  assert {
+    condition     = anytrue([for s in local.lambda_policy_statements : s.sid == "DatadogApiKey" && s.resources == ["arn:aws:secretsmanager:us-east-2:123456789012:secret:datadog/api-key-AbCdEf"]])
+    error_message = "A role precisa de GetSecretValue restrito ao segredo da API key."
+  }
+}
+
+run "datadog_node_arm64" {
+  command = plan
+
+  variables {
+    environment = "prd"
+    lambda = {
+      runtime      = "nodejs20.x"
+      architecture = "arm64"
+      handlers     = { enviar = "handlers/enviar.handler" }
+    }
+    datadog = {
+      enabled                 = true
+      site                    = "datadoghq.com"
+      api_key_secret_arn      = "arn:aws:secretsmanager:us-east-2:123456789012:secret:datadog/api-key-AbCdEf"
+      extension_layer_version = 83
+      tracer_layer_version    = 127
+    }
+  }
+
+  assert {
+    condition = local.datadog_layer_arns == tolist([
+      "arn:aws:lambda:us-east-2:464622532012:layer:Datadog-Node20-x-ARM:127",
+      "arn:aws:lambda:us-east-2:464622532012:layer:Datadog-Extension-ARM:83",
+    ])
+    error_message = "nodejs20.x arm64 deve mapear para Datadog-Node20-x-ARM e Datadog-Extension-ARM."
+  }
+  assert {
+    condition     = !contains(keys(local.env_vars), "DD_VERSION")
+    error_message = "Sem release_version não pode haver DD_VERSION vazio."
+  }
+}
+
+run "datadog_python" {
+  command = plan
+
+  variables {
+    environment = "prd"
+    lambda = {
+      runtime  = "python3.12"
+      handlers = { conciliar = "src.handlers.conciliar.handler" }
+    }
+    datadog = {
+      enabled                 = true
+      site                    = "datadoghq.com"
+      api_key_secret_arn      = "arn:aws:secretsmanager:us-east-2:123456789012:secret:datadog/api-key-AbCdEf"
+      extension_layer_version = 83
+      tracer_layer_version    = 112
+    }
+  }
+
+  assert {
+    condition     = local.datadog_layer_arns[0] == "arn:aws:lambda:us-east-2:464622532012:layer:Datadog-Python312:112"
+    error_message = "python3.12 deve mapear para Datadog-Python312 (ponto removido)."
+  }
+}

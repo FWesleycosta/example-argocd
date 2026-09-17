@@ -28,6 +28,16 @@ infra vem daqui, uma vez, versionada por tag da plataforma.
 - **Triggers** SQS→função (`aws_lambda_event_source_mapping`).
 - **Step Functions** a partir de um ASL do app, renderizado com `templatefile`.
 - **EventBridge Pipes** SQS→Step Function.
+- **Datadog APM (só `prd`)**: quando a esteira envia `datadog.enabled` (só o stage de `prd`
+  faz isso, a partir de `variables/env/prd.yaml`), cada função recebe duas layers públicas da
+  Datadog — o tracer do runtime (`dd-trace-dotnet` / `Datadog-Node<NN>-x` /
+  `Datadog-Python<XYZ>`, sufixo `-ARM` em arm64) e a `Datadog-Extension` — e as variáveis
+  `AWS_LAMBDA_EXEC_WRAPPER=/opt/datadog_wrapper`, `DD_SITE`, `DD_API_KEY_SECRET_ARN`,
+  `DD_ENV`, `DD_SERVICE` (app), `DD_VERSION` (build), `DD_TRACE_ENABLED=true` e, por ser **só
+  trace**, `DD_SERVERLESS_LOGS_ENABLED=false` / `DD_ENHANCED_METRICS=false`. O handler declarado
+  não muda (o wrapper redireciona). A role ganha `secretsmanager:GetSecretValue` restrito ao
+  segredo da API key (segredo com CMK exige `kms:Decrypt` à parte). Em dev/hml/sdx nada disso
+  existe. Versões das layers: `variables/env/prd.yaml`.
 
 Recursos além da função usam **resources nativos do provider** (não os módulos git) para o root
 ser validável offline; a convenção de nomes é a do legado e a que o backend usa para lookup:

@@ -17,6 +17,9 @@ parameters:
   # install_command, build_command 'npm run build --if-present', output_dir '', include_dependencies
   # true · python_version (default derivado do runtime), requirements_file 'requirements.txt',
   # lint_command ''.
+  # smoke_tests (recomendado): lista de { handler, payload, environments? } invocada após cada deploy;
+  # FunctionError falha o stage (steps/lambda-smoke-test.yaml). datadog_tracing: false = opt-out do
+  # APM Datadog em prd (só prd é instrumentado; stages/deploy-lambda.yaml).
   # Demais chaves (default no root Terraform): function_name_prefix (vazio = nome do repositório),
   # architecture x86_64, memory_size 512, timeout 30, tracing_config PassThrough, description,
   # log_retention_days 30, layer_arns []. Chave omitida usa o default (o objeto NÃO precisa vir completo).

@@ -137,6 +137,38 @@ variable "lambda" {
 # As três listas abaixo são `any` de propósito: quando o app omite a chave em `config`, o Azure
 # DevOps entrega "" (e não null), e uma lista tipada rejeitaria. Os locals saneiam para [].
 
+variable "release_version" {
+  description = "Build.BuildId da esteira. Vira DD_VERSION quando o tracing Datadog está habilitado."
+  type        = string
+  default     = ""
+}
+
+variable "datadog" {
+  description = <<-EOT
+    Tracing APM via Datadog Lambda Extension (só trace: logs e enhanced metrics desligados).
+    A esteira só habilita em prd (stages/deploy-lambda.yaml); dev/hml/sdx chegam com enabled=false
+    e não recebem layer nem variável DD_*. Valores vêm de variables/env/prd.yaml.
+  EOT
+  type = object({
+    enabled                 = optional(bool, false)
+    site                    = optional(string, "")
+    api_key_secret_arn      = optional(string, "")
+    extension_layer_version = optional(number, 0)
+    tracer_layer_version    = optional(number, 0)
+  })
+  default = {}
+
+  validation {
+    condition = !var.datadog.enabled || (
+      var.datadog.site != "" &&
+      can(regex("^arn:aws:secretsmanager:", var.datadog.api_key_secret_arn)) &&
+      var.datadog.extension_layer_version > 0 &&
+      var.datadog.tracer_layer_version > 0
+    )
+    error_message = "datadog.enabled exige site, api_key_secret_arn (ARN do Secrets Manager) e versões > 0 das layers Extension e do tracer do runtime (variables/env/prd.yaml: datadogSite, datadogApiKeySecretArn, datadogExtensionLayerVersion, datadogTracerLayerVersion{Dotnet,Node,Python})."
+  }
+}
+
 variable "environment_variables_common" {
   description = "Env vars iguais nos três ambientes (config.env_vars): lista de {name, value}."
   type        = any

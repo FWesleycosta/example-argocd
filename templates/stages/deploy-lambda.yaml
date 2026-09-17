@@ -86,6 +86,19 @@ stages:
                     ssm_parameters: ${{ parameters.ssm_parameters }}
                     packageDir: '$(Pipeline.Workspace)/${{ parameters.artifactName }}'
                     planOnly: ${{ parameters.planOnly }}
+                    # Datadog APM só em prd (política: dev/hml/sdx nunca instrumentados). Opt-out do
+                    # app: lambda.datadog_tracing: false. Tracer escolhido pelo runtime.
+                    ${{ if and(eq(parameters.environment, 'prd'), ne(parameters.lambda.datadog_tracing, false)) }}:
+                      datadogTracing: true
+                      datadogSite: ${{ variables.datadogSite }}
+                      datadogApiKeySecretArn: ${{ variables.datadogApiKeySecretArn }}
+                      datadogExtensionLayerVersion: ${{ variables.datadogExtensionLayerVersion }}
+                      ${{ if startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs') }}:
+                        datadogTracerLayerVersion: ${{ variables.datadogTracerLayerVersionNode }}
+                      ${{ elseif startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'python') }}:
+                        datadogTracerLayerVersion: ${{ variables.datadogTracerLayerVersionPython }}
+                      ${{ else }}:
+                        datadogTracerLayerVersion: ${{ variables.datadogTracerLayerVersionDotnet }}
 
                 - ${{ if and(in(parameters.environment, 'prd', 'hml'), eq(parameters.planOnly, false)) }}:
                     - template: ../steps/resolve-artifact-static.yaml

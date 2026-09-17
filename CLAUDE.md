@@ -215,6 +215,7 @@ Build      ← lambda.runtime: dotnet/build-lambda-dotnet (publish framework-dep
 Deploy_<env> (stages/deploy-lambda.yaml → deploy-lambda.yaml):
   checkout self (infra/*.asl.json) + templates → steps/lambda-prepare.yaml (copia root, zip, ASL; _app.auto.tfvars.json;
   valida nomes ≤ 64) → terraform-apply → verifica State/LastUpdateStatus de cada função (Summary)
+  → steps/lambda-smoke-test.yaml (invoca lambda.smoke_tests; FunctionError falha o stage; sem lista = warning)
   → resolve-artifact-static (artifactKind: lambda) → record-prod-release   [prd completo / hml reduzido]
 ```
 
@@ -245,6 +246,17 @@ Deploy_<env> (stages/deploy-lambda.yaml → deploy-lambda.yaml):
   hoje com placeholders). Vazio = função fora da VPC.
 - **Sandbox**: sufixo em função, role, SG, filas, tópicos, SFN e pipe; SSM/secrets por prefixo
   de caminho (mesmo `locals` do backend). Destroy via `stages/destroy-sandbox-lambda.yaml`.
+- **Smoke test** (`steps/lambda-smoke-test.yaml`): `lambda.smoke_tests[] = { handler, payload,
+  environments? }`; roda em **todos** os ambientes, inclusive prd — payload tem de ser inócuo.
+  É a prova de que o código executa (`State/LastUpdateStatus` não provam). Falha = stage
+  vermelho com a versão nova já no ar.
+- **Datadog APM só em prd, só trace**: `stages/deploy-lambda.yaml` passa `datadog*` ao motor
+  **apenas** quando `environment == prd` (dev/hml/sdx nunca instrumentados — decisão de
+  produto, não default); o root Terraform adiciona layers (tracer do runtime + Extension, `-ARM`
+  em arm64) e `DD_*` via `AWS_LAMBDA_EXEC_WRAPPER=/opt/datadog_wrapper`, com logs e enhanced
+  metrics desligados. Valores em `variables/env/prd.yaml` (`datadogSite`,
+  `datadogApiKeySecretArn`, versões das layers por runtime) — **vazios hoje**: prd avisa e segue
+  sem instrumentação até preencher. Opt-out por app: `lambda.datadog_tracing: false`.
 - **Sem rollback** (`rollbackImageTag` não existe no stack): reverter = rodar a release anterior.
 - **Migração de lambda do legado**: state novo em `tfstate-<app>-<env>` com nomes iguais aos
   antigos ⇒ conflito no 1º apply; usar `planOnly` e importar (não há step de import como no

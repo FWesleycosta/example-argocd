@@ -45,3 +45,18 @@ variables:
     value: 'subnet-,subnet-'
   - name: vpcId
     value: 'vpc-'
+
+  # --- Datadog APM para Lambda (stages/deploy-lambda.yaml): SÓ prd é instrumentado. Aqui ficam
+  # vazios de propósito; o stage nem passa esses valores fora de prd. ---
+  - name: datadogSite
+    value: ''
+  - name: datadogApiKeySecretArn
+    value: ''
+  - name: datadogExtensionLayerVersion
+    value: ''
+  - name: datadogTracerLayerVersionDotnet
+    value: ''
+  - name: datadogTracerLayerVersionNode
+    value: ''
+  - name: datadogTracerLayerVersionPython
+    value: ''

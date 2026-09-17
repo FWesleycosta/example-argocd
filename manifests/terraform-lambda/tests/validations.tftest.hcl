@@ -143,3 +143,28 @@ run "pipe_para_fila_nao_gerenciada" {
   }
   expect_failures = [aws_pipes_pipe.this]
 }
+
+run "datadog_habilitado_sem_segredo" {
+  command = plan
+  variables {
+    datadog = { enabled = true, site = "datadoghq.com", extension_layer_version = 83, tracer_layer_version = 21 }
+  }
+  expect_failures = [var.datadog]
+}
+
+run "datadog_habilitado_com_arn_invalido" {
+  command = plan
+  variables {
+    datadog = { enabled = true, site = "datadoghq.com", api_key_secret_arn = "datadog/api-key", extension_layer_version = 83, tracer_layer_version = 21 }
+  }
+  expect_failures = [var.datadog]
+}
+
+run "datadog_em_runtime_sem_tracer" {
+  command = plan
+  variables {
+    lambda  = { handlers = { principal = "com.app.Handler::run" }, runtime = "java21" }
+    datadog = { enabled = true, site = "datadoghq.com", api_key_secret_arn = "arn:aws:secretsmanager:us-east-2:123456789012:secret:dd-AbCdEf", extension_layer_version = 83, tracer_layer_version = 1 }
+  }
+  expect_failures = [aws_iam_role.lambda]
+}

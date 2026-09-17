@@ -32,10 +32,44 @@ locals {
   env_vars_common = try([for v in try(jsondecode(var.environment_variables_common), var.environment_variables_common) : { name = tostring(v.name), value = tostring(v.value) }], [])
   env_vars_env    = try([for v in try(jsondecode(var.environment_variables_env), var.environment_variables_env) : { name = tostring(v.name), value = tostring(v.value) }], [])
 
+  # Datadog por último: política da plataforma, o app não sobrescreve DD_*/AWS_LAMBDA_EXEC_WRAPPER.
   env_vars = merge(
     { for v in local.env_vars_common : v.name => v.value },
     { for v in local.env_vars_env : v.name => v.value },
+    local.datadog_env_vars,
   )
+
+  ########################################
+  # Datadog APM (só prd) — layer do tracer do runtime + Datadog-Extension, ativados por
+  # AWS_LAMBDA_EXEC_WRAPPER=/opt/datadog_wrapper (o handler declarado não muda).
+  # Conta das layers públicas da Datadog: 464622532012. Nome por runtime/arquitetura:
+  #   dotnet*  -> dd-trace-dotnet[-ARM]      nodejs20.x -> Datadog-Node20-x[-ARM]
+  #   python3.12 -> Datadog-Python312[-ARM]  extension  -> Datadog-Extension[-ARM]
+  ########################################
+
+  datadog_enabled        = var.datadog.enabled
+  datadog_arch_suffix    = var.lambda.architecture == "arm64" ? "-ARM" : ""
+  datadog_runtime_family = try(regex("^(dotnet|nodejs|python)", var.lambda.runtime)[0], "")
+  datadog_tracer_layer_name = (
+    local.datadog_runtime_family == "nodejs" ? "Datadog-Node${split(".", trimprefix(var.lambda.runtime, "nodejs"))[0]}-x" :
+    local.datadog_runtime_family == "python" ? "Datadog-Python${replace(trimprefix(var.lambda.runtime, "python"), ".", "")}" :
+    local.datadog_runtime_family == "dotnet" ? "dd-trace-dotnet" : ""
+  )
+  datadog_layer_arns = local.datadog_enabled ? [
+    "arn:aws:lambda:${var.aws_region}:464622532012:layer:${local.datadog_tracer_layer_name}${local.datadog_arch_suffix}:${var.datadog.tracer_layer_version}",
+    "arn:aws:lambda:${var.aws_region}:464622532012:layer:Datadog-Extension${local.datadog_arch_suffix}:${var.datadog.extension_layer_version}",
+  ] : []
+  datadog_env_vars = local.datadog_enabled ? merge({
+    AWS_LAMBDA_EXEC_WRAPPER    = "/opt/datadog_wrapper"
+    DD_SITE                    = var.datadog.site
+    DD_API_KEY_SECRET_ARN      = var.datadog.api_key_secret_arn
+    DD_ENV                     = var.environment
+    DD_SERVICE                 = var.app_name
+    DD_TRACE_ENABLED           = "true"
+    DD_SERVERLESS_LOGS_ENABLED = "false" # só trace: sem envio de logs
+    DD_ENHANCED_METRICS        = "false" # só trace: sem métricas enhanced
+    DD_CAPTURE_LAMBDA_PAYLOAD  = "false"
+  }, var.release_version != "" ? { DD_VERSION = var.release_version } : {}) : {}
 
   lambda_arns  = { for key, mod in module.lambda : key => mod.ARN }
   lambda_names = { for key, mod in module.lambda : key => mod.Name }
@@ -191,6 +225,12 @@ locals {
       sid       = "StepFunctions"
       actions   = ["states:StartExecution", "states:DescribeExecution"]
       resources = ["arn:aws:states:${var.aws_region}:*:stateMachine:${var.function_name_prefix}-*"]
+    }],
+    # A extension lê a API key do Secrets Manager no cold start. Segredo com CMK exige kms:Decrypt à parte.
+    !local.datadog_enabled ? [] : [{
+      sid       = "DatadogApiKey"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = [var.datadog.api_key_secret_arn]
     }],
   )
 }
