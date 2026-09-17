@@ -28,7 +28,7 @@ resources:
       ref: refs/tags/v4.0.0      # PINE numa TAG — nunca refs/heads/main (rollout controlado)
 
 extends:
-  template: templates/stacks/dotnet-lambda.yaml@templates
+  template: templates/stacks/lambda.yaml@templates
   parameters:
     sistema: operacoes
     owner: squad-notificacoes

@@ -195,7 +195,8 @@ a branch ao final.
 
 ### Adicionado
 
-- **Stack `stacks/dotnet-lambda.yaml`** — substitui o `azure-pipelines-infrastructure.yaml`
+- **Stack `stacks/lambda.yaml`** (um stack para .NET, Node.js e Python; o hotfix é
+  `hotfix/hotfix-lambda.yaml`) — substitui o `azure-pipelines-infrastructure.yaml`
   legado das lambdas. O app declara só dados (`lambda`, `resources`, `config`); o Terraform
   que morava em `terraform/` de cada repositório passa a ser o root
   **`manifests/terraform-lambda/`** da plataforma. Mesmo roteamento por branch, Sonar,
@@ -228,10 +229,10 @@ a branch ao final.
       `sonar.python.coverage.reportPaths`/`sonar.python.xunit.reportPath` e o mesmo
       `quality-gate.yaml`. `enforce: true` também falha quando o `coverage.xml` não existe.
     - Veracode com exclusões por runtime (`node_modules`, `.venv`, caches) na release e no
-      hotfix (`hotfix-lambda-dotnet.yaml` ganha `veracodeExcludePatterns`).
+      hotfix (`hotfix-lambda.yaml` ganha `veracodeExcludePatterns`).
     - Exemplos: `examples/azure-pipelines-lambda-node.yml` e `-python.yml`.
   - `deploy-lambda.yaml` (motor) + `steps/lambda-prepare.yaml` + `stages/deploy-lambda.yaml`
-    + `stages/destroy-sandbox-lambda.yaml` + `hotfix/hotfix-lambda-dotnet.yaml`. O deploy
+    + `stages/destroy-sandbox-lambda.yaml` + `hotfix/hotfix-lambda.yaml`. O deploy
     verifica `State/LastUpdateStatus` de cada função e publica a tabela na Summary.
   - **`manifests/terraform-lambda/`**: N funções de um pacote (`lambda.handlers`), role única
     com policy restrita ao declarado, VPC opcional (`subnetsPrivate`/`vpcId` do ambiente),

@@ -196,7 +196,7 @@ Deploy_<env> (stages/deploy-frontend.yaml → deploy-frontend.yaml):
   migrado para revisar imports e updates de convergência. O import **não** aposenta o state
   antigo nem adota recursos fora do root — procedimento na entrada `2.7.0` do `CHANGELOG.md`.
 
-## Stack de Lambda (`stacks/dotnet-lambda.yaml`) — mesmo modelo, alvo AWS Lambda (.NET, Node.js, Python)
+## Stack de Lambda (`stacks/lambda.yaml`) — mesmo modelo, alvo AWS Lambda (.NET, Node.js, Python)
 
 Substitui o `azure-pipelines-infrastructure.yaml` legado (cópia em `legado /`, fora do git),
 cuja diferença central era **cada repositório de lambda carregar o próprio `terraform/`** e

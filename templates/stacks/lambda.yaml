@@ -210,7 +210,7 @@ stages:
                   architecture: ${{ coalesce(parameters.lambda.architecture, 'x86_64') }}
 
       - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/') }}:
-          - template: ../hotfix/hotfix-lambda-dotnet.yaml
+          - template: ../hotfix/hotfix-lambda.yaml
             parameters:
               lambda: ${{ parameters.lambda }}
               resources: ${{ parameters.resources }}
