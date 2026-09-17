@@ -264,7 +264,8 @@ a branch ao final.
     `optional()`: chave omitida usa o default.
   - `steps/resolve-artifact-static.yaml`: parâmetro `artifactKind` (default `static`);
     `record-prod-release` rotula `lambda` como `static` (artefato/build).
-  - `examples/azure-pipelines-lambda.yml`.
+  - `examples/azure-pipelines-lambda.yml` (completo) e `examples/azure-pipelines-lambda-minimal.yml`
+    (lambda mínima + mapa de migração do `azure-pipelines-infrastructure.yaml` legado).
 
 ### Alterado
 

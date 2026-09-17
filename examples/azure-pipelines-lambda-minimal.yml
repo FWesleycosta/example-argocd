@@ -1,0 +1,114 @@
+# examples/azure-pipelines-lambda-minimal.yml
+# ============================================================================
+# Lambda MÍNIMA + guia de migração do legado (azure-pipelines-infrastructure.yaml).
+# COPIE para a RAIZ do repositório da lambda como `azure-pipelines.yml` e troque os valores
+# marcados com "TROCAR". Exemplo completo (filas, tópicos, Step Functions, pipes, SSM):
+# examples/azure-pipelines-lambda.yml · Node: -lambda-node.yml · Python: -lambda-python.yml
+#
+# ---- ANTES (legado) ---------------------------------------------------------
+#   resources:
+#     repositories:
+#       - repository: pipelines            # alias livre, ref em refs/heads/main
+#       - repository: terraform-modules    # módulos clonados como resource
+#   extends:
+#     template: azure-pipelines-infrastructure.yaml@pipelines
+#     parameters:
+#       lambda_description: "Lambda Teste"
+#       product_repo: "fibra-lambdas-examples"
+#   + no repositório: config/<app>.yaml e terraform/ (main.tf, variables.tf, ...)
+#
+# ---- DEPOIS (este arquivo) --------------------------------------------------
+#   lambda_description      -> lambda.description
+#   product_repo            -> some: o nome vem do repositório (Build.Repository.Name)
+#                              função  = <repo>-<chave do handler>   (ex.: fibra-lambdas-examples-processar)
+#                              state   = tfstate-<repo>-<env>
+#   repository: pipelines   -> alias OBRIGATORIAMENTE `templates`, pinado em TAG
+#   terraform-modules       -> some: o módulo vem por git::https no terraform init
+#                              (exige o variable group `git-credentials` autorizado no pipeline)
+#   config/<app>.yaml       -> vira `config` (env vars, SSM) e `resources` (filas, tópicos, secrets)
+#   terraform/ do app       -> APAGAR: a infra é manifests/terraform-lambda da plataforma
+#   infra/*.asl.json        -> continua no repositório (só se houver Step Function)
+#
+# ---- 1º run de lambda que JÁ EXISTE na AWS ----------------------------------
+# O state novo nasce vazio: função/role/filas com o mesmo nome colidem no apply. Rode primeiro
+# "Run pipeline" com planOnly = true, revise o plan e importe (ou use function_name_prefix novo).
+# Lambda nova não tem esse problema.
+# ============================================================================
+trigger:
+  batch: true
+  branches:
+    include:
+      - develop        # -> dev
+      - sandbox/*      # -> sdx (infra de dev, nomes isolados com sufixo -sdx)
+      - release/*      # -> hml + Veracode em CI; prd só por "Run pipeline" manual (gate de GMUD)
+      - hotfix/*       # -> prd
+
+resources:
+  repositories:
+    - repository: templates      # NÃO renomear: o checkout interno da esteira usa este alias
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Pipelines
+      ref: refs/tags/v4.0.0      # PINE numa TAG — nunca refs/heads/main (rollout controlado)
+
+extends:
+  template: templates/stacks/lambda.yaml@templates
+  parameters:
+    sistema: exemplos            # TROCAR — tag de governança AWS (sistema/domínio de negócio)
+    owner: squad-devops          # TROCAR — time responsável
+
+    lambda:
+      description: 'Lambda Teste'
+      runtime: dotnet10          # dotnetNN | nodejsNN.x | pythonX.Y — escolhe Sonar e Build
+      src_path: src/Fibra.Lambdas.Examples/Fibra.Lambdas.Examples.csproj   # TROCAR — .NET: csproj (obrigatório)
+      # Um pacote, N funções: cada chave vira a função <repo>-<chave>. Chave: minúsculas, dígitos e '-'.
+      # Handler no formato do runtime: .NET 'Assembly::Namespace.Tipo::Metodo'
+      #                                Node 'arquivo.export' · Python 'modulo.funcao'
+      handlers:
+        processar: 'Fibra.Lambdas.Examples::Fibra.Lambdas.Examples.Handlers.ProcessarHandler::ExecutarAsync'   # TROCAR
+      # Invocada após CADA deploy, inclusive prd: o handler precisa reconhecer o payload e
+      # responder sem efeito colateral. FunctionError falha o stage; sem a lista, só warning.
+      smoke_tests:
+        - handler: processar
+          payload: { ping: true }
+
+      # ---- opcionais (valor mostrado = default; declare só o que for diferente) ----
+      # dotnet_version: '10.0.x'
+      # architecture: x86_64       # ou arm64 (o RID do publish deriva daqui)
+      # memory_size: 512
+      # timeout: 30
+      # tracing_config: PassThrough
+      # log_retention_days: 30
+      # function_name_prefix: ''   # vazio = nome do repositório
+      # datadog_tracing: false     # opt-out do APM Datadog (só prd é instrumentado)
+
+    # ---- tudo abaixo é OPCIONAL: uma lambda simples funciona só com o bloco `lambda` ----
+    # Descomente o que o app precisar. Nomes de fila/tópico são lógicos: a esteira aplica
+    # sqs-<env>-<region>-<nome>. Fila não declarada em `sqs` vira lookup (fila de outro app).
+    #
+    # resources:
+    #   sqs:
+    #     - queue_name: exemplos-processar
+    #       dlq_queue_name: exemplos-processar-dlq
+    #   sqs_triggers:
+    #     - handler: processar
+    #       queue_name: exemplos-processar
+    #   secrets:                   # criado com PREENCHER; o valor real é posto fora da esteira
+    #     - name: exemplos/lambda
+    #       keys: [ConnectionString]
+    #
+    # config:
+    #   env_vars:                  # iguais nos três ambientes
+    #     - name: LOG_LEVEL
+    #       value: Information
+    #   env_vars_by_env:           # sobrescrevem as comuns no ambiente
+    #     dev:
+    #       - name: DOTNET_ENVIRONMENT
+    #         value: Development
+    #     hml: []
+    #     prd: []
+    #   ssm_parameters:            # a esteira aplica só o do ambiente do stage
+    #     dev:
+    #       - name: /Exemplos/Lambda/Timeout
+    #         value: '30'
+    #     hml: []
+    #     prd: []
