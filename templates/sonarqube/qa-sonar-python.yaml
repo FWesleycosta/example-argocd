@@ -1,0 +1,216 @@
+# Análise SonarQube para Python (scanner CLI): instala requirements, lint opcional, pytest com
+# cobertura (coverage.xml) + JUnit, scanner e Quality Gate (quality-gate.yaml). Mesmo modelo
+# do qa-sonar-node.yaml: enforce=false transforma lint/testes/cobertura ausente em warning.
+parameters:
+  - name: sonarServiceConnection
+    type: string
+    default: 'SonarQube'
+  - name: projectKey
+    type: string
+    default: '$(Build.Repository.Name)-key'
+  - name: projectName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: branchName
+    type: string
+    default: ''
+  - name: extraProperties
+    type: string
+    default: ''
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+  - name: workingDirectory
+    type: string
+    default: '$(Build.SourcesDirectory)'
+  - name: requirementsFiles         # instala os que existirem (separados por vírgula)
+    type: string
+    default: 'requirements.txt,requirements-dev.txt,requirements-test.txt'
+  - name: extraPipPackages          # ferramentas de teste garantidas mesmo sem requirements-dev
+    type: string
+    default: 'pytest pytest-cov'
+  - name: lintCommand
+    type: string
+    default: ''                     # '' = pular (ex.: 'python -m ruff check .' — inclua ruff no requirements-dev)
+  - name: testCommand
+    type: string
+    default: 'python -m pytest --cov=. --cov-report=xml:coverage.xml --junitxml=junit.xml -q'
+  - name: coverageReport
+    type: string
+    default: 'coverage.xml'         # relativo a workingDirectory (formato Cobertura do pytest-cov)
+  - name: xunitReport
+    type: string
+    default: 'junit.xml'            # relativo a workingDirectory; vazio = não publicar
+  - name: sources
+    type: string
+    default: '.'
+  - name: exclusions
+    type: string
+    default: '**/.venv/**,**/venv/**,**/env/**,**/__pycache__/**,**/.pytest_cache/**,**/tests/**,**/test_*.py,**/*_test.py,**/conftest.py,**/infra/**,**/*.egg-info/**'
+  - name: testInclusions
+    type: string
+    default: '**/tests/**,**/test_*.py,**/*_test.py'
+  - name: pollingTimeoutSec
+    type: string
+    default: '300'
+  - name: gateWaitAttempts
+    type: number
+    default: 30
+  - name: gateWaitIntervalSeconds
+    type: number
+    default: 5
+  - name: breakOnQualityGate
+    type: boolean
+    default: true
+  - name: enforce
+    type: boolean
+    default: true      # false = lint, testes e cobertura ausente viram warning (job SucceededWithIssues) e o pipeline segue
+                       # true  = lint/testes com rc != 0 falham o job; coverageReport ausente tambem falha (sem ele o Sonar
+                       #         reporta 0% e um gate sem condicao de cobertura deixaria passar)
+
+steps:
+  - task: UsePythonVersion@0
+    displayName: 'Usar Python ${{ parameters.pythonVersion }}'
+    inputs:
+      versionSpec: ${{ parameters.pythonVersion }}
+
+  - task: SonarSource.sonarqube.15B84CA1-B62F-4A2A-A403-89B77A063157.SonarQubePrepare@7
+    displayName: 'Configurar SonarQube (Python)'
+    inputs:
+      SonarQube: ${{ parameters.sonarServiceConnection }}
+      scannerMode: 'CLI'
+      configMode: 'manual'
+      cliProjectKey: '${{ parameters.projectKey }}'
+      cliProjectName: '${{ parameters.projectName }}'
+      cliSources: '${{ parameters.sources }}'
+      extraProperties: |
+        sonar.branch.name=${{ coalesce(parameters.branchName, replace(variables['Build.SourceBranch'], 'refs/heads/', '')) }}
+        sonar.sourceEncoding=UTF-8
+        sonar.python.version=${{ parameters.pythonVersion }}
+        sonar.exclusions=${{ parameters.exclusions }}
+        sonar.test.inclusions=${{ parameters.testInclusions }}
+        sonar.coverage.exclusions=${{ parameters.testInclusions }}
+        sonar.python.coverage.reportPaths=${{ parameters.coverageReport }}
+        sonar.python.xunit.reportPath=${{ parameters.xunitReport }}
+        ${{ parameters.extraProperties }}
+    continueOnError: false
+
+  - bash: |
+      set -euo pipefail
+      python -m pip install --upgrade pip -q
+      IFS=',' read -ra FILES <<< "${{ parameters.requirementsFiles }}"
+      FOUND=0
+      for F in "${FILES[@]}"; do
+        F="$(echo "$F" | xargs)"
+        [ -n "$F" ] || continue
+        if [ -f "$F" ]; then
+          echo "##[section]pip install -r $F"
+          python -m pip install -r "$F" -q
+          FOUND=1
+        fi
+      done
+      [ "$FOUND" -eq 1 ] || echo "##[warning]Nenhum requirements encontrado (${{ parameters.requirementsFiles }}) — só as ferramentas de teste serão instaladas."
+      EXTRA="${{ parameters.extraPipPackages }}"
+      if [ -n "$EXTRA" ]; then
+        echo "##[section]pip install $EXTRA"
+        python -m pip install $EXTRA -q
+      fi
+    displayName: 'Instalar dependências'
+    workingDirectory: ${{ parameters.workingDirectory }}
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+  - ${{ if ne(parameters.lintCommand, '') }}:
+      - bash: |
+          set -uo pipefail
+          echo "Lint: ${{ parameters.lintCommand }}"
+          ${{ parameters.lintCommand }}
+          RC=$?
+          if [ "$RC" -ne 0 ]; then
+            if [ "${ENFORCE,,}" = "true" ]; then
+              echo "##[error]Lint falhou (rc=$RC). enforce=true: bloqueando."
+              exit "$RC"
+            fi
+            echo "##vso[task.logissue type=warning]Lint falhou (rc=$RC), mas enforce=false: seguindo sem bloquear."
+            echo "##vso[task.complete result=SucceededWithIssues;]"
+          fi
+        displayName: 'Lint'
+        workingDirectory: ${{ parameters.workingDirectory }}
+        env:
+          CI: 'true'
+          ENFORCE: ${{ parameters.enforce }}
+
+  - ${{ if ne(parameters.testCommand, '') }}:
+      - bash: |
+          set -uo pipefail
+          echo "Testes: ${{ parameters.testCommand }}"
+          ${{ parameters.testCommand }}
+          RC=$?
+
+          # pytest rc=5 = nenhum teste coletado: equivale ao '--if-present' do Node (aviso, não bloqueia).
+          if [ "$RC" -eq 5 ]; then
+            echo "##vso[task.logissue type=warning]Nenhum teste coletado (pytest rc=5). O Sonar vai reportar 0% de cobertura."
+            RC=0
+          fi
+          if [ "$RC" -ne 0 ]; then
+            if [ "${ENFORCE,,}" = "true" ]; then
+              echo "##[error]Testes falharam (rc=$RC). enforce=true: bloqueando."
+              exit "$RC"
+            fi
+            echo "##vso[task.logissue type=warning]Testes falharam (rc=$RC), mas enforce=false: seguindo sem bloquear."
+            echo "##vso[task.complete result=SucceededWithIssues;]"
+          fi
+
+          REPORT="${{ parameters.workingDirectory }}/${{ parameters.coverageReport }}"
+          if [ -f "$REPORT" ]; then
+            LOCAL_COV=$(python - "$REPORT" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          r = ET.parse(sys.argv[1]).getroot()
+          lv, lc = int(r.get("lines-valid", 0)), int(r.get("lines-covered", 0))
+          print(f"{(lc * 100 / lv) if lv else 0:.1f}% ({lc}/{lv} linhas)" if lv else "sem linhas instrumentadas")
+          PY
+            )
+            echo "##[section]Cobertura local (coverage.xml, antes das exclusoes do Sonar): $LOCAL_COV"
+          else
+            MSG="Relatorio de cobertura '${{ parameters.coverageReport }}' nao encontrado — o Sonar vai reportar 0% de cobertura. Confira pytest-cov e '--cov-report=xml:${{ parameters.coverageReport }}' no testCommand."
+            if [ "${ENFORCE,,}" = "true" ]; then
+              echo "##[error]$MSG enforce=true: bloqueando."
+              exit 1
+            fi
+            echo "##vso[task.logissue type=warning]$MSG enforce=false: seguindo sem bloquear."
+            echo "##vso[task.complete result=SucceededWithIssues;]"
+          fi
+        displayName: 'Testes + cobertura'
+        workingDirectory: ${{ parameters.workingDirectory }}
+        env:
+          CI: 'true'
+          ENFORCE: ${{ parameters.enforce }}
+
+      - ${{ if ne(parameters.xunitReport, '') }}:
+          - task: PublishTestResults@2
+            displayName: 'Publicar resultados de teste'
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: '${{ parameters.xunitReport }}'
+              searchFolder: '${{ parameters.workingDirectory }}'
+              failTaskOnMissingResultsFile: false
+              testRunTitle: '$(Build.Repository.Name) - $(Build.BuildId)'
+
+  - task: SonarSource.sonarqube.6D01813A-9589-4B15-8491-8164AEB38055.SonarQubeAnalyze@7
+    displayName: 'Analisar código'
+    inputs:
+      jdkversion: 'JAVA_HOME'
+    continueOnError: false
+
+  - task: SonarSource.sonarqube.291ed61f-1ee4-45d3-b1b0-bf822d9095ef.SonarQubePublish@7
+    displayName: 'Publicar resultado do Quality Gate'
+    inputs:
+      pollingTimeoutSec: '${{ parameters.pollingTimeoutSec }}'
+    continueOnError: false
+
+  - template: quality-gate.yaml
+    parameters:
+      breakOnQualityGate: ${{ parameters.breakOnQualityGate }}
+      gateWaitAttempts: ${{ parameters.gateWaitAttempts }}
+      gateWaitIntervalSeconds: ${{ parameters.gateWaitIntervalSeconds }}

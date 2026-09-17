@@ -196,7 +196,7 @@ Deploy_<env> (stages/deploy-frontend.yaml → deploy-frontend.yaml):
   migrado para revisar imports e updates de convergência. O import **não** aposenta o state
   antigo nem adota recursos fora do root — procedimento na entrada `2.7.0` do `CHANGELOG.md`.
 
-## Stack de Lambda (`stacks/dotnet-lambda.yaml`) — mesmo modelo, alvo AWS Lambda
+## Stack de Lambda (`stacks/dotnet-lambda.yaml`) — mesmo modelo, alvo AWS Lambda (.NET, Node.js, Python)
 
 Substitui o `azure-pipelines-infrastructure.yaml` legado (cópia em `legado /`, fora do git),
 cuja diferença central era **cada repositório de lambda carregar o próprio `terraform/`** e
@@ -207,14 +207,25 @@ da plataforma (`4.0.0`). Mesmo roteamento por branch e mesmos stages reutilizado
 `steps/terraform-apply.yaml`, `steps/record-prod-release.yaml`); o que muda é o motor:
 
 ```
-Build (dotnet/build-lambda-dotnet.yaml: publish framework-dependent, RID de lambda.architecture → <repo>.zip → artefato lambda-package)
+SonarQube  ← lambda.runtime: dotnet* → qa-sonar-dotnet | nodejs* → qa-sonar-node | python* → qa-sonar-python (gate bloqueante nos três)
+Build      ← lambda.runtime: dotnet/build-lambda-dotnet (publish framework-dependent, RID de lambda.architecture)
+                             | node/build-lambda-node (npm ci → build → output_dir + node_modules --omit=dev, --os/--cpu)
+                             | python/build-lambda-python (pip --target --platform manylinux2014_<arch> --only-binary)
+             → <repo>.zip → artefato lambda-package (contrato único; Node/Python checam que o arquivo/módulo do handler existe no zip)
 Deploy_<env> (stages/deploy-lambda.yaml → deploy-lambda.yaml):
   checkout self (infra/*.asl.json) + templates → steps/lambda-prepare.yaml (copia root, zip, ASL; _app.auto.tfvars.json;
   valida nomes ≤ 64) → terraform-apply → verifica State/LastUpdateStatus de cada função (Summary)
   → resolve-artifact-static (artifactKind: lambda) → record-prod-release   [prd completo / hml reduzido]
 ```
 
-- **Um pacote, N funções**: `lambda.handlers` (`<chave>: 'Assembly::Tipo::Metodo'`) vira
+- **Runtime é dado**: `lambda.runtime` (default `dotnet10`) roteia Sonar e Build em compile-time
+  (`startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs'|'python')`); fora de
+  `dotnet|nodejs|python` o `Validate` falha. Versão da ferramenta deriva do runtime
+  (`replace(runtime, 'nodejs', '')` → `20.x`), override em `node_version`/`python_version`.
+  Sonar roda sempre na raiz do repo; `src_path` (`.` por default; csproj obrigatório no .NET)
+  só afeta o Build. Handler no formato do runtime: `Assembly::Tipo::Metodo` · `arquivo.export`
+  · `modulo.funcao`. Python arm64 exige wheels manylinux aarch64 (o agente não compila para arm).
+- **Um pacote, N funções**: `lambda.handlers` (`<chave>: <handler>`) vira
   `<function_name_prefix>-<chave><suffix>` (prefixo default = nome do repositório). Todas
   compartilham zip, role, sizing e env vars (`config.env_vars` + `config.env_vars_by_env.<env>`).
 - **`lambda` e `resources` são objetos com atributos `optional()` no Terraform**: chave omitida

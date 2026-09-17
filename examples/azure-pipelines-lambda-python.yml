@@ -1,0 +1,68 @@
+# examples/azure-pipelines-lambda-python.yml
+# ============================================================================
+# Lambda em Python — mesmo stack e mesmo fluxo da lambda .NET (examples/azure-pipelines-lambda.yml,
+# que tem os comentários completos de resources/config). O que muda por runtime:
+#   runtime: pythonX.Y    -> Sonar Python (pip install → pytest+coverage.xml → gate) e build Python
+#   src_path              -> diretório do código e do requirements ('.' = raiz; default)
+#   requirements_file     -> relativo ao src_path (default requirements.txt). Dependências entram
+#                            no zip como wheels manylinux da arquitetura (arm64 exige wheel;
+#                            sem wheel, use uma layer em layer_arns)
+#   handlers              -> 'modulo.funcao' relativo à raiz do zip (ex.: 'app.handler',
+#                            'src.handlers.salvar.handler')
+# Sonar: lint desligado por default; para ligar, inclua ruff no requirements-dev.txt e passe
+#   lint_command: 'python -m ruff check .'
+# ============================================================================
+trigger:
+  batch: true
+  branches:
+    include:
+      - develop
+      - sandbox/*
+      - release/*
+      - hotfix/*
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Pipelines
+      ref: refs/tags/v4.0.0      # PINE numa TAG — nunca refs/heads/main (rollout controlado)
+
+extends:
+  template: templates/stacks/dotnet-lambda.yaml@templates
+  parameters:
+    sistema: operacoes
+    owner: squad-conciliacao
+
+    lambda:
+      runtime: python3.12
+      # python_version: '3.12'        # default: derivado do runtime (python3.12 -> 3.12)
+      src_path: '.'
+      requirements_file: requirements.txt
+      # lint_command: 'python -m ruff check .'
+      architecture: x86_64
+      memory_size: 512
+      timeout: 120
+      handlers:
+        conciliar: 'src.handlers.conciliar.handler'    # src/handlers/conciliar.py define handler(event, context)
+        relatorio: 'src.handlers.relatorio.handler'
+
+    resources:
+      sns_topics:
+        - topic_name: conciliacao-resultado
+      secrets:
+        - name: operacoes/conciliacao
+          keys: [DbConnectionString]
+
+    config:
+      env_vars:
+        - name: PYTHONPATH
+          value: /var/task
+      env_vars_by_env:
+        dev: []
+        hml: []
+        prd: []
+      ssm_parameters:
+        dev: []
+        hml: []
+        prd: []

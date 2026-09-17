@@ -1,0 +1,69 @@
+# examples/azure-pipelines-lambda-node.yml
+# ============================================================================
+# Lambda em Node.js (TypeScript ou JS puro) — mesmo stack e mesmo fluxo da lambda .NET
+# (examples/azure-pipelines-lambda.yml, que tem os comentários completos de resources/config).
+# O que muda por runtime:
+#   runtime: nodejsNN.x   -> Sonar Node (npm ci → lint → testes+lcov → gate) e build Node
+#   src_path              -> diretório do package.json ('.' = raiz; default)
+#   handlers              -> 'arquivo.export' relativo à raiz do zip (ex.: 'index.handler',
+#                            'handlers/salvar.handler'); com output_dir, relativo a ele.
+#   build_command         -> default 'npm run build --if-present' (TS/bundler); '' = JS puro
+#   output_dir            -> pasta gerada pelo build a empacotar (ex.: dist); vazio = o src_path
+#   include_dependencies  -> false para bundle autocontido (esbuild): node_modules fora do zip
+# ============================================================================
+trigger:
+  batch: true
+  branches:
+    include:
+      - develop
+      - sandbox/*
+      - release/*
+      - hotfix/*
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Pipelines
+      ref: refs/tags/v4.0.0      # PINE numa TAG — nunca refs/heads/main (rollout controlado)
+
+extends:
+  template: templates/stacks/dotnet-lambda.yaml@templates
+  parameters:
+    sistema: operacoes
+    owner: squad-notificacoes
+
+    lambda:
+      runtime: nodejs20.x
+      # node_version: '20.x'          # default: derivado do runtime (nodejs20.x -> 20.x)
+      src_path: '.'
+      build_command: 'npm run build'  # tsc/esbuild gera dist/
+      output_dir: dist
+      include_dependencies: true      # false se o build gera bundle autocontido
+      architecture: arm64
+      memory_size: 256
+      timeout: 30
+      handlers:
+        enviar-email: 'handlers/enviar-email.handler'      # dist/handlers/enviar-email.js exporta 'handler'
+        enviar-sms: 'handlers/enviar-sms.handler'
+
+    resources:
+      sqs:
+        - queue_name: notificacoes-email
+          dlq_queue_name: notificacoes-email-dlq
+      sqs_triggers:
+        - handler: enviar-email
+          queue_name: notificacoes-email
+
+    config:
+      env_vars:
+        - name: NODE_OPTIONS
+          value: '--enable-source-maps'
+      env_vars_by_env:
+        dev: []
+        hml: []
+        prd: []
+      ssm_parameters:
+        dev: []
+        hml: []
+        prd: []

@@ -1,0 +1,176 @@
+# Build de AWS Lambda em Node.js: instala dependências, roda o build (TypeScript/bundler, se
+# houver) e empacota <repo>.zip com o código + node_modules de PRODUÇÃO no artefato
+# lambda-package — mesmo contrato do build-lambda-dotnet.yaml (o motor de deploy e o Terraform
+# não distinguem o runtime; só o handler muda: 'arquivo.export', ex.: 'index.handler' ou
+# 'src/handlers/salvar.handler' relativo à raiz do zip).
+parameters:
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-latest
+  - name: srcPath                 # diretório com package.json ('.' = raiz do repositório)
+    type: string
+    default: '.'
+  - name: nodeVersion
+    type: string
+    default: '20.x'
+  - name: installCommand
+    type: string
+    default: ''                   # vazio = npm ci (npm install sem lockfile, com warning)
+  - name: buildCommand
+    type: string
+    default: 'npm run build --if-present'   # '' = pular (JS puro)
+  - name: outputDir               # saída do build a empacotar (ex.: dist). Vazio = o próprio srcPath (JS puro, sem transpilar)
+    type: string
+    default: ''
+  - name: includeDependencies     # false = bundle autocontido (esbuild/webpack): não instala node_modules no zip
+    type: boolean
+    default: true
+  - name: architecture
+    type: string
+    default: 'x86_64'
+    values:
+      - x86_64
+      - arm64
+  - name: handlers                # lambda.handlers do stack — só para checar que os arquivos existem no zip
+    type: object
+    default: {}
+  - name: packageName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: artifactName
+    type: string
+    default: 'lambda-package'
+
+jobs:
+  - job: Build
+    displayName: 'Compilar Node.js e empacotar Lambda (zip)'
+    pool: ${{ parameters.pool }}
+    variables:
+      # npm >= 9.6 aceita --os/--cpu para resolver módulos nativos (optionalDependencies) da plataforma alvo.
+      ${{ if eq(parameters.architecture, 'arm64') }}:
+        NpmCpu: arm64
+      ${{ else }}:
+        NpmCpu: x64
+
+    steps:
+      - checkout: self
+        displayName: 'Checkout do repositório Git'
+
+      - task: NodeTool@0
+        displayName: 'Usar Node ${{ parameters.nodeVersion }}'
+        inputs:
+          versionSpec: ${{ parameters.nodeVersion }}
+
+      - bash: |
+          set -euo pipefail
+          SRC="$(Build.SourcesDirectory)/${{ parameters.srcPath }}"
+          if [ ! -f "$SRC/package.json" ]; then
+            echo "##[error]package.json não encontrado em '${{ parameters.srcPath }}' (lambda.src_path no azure-pipelines.yml = diretório do package.json)."
+            exit 1
+          fi
+          cd "$SRC"
+
+          CMD="${{ parameters.installCommand }}"
+          if [ -z "$CMD" ]; then
+            if [ -f package-lock.json ]; then CMD="npm ci"; else
+              echo "##[warning]package-lock.json nao encontrado — usando 'npm install' (build nao reprodutivel). Versione o lockfile."
+              CMD="npm install"
+            fi
+          fi
+          echo "##[section]Instalando dependencias (com dev, para o build): $CMD"
+          $CMD
+
+          BUILD="${{ parameters.buildCommand }}"
+          if [ -n "$BUILD" ]; then
+            echo "##[section]Build: $BUILD"
+            $BUILD
+          else
+            echo "Sem build (buildCommand vazio): empacotando o código como está."
+          fi
+        displayName: 'Instalar dependências e compilar'
+        env:
+          CI: 'true'
+
+      - bash: |
+          set -euo pipefail
+          SRC="$(Build.SourcesDirectory)/${{ parameters.srcPath }}"
+          STAGE="$(Build.BinariesDirectory)/publish"
+          PACKAGE_DIR="$(Build.ArtifactStagingDirectory)/package"
+          ZIP="$PACKAGE_DIR/${{ parameters.packageName }}.zip"
+          OUT="${{ parameters.outputDir }}"
+          rm -rf "$STAGE"; mkdir -p "$STAGE" "$PACKAGE_DIR"
+
+          # ---- código ----
+          if [ -n "$OUT" ]; then
+            if [ ! -d "$SRC/$OUT" ]; then
+              echo "##[error]Pasta de saída '$OUT' não encontrada após o build. Ajuste lambda.output_dir (ou deixe vazio para JS puro)."
+              exit 1
+            fi
+            echo "##[section]Empacotando a saída do build: $OUT/"
+            cp -r "$SRC/$OUT"/. "$STAGE/"
+          else
+            echo "##[section]Empacotando o código-fonte de ${{ parameters.srcPath }}/ (sem node_modules, testes e dotfiles)"
+            rsync -a "$SRC"/ "$STAGE"/ \
+              --exclude node_modules --exclude coverage --exclude infra --exclude '.*' \
+              --exclude '*.test.*' --exclude '*.spec.*' --exclude __tests__ --exclude test --exclude tests \
+              --exclude '*.md' --exclude 'azure-pipelines*.yml'
+          fi
+
+          # ---- dependências de produção (resolvidas do package.json/lockfile do projeto) ----
+          if [ "${INCLUDE_DEPS,,}" = "true" ]; then
+            cp "$SRC/package.json" "$STAGE/"
+            [ -f "$SRC/package-lock.json" ] && cp "$SRC/package-lock.json" "$STAGE/"
+            [ -f "$SRC/.npmrc" ] && cp "$SRC/.npmrc" "$STAGE/"
+            cd "$STAGE"
+            if [ -f package-lock.json ]; then
+              echo "##[section]npm ci --omit=dev (linux/$(NpmCpu))"
+              npm ci --omit=dev --no-audit --no-fund --os=linux --cpu="$(NpmCpu)"
+            else
+              echo "##[section]npm install --omit=dev (linux/$(NpmCpu))"
+              npm install --omit=dev --no-audit --no-fund --os=linux --cpu="$(NpmCpu)"
+            fi
+            rm -f .npmrc
+            cd - >/dev/null
+          else
+            echo "##[section]includeDependencies=false: bundle autocontido, node_modules não entra no zip."
+          fi
+
+          # ---- handlers existem no pacote? ('arquivo.export' -> arquivo.js|.mjs|.cjs) ----
+          HANDLERS_JSON='${{ convertToJson(parameters.handlers) }}'
+          if [ -n "$HANDLERS_JSON" ] && [ "$HANDLERS_JSON" != "null" ] && [ "$HANDLERS_JSON" != '""' ]; then
+            FAIL=0
+            for H in $(echo "$HANDLERS_JSON" | jq -r '.[]'); do
+              FILE="${H%.*}"
+              if [ ! -f "$STAGE/$FILE.js" ] && [ ! -f "$STAGE/$FILE.mjs" ] && [ ! -f "$STAGE/$FILE.cjs" ]; then
+                echo "##[error]Handler '$H': arquivo '$FILE.(js|mjs|cjs)' não existe no pacote. O handler é relativo à raiz do zip (o conteúdo de '${OUT:-${{ parameters.srcPath }}}')."
+                FAIL=1
+              else
+                echo "  handler ok: $H"
+              fi
+            done
+            [ "$FAIL" -eq 0 ] || exit 1
+          fi
+
+          # ---- zip + limites ----
+          (cd "$STAGE" && zip -r9 -q "$ZIP" .)
+          ZIP_MB=$(du -m "$ZIP" | cut -f1)
+          UNZIPPED_MB=$(du -sm "$STAGE" | cut -f1)
+          echo "##[section]Pacote: $ZIP (${ZIP_MB} MB zipado, ${UNZIPPED_MB} MB descompactado)"
+          # Limites da AWS: 50 MB no upload direto (é o que o Terraform faz via filename), 250 MB descompactado.
+          if [ "$ZIP_MB" -gt 50 ]; then
+            echo "##[error]Pacote com ${ZIP_MB} MB excede o limite de 50 MB de upload direto do Lambda. Reduza dependências (bundle com esbuild, includeDependencies=false) — upload via S3 não é suportado por esta esteira."
+            exit 1
+          fi
+          if [ "$UNZIPPED_MB" -gt 250 ]; then
+            echo "##[error]Pacote descompactado com ${UNZIPPED_MB} MB excede o limite de 250 MB do Lambda."
+            exit 1
+          fi
+        displayName: 'Empacotar (código + node_modules de produção)'
+        env:
+          CI: 'true'
+          INCLUDE_DEPS: ${{ parameters.includeDependencies }}
+
+      - publish: $(Build.ArtifactStagingDirectory)/package
+        artifact: ${{ parameters.artifactName }}
+        displayName: 'Publicar artefato (${{ parameters.artifactName }})'

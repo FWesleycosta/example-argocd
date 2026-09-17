@@ -28,12 +28,16 @@ parameters:
   - name: planOnly
     type: boolean
     default: false
+  - name: veracodeExcludePatterns   # por runtime (node_modules, .venv...); vazio = default do scanner (.NET)
+    type: string
+    default: ''
 
 stages:
   - template: ../stages/veracode.yaml
     parameters:
       dependsOn: [Build]
       veracode: ${{ parameters.veracode }}
+      excludePatterns: ${{ parameters.veracodeExcludePatterns }}
 
   - template: ../stages/deploy-lambda.yaml
     parameters:

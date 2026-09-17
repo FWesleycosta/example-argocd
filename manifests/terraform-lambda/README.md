@@ -1,6 +1,6 @@
 # manifests/terraform-lambda
 
-**Root module** Terraform de uma aplicação **AWS Lambda** (.NET, um pacote zip com N handlers).
+**Root module** Terraform de uma aplicação **AWS Lambda** (.NET, Node.js ou Python — um pacote zip com N handlers; o runtime vem de `lambda.runtime` e o root não distingue).
 **Não** é template do Azure Pipelines — é copiado em runtime por `templates/deploy-lambda.yaml`
 para `$(Pipeline.Workspace)/terraform`, onde a esteira gera o `backend.tf`
 (`tfstate-<app>-<env>` / `<app>/terraform.tfstate`) e roda `init → validate → plan → apply`.

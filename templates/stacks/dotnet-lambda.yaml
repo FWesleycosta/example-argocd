@@ -1,13 +1,25 @@
-# Stack de AWS Lambda (.NET, pacote zip com N handlers). Mesmo roteamento por branch do
-# backend/frontend; o motor é deploy-lambda.yaml + manifests/terraform-lambda (a infra que no
-# modelo legado morava em terraform/ de cada repositório de lambda).
+# Stack de AWS Lambda (.NET, Node.js ou Python; pacote zip com N handlers). Mesmo roteamento por
+# branch do backend/frontend; o motor é deploy-lambda.yaml + manifests/terraform-lambda (a infra
+# que no modelo legado morava em terraform/ de cada repositório de lambda).
+#
+# lambda.runtime escolhe, em compile-time, o Sonar e o Build (o deploy é o mesmo para os três):
+#   dotnetNN  (default dotnet10) -> sonarqube/qa-sonar-dotnet.yaml + dotnet/build-lambda-dotnet.yaml
+#   nodejsNN.x                   -> sonarqube/qa-sonar-node.yaml   + node/build-lambda-node.yaml
+#   pythonX.Y                    -> sonarqube/qa-sonar-python.yaml + python/build-lambda-python.yaml
+# Outro prefixo (java, ruby, provided) falha no Validate: o Terraform aceita, a esteira não builda.
 parameters:
   # --- função (stage Build + Terraform) ---
-  # src_path (obrigatório): csproj publicado; handlers (obrigatório): <chave>: 'Assembly::Tipo::Metodo'.
-  # Demais chaves são opcionais (default no root Terraform): dotnet_version '10.0.x',
-  # function_name_prefix (vazio = nome do repositório), runtime dotnet10, architecture x86_64,
-  # memory_size 512, timeout 30, tracing_config PassThrough, description, log_retention_days 30,
-  # layer_arns []. Chave omitida usa o default (o objeto NÃO precisa vir completo).
+  # handlers (obrigatório): <chave>: handler no formato do runtime — .NET 'Assembly::Tipo::Metodo',
+  # Node 'arquivo.export' (relativo à raiz do zip), Python 'modulo.funcao'.
+  # src_path: .NET = csproj (obrigatório); Node = diretório do package.json; Python = diretório
+  # do código/requirements ('.' = raiz, default).
+  # Por runtime (opcionais): dotnet_version '10.0.x' · node_version (default derivado do runtime),
+  # install_command, build_command 'npm run build --if-present', output_dir '', include_dependencies
+  # true · python_version (default derivado do runtime), requirements_file 'requirements.txt',
+  # lint_command ''.
+  # Demais chaves (default no root Terraform): function_name_prefix (vazio = nome do repositório),
+  # architecture x86_64, memory_size 512, timeout 30, tracing_config PassThrough, description,
+  # log_retention_days 30, layer_arns []. Chave omitida usa o default (o objeto NÃO precisa vir completo).
   - name: lambda
     type: object
 
@@ -93,19 +105,24 @@ stages:
             pool:
               vmImage: ubuntu-latest
             steps:
-              - ${{ if eq(parameters.lambda.src_path, '') }}:
+              - ${{ if not(or(startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'dotnet'), startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs'), startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'python'))) }}:
                   - script: |
-                      echo "##[error]lambda.src_path e obrigatorio (caminho do csproj, ex.: src/Minha.Lambda/Minha.Lambda.csproj)"
+                      echo "##[error]lambda.runtime='${{ coalesce(parameters.lambda.runtime, 'dotnet10') }}' nao e suportado pela esteira. Aceitos: dotnetNN (ex.: dotnet10), nodejsNN.x (ex.: nodejs20.x), pythonX.Y (ex.: python3.12)."
+                      exit 1
+                    displayName: 'lambda.runtime nao suportado'
+              - ${{ elseif and(startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'dotnet'), eq(parameters.lambda.src_path, '')) }}:
+                  - script: |
+                      echo "##[error]lambda.src_path e obrigatorio para .NET (caminho do csproj, ex.: src/Minha.Lambda/Minha.Lambda.csproj)"
                       exit 1
                     displayName: 'lambda.src_path ausente'
               - ${{ else }}:
                   - script: |
-                      echo "lambda.src_path ok: '${{ parameters.lambda.src_path }}'"
-                    displayName: 'lambda.src_path ok'
+                      echo "runtime: '${{ coalesce(parameters.lambda.runtime, 'dotnet10') }}'  src_path: '${{ coalesce(parameters.lambda.src_path, '.') }}'"
+                    displayName: 'runtime/src_path ok'
 
               - ${{ if eq(parameters.lambda.handlers, '') }}:
                   - script: |
-                      echo "##[error]lambda.handlers e obrigatorio: <chave>: 'Assembly::Namespace.Tipo::Metodo' (uma funcao por chave)"
+                      echo "##[error]lambda.handlers e obrigatorio: <chave>: handler (.NET 'Assembly::Tipo::Metodo' | Node 'arquivo.export' | Python 'modulo.funcao'), uma funcao por chave"
                       exit 1
                     displayName: 'lambda.handlers ausente'
 
@@ -130,27 +147,67 @@ stages:
         condition: succeeded()
         jobs:
           - job: SonarQubeScan
-            displayName: 'Analisar código .NET'
+            displayName: "Analisar código (${{ coalesce(parameters.lambda.runtime, 'dotnet10') }})"
             pool:
               vmImage: ubuntu-latest
             steps:
               - checkout: self
                 fetchDepth: 0
                 displayName: 'Obter código-fonte completo'
-              - template: ../sonarqube/qa-sonar-dotnet.yaml
-                parameters:
-                  dotnetVersion: ${{ coalesce(parameters.lambda.dotnet_version, '10.0.x') }}
+              # Sonar sempre roda na raiz do repositório (package.json / requirements na raiz);
+              # lambda.src_path só afeta o Build. Gate bloqueante nos três runtimes (mesma
+              # política do .NET): lint/testes com falha e Quality Gate reprovado derrubam o run.
+              - ${{ if startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs') }}:
+                  - template: ../sonarqube/qa-sonar-node.yaml
+                    parameters:
+                      nodeVersion: ${{ coalesce(parameters.lambda.node_version, replace(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs', '')) }}
+                      installCommand: ${{ coalesce(parameters.lambda.install_command, '') }}
+                      testCommand: 'npm test --if-present -- --coverage'
+                      enforce: true
+                      breakOnQualityGate: true
+              - ${{ elseif startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'python') }}:
+                  - template: ../sonarqube/qa-sonar-python.yaml
+                    parameters:
+                      pythonVersion: ${{ coalesce(parameters.lambda.python_version, replace(coalesce(parameters.lambda.runtime, 'dotnet10'), 'python', '')) }}
+                      lintCommand: ${{ coalesce(parameters.lambda.lint_command, '') }}
+                      enforce: true
+                      breakOnQualityGate: true
+              - ${{ else }}:
+                  - template: ../sonarqube/qa-sonar-dotnet.yaml
+                    parameters:
+                      dotnetVersion: ${{ coalesce(parameters.lambda.dotnet_version, '10.0.x') }}
 
       - stage: Build
         displayName: 'Compilar e empacotar Lambda'
         dependsOn: SonarQube
         condition: succeeded()
         jobs:
-          - template: ../dotnet/build-lambda-dotnet.yaml
-            parameters:
-              csprojPath: ${{ parameters.lambda.src_path }}
-              dotnetVersion: ${{ coalesce(parameters.lambda.dotnet_version, '10.0.x') }}
-              architecture: ${{ coalesce(parameters.lambda.architecture, 'x86_64') }}
+          - ${{ if startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs') }}:
+              - template: ../node/build-lambda-node.yaml
+                parameters:
+                  srcPath: ${{ coalesce(parameters.lambda.src_path, '.') }}
+                  nodeVersion: ${{ coalesce(parameters.lambda.node_version, replace(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs', '')) }}
+                  installCommand: ${{ coalesce(parameters.lambda.install_command, '') }}
+                  buildCommand: ${{ coalesce(parameters.lambda.build_command, 'npm run build --if-present') }}
+                  outputDir: ${{ coalesce(parameters.lambda.output_dir, '') }}
+                  ${{ if eq(parameters.lambda.include_dependencies, false) }}:
+                    includeDependencies: false
+                  architecture: ${{ coalesce(parameters.lambda.architecture, 'x86_64') }}
+                  handlers: ${{ parameters.lambda.handlers }}
+          - ${{ elseif startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'python') }}:
+              - template: ../python/build-lambda-python.yaml
+                parameters:
+                  srcPath: ${{ coalesce(parameters.lambda.src_path, '.') }}
+                  pythonVersion: ${{ coalesce(parameters.lambda.python_version, replace(coalesce(parameters.lambda.runtime, 'dotnet10'), 'python', '')) }}
+                  requirementsFile: ${{ coalesce(parameters.lambda.requirements_file, 'requirements.txt') }}
+                  architecture: ${{ coalesce(parameters.lambda.architecture, 'x86_64') }}
+                  handlers: ${{ parameters.lambda.handlers }}
+          - ${{ else }}:
+              - template: ../dotnet/build-lambda-dotnet.yaml
+                parameters:
+                  csprojPath: ${{ parameters.lambda.src_path }}
+                  dotnetVersion: ${{ coalesce(parameters.lambda.dotnet_version, '10.0.x') }}
+                  architecture: ${{ coalesce(parameters.lambda.architecture, 'x86_64') }}
 
       - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/') }}:
           - template: ../hotfix/hotfix-lambda-dotnet.yaml
@@ -162,6 +219,23 @@ stages:
               sistema: ${{ parameters.sistema }}
               owner: ${{ parameters.owner }}
               planOnly: ${{ parameters.planOnly }}
+              ${{ if startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs') }}:
+                veracodeExcludePatterns: |
+                  !**/node_modules/**
+                  !**/dist/**
+                  !**/build/**
+                  !**/coverage/**
+                  !**/*.map
+                  !**/.git/**
+              ${{ elseif startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'python') }}:
+                veracodeExcludePatterns: |
+                  !**/.venv/**
+                  !**/venv/**
+                  !**/__pycache__/**
+                  !**/.pytest_cache/**
+                  !**/htmlcov/**
+                  !**/*.egg-info/**
+                  !**/.git/**
 
       - ${{ elseif startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
           - template: ../stages/deploy-lambda.yaml
@@ -182,6 +256,23 @@ stages:
             parameters:
               dependsOn: [Deploy_hml]
               veracode: ${{ parameters.veracode }}
+              ${{ if startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs') }}:
+                excludePatterns: |
+                  !**/node_modules/**
+                  !**/dist/**
+                  !**/build/**
+                  !**/coverage/**
+                  !**/*.map
+                  !**/.git/**
+              ${{ elseif startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'python') }}:
+                excludePatterns: |
+                  !**/.venv/**
+                  !**/venv/**
+                  !**/__pycache__/**
+                  !**/.pytest_cache/**
+                  !**/htmlcov/**
+                  !**/*.egg-info/**
+                  !**/.git/**
 
           - template: ../stages/deploy-lambda.yaml
             parameters:

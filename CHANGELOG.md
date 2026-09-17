@@ -188,7 +188,7 @@ flowchart TD
 
 ## [4.0.0] - 2026-09-15
 
-Novo stack de **AWS Lambda** (.NET), limpeza de templates mortos, remoção de parâmetros de
+Novo stack de **AWS Lambda** (.NET, Node.js e Python), limpeza de templates mortos, remoção de parâmetros de
 diagnóstico do `setup-git-auth` e correção de três regressões introduzidas em `main` depois
 da `3.9.0`. O MAJOR vem de uma única mudança de fluxo: o hotfix de **SPA** deixou de excluir
 a branch ao final.
@@ -204,6 +204,32 @@ a branch ao final.
   - `dotnet/build-lambda-dotnet.yaml`: `dotnet publish` framework-dependent (RID derivado de
     `lambda.architecture`), zip único `<repo>.zip` no artefato `lambda-package`; falha acima
     de 50 MB zipado / 250 MB descompactado (limites do upload direto).
+  - **Node.js e Python no mesmo stack**: `lambda.runtime` (`nodejsNN.x` | `pythonX.Y`; default
+    `dotnet10`) escolhe em compile-time o Sonar e o Build — o deploy e o Terraform são os mesmos.
+    Prefixo fora de `dotnet|nodejs|python` falha no `Validate` (o Terraform aceitaria `java`,
+    `ruby`, `provided`, mas a esteira não builda). Versão da ferramenta derivada do runtime
+    (`nodejs20.x` → Node `20.x`, `python3.12` → Python `3.12`), com override em
+    `lambda.node_version` / `lambda.python_version`. Sonar roda na raiz do repo; `src_path`
+    (default `.`) só afeta o Build. Gate bloqueante nos três (mesma política do .NET).
+    - `node/build-lambda-node.yaml`: `npm ci` → `lambda.build_command` (default
+      `npm run build --if-present`) → empacota `lambda.output_dir` (ou o `src_path`, sem
+      `node_modules`/testes/dotfiles) + `npm ci --omit=dev --os=linux --cpu=<x64|arm64>`
+      (`lambda.include_dependencies: false` para bundle autocontido). Handler
+      `'arquivo.export'` relativo à raiz do zip; o build **falha se o arquivo do handler não
+      existir no pacote**. Sonar: `sonarqube/qa-sonar-node.yaml` (já existia).
+    - `python/build-lambda-python.yaml`: `pip install -r lambda.requirements_file --target`
+      com `--platform manylinux2014_<x86_64|aarch64> --only-binary=:all:`; sem wheel, em
+      x86_64 repete instalação nativa com warning e em arm64 **falha** (agente não compila
+      para arm — usar `layer_arns`). Copia o código sem venv/testes/caches/`infra/`; handler
+      `'modulo.funcao'`, com a mesma checagem de existência.
+    - `sonarqube/qa-sonar-python.yaml` (**novo**): `pip install` dos `requirements*.txt` que
+      existirem + `pytest pytest-cov`, lint opcional (`lambda.lint_command`), `pytest --cov
+      --cov-report=xml --junitxml` (rc 5 = sem testes ⇒ warning), scanner CLI com
+      `sonar.python.coverage.reportPaths`/`sonar.python.xunit.reportPath` e o mesmo
+      `quality-gate.yaml`. `enforce: true` também falha quando o `coverage.xml` não existe.
+    - Veracode com exclusões por runtime (`node_modules`, `.venv`, caches) na release e no
+      hotfix (`hotfix-lambda-dotnet.yaml` ganha `veracodeExcludePatterns`).
+    - Exemplos: `examples/azure-pipelines-lambda-node.yml` e `-python.yml`.
   - `deploy-lambda.yaml` (motor) + `steps/lambda-prepare.yaml` + `stages/deploy-lambda.yaml`
     + `stages/destroy-sandbox-lambda.yaml` + `hotfix/hotfix-lambda-dotnet.yaml`. O deploy
     verifica `State/LastUpdateStatus` de cada função e publica a tabela na Summary.
