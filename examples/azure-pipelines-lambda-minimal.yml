@@ -5,11 +5,21 @@
 # marcados com "TROCAR". Exemplo completo (filas, tópicos, Step Functions, pipes, SSM):
 # examples/azure-pipelines-lambda.yml · Node: -lambda-node.yml · Python: -lambda-python.yml
 #
-# ---- ANTES (legado) ---------------------------------------------------------
+# ---- ANTES (legado) — o azure-pipelines.yml inteiro de uma lambda era isto: -------------
+#   trigger:
+#     branches:
+#       include:
+#         - develop                        # só dev; hml/prd fora da esteira
 #   resources:
 #     repositories:
-#       - repository: pipelines            # alias livre, ref em refs/heads/main
+#       - repository: pipelines            # alias livre
+#         type: git
+#         name: Fibra.DevOps/Fibra.DevOps.Pipelines
+#         ref: refs/heads/main             # sem pin: toda mudança da plataforma caía no app
 #       - repository: terraform-modules    # módulos clonados como resource
+#         type: git
+#         name: Fibra.DevOps/Fibra.DevOps.Terraform
+#         ref: refs/heads/main
 #   extends:
 #     template: azure-pipelines-infrastructure.yaml@pipelines
 #     parameters:
@@ -18,6 +28,7 @@
 #   + no repositório: config/<app>.yaml e terraform/ (main.tf, variables.tf, ...)
 #
 # ---- DEPOIS (este arquivo) --------------------------------------------------
+#   trigger: develop        -> develop, sandbox/*, release/*, hotfix/* com batch: true (roteamento por branch)
 #   lambda_description      -> lambda.description
 #   product_repo            -> some: o nome vem do repositório (Build.Repository.Name)
 #                              função  = <repo>-<chave do handler>   (ex.: fibra-lambdas-examples-processar)
