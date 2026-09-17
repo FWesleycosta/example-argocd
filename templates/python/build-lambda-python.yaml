@@ -1,0 +1,138 @@
+# Build de AWS Lambda em Python: instala as dependências do requirements como wheels manylinux
+# da arquitetura alvo (pip --platform/--only-binary) e empacota <repo>.zip com código +
+# dependências no artefato lambda-package — mesmo contrato do build-lambda-dotnet.yaml.
+# Handler no formato 'modulo.funcao' relativo à raiz do zip (ex.: 'app.handler',
+# 'src.handlers.salvar.handler').
+parameters:
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-latest
+  - name: srcPath                 # diretório com o código e o requirements ('.' = raiz do repositório)
+    type: string
+    default: '.'
+  - name: pythonVersion
+    type: string
+    default: '3.12'
+  - name: requirementsFile        # relativo a srcPath; ausente = pacote sem dependências (warning)
+    type: string
+    default: 'requirements.txt'
+  - name: architecture
+    type: string
+    default: 'x86_64'
+    values:
+      - x86_64
+      - arm64
+  - name: handlers                # lambda.handlers do stack — só para checar que os módulos existem no zip
+    type: object
+    default: {}
+  - name: packageName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: artifactName
+    type: string
+    default: 'lambda-package'
+
+jobs:
+  - job: Build
+    displayName: 'Empacotar Lambda Python (zip)'
+    pool: ${{ parameters.pool }}
+    variables:
+      ${{ if eq(parameters.architecture, 'arm64') }}:
+        PipPlatform: manylinux2014_aarch64
+      ${{ else }}:
+        PipPlatform: manylinux2014_x86_64
+
+    steps:
+      - checkout: self
+        displayName: 'Checkout do repositório Git'
+
+      - task: UsePythonVersion@0
+        displayName: 'Usar Python ${{ parameters.pythonVersion }}'
+        inputs:
+          versionSpec: ${{ parameters.pythonVersion }}
+
+      - bash: |
+          set -euo pipefail
+          SRC="$(Build.SourcesDirectory)/${{ parameters.srcPath }}"
+          STAGE="$(Build.BinariesDirectory)/publish"
+          PACKAGE_DIR="$(Build.ArtifactStagingDirectory)/package"
+          ZIP="$PACKAGE_DIR/${{ parameters.packageName }}.zip"
+          REQ="$SRC/${{ parameters.requirementsFile }}"
+          PLATFORM="$(PipPlatform)"
+          [ -d "$SRC" ] || { echo "##[error]lambda.src_path '${{ parameters.srcPath }}' não existe."; exit 1; }
+          rm -rf "$STAGE"; mkdir -p "$STAGE" "$PACKAGE_DIR"
+
+          PYVER=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+          python -m pip install --upgrade pip -q
+
+          # ---- dependências: wheels da plataforma do Lambda (o agente é x86_64 glibc; arm64 exige wheel) ----
+          if [ -f "$REQ" ]; then
+            echo "##[section]pip install -r ${{ parameters.requirementsFile }} --platform $PLATFORM --python-version $PYVER --only-binary=:all:"
+            if python -m pip install -r "$REQ" --target "$STAGE" \
+                 --platform "$PLATFORM" --implementation cp --python-version "$PYVER" \
+                 --only-binary=:all: --upgrade -q; then
+              echo "Dependências instaladas como wheels manylinux ($PLATFORM, cp$PYVER)."
+            else
+              echo "##[warning]Alguma dependência não tem wheel para $PLATFORM/cp$PYVER (--only-binary=:all: falhou)."
+              if [ "${{ parameters.architecture }}" = "x86_64" ]; then
+                echo "##[warning]Repetindo a instalação nativa no agente (x86_64): pacotes puros funcionam; extensões C compiladas aqui podem não carregar no Lambda. Prefira versões com wheel manylinux ou uma layer."
+                rm -rf "${STAGE:?}"/*
+                python -m pip install -r "$REQ" --target "$STAGE" --upgrade -q
+              else
+                echo "##[error]Para arm64 todas as dependências precisam de wheel manylinux aarch64 (o agente é x86_64 e não compila para arm). Fixe versões com wheel ou entregue via layer (lambda.layer_arns)."
+                exit 1
+              fi
+            fi
+            rm -rf "$STAGE/bin"   # entry points do pip --target; inúteis no Lambda
+          else
+            echo "##[warning]'${{ parameters.requirementsFile }}' não encontrado em ${{ parameters.srcPath }}/ — pacote sem dependências. Se o projeto usa pyproject, exporte um requirements (pip-compile / uv export) ou ajuste lambda.requirements_file."
+          fi
+
+          # ---- código (sem venv, testes, caches, infra/*.asl.json e dotfiles) ----
+          echo "##[section]Copiando o código de ${{ parameters.srcPath }}/"
+          rsync -a "$SRC"/ "$STAGE"/ \
+            --exclude '.*' --exclude venv --exclude env --exclude __pycache__ --exclude '*.pyc' \
+            --exclude tests --exclude test --exclude 'test_*.py' --exclude '*_test.py' \
+            --exclude '*.egg-info' --exclude htmlcov --exclude coverage.xml --exclude 'junit*.xml' \
+            --exclude infra --exclude '*.md' --exclude 'azure-pipelines*.yml'
+          find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
+
+          # ---- handlers existem no pacote? ('a.b.funcao' -> a/b.py ou a/b/__init__.py) ----
+          HANDLERS_JSON='${{ convertToJson(parameters.handlers) }}'
+          if [ -n "$HANDLERS_JSON" ] && [ "$HANDLERS_JSON" != "null" ] && [ "$HANDLERS_JSON" != '""' ]; then
+            FAIL=0
+            for H in $(echo "$HANDLERS_JSON" | jq -r '.[]'); do
+              MODULE="${H%.*}"
+              MODPATH="${MODULE//.//}"
+              if [ ! -f "$STAGE/$MODPATH.py" ] && [ ! -f "$STAGE/$MODPATH/__init__.py" ]; then
+                echo "##[error]Handler '$H': módulo '$MODULE' ($MODPATH.py) não existe no pacote. O handler é 'modulo.funcao' relativo à raiz do zip (conteúdo de '${{ parameters.srcPath }}')."
+                FAIL=1
+              else
+                echo "  handler ok: $H"
+              fi
+            done
+            [ "$FAIL" -eq 0 ] || exit 1
+          fi
+
+          # ---- zip + limites ----
+          (cd "$STAGE" && zip -r9 -q "$ZIP" .)
+          ZIP_MB=$(du -m "$ZIP" | cut -f1)
+          UNZIPPED_MB=$(du -sm "$STAGE" | cut -f1)
+          echo "##[section]Pacote: $ZIP (${ZIP_MB} MB zipado, ${UNZIPPED_MB} MB descompactado)"
+          # Limites da AWS: 50 MB no upload direto (é o que o Terraform faz via filename), 250 MB descompactado.
+          if [ "$ZIP_MB" -gt 50 ]; then
+            echo "##[error]Pacote com ${ZIP_MB} MB excede o limite de 50 MB de upload direto do Lambda. Mova dependências pesadas para uma layer (lambda.layer_arns) — upload via S3 não é suportado por esta esteira."
+            exit 1
+          fi
+          if [ "$UNZIPPED_MB" -gt 250 ]; then
+            echo "##[error]Pacote descompactado com ${UNZIPPED_MB} MB excede o limite de 250 MB do Lambda."
+            exit 1
+          fi
+        displayName: 'Instalar dependências e empacotar'
+        env:
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+      - publish: $(Build.ArtifactStagingDirectory)/package
+        artifact: ${{ parameters.artifactName }}
+        displayName: 'Publicar artefato (${{ parameters.artifactName }})'

@@ -1,0 +1,115 @@
+parameters:
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-latest
+  - name: csprojPath
+    type: string
+  - name: dotnetVersion
+    type: string
+    default: '10.0.x'
+  - name: architecture
+    type: string
+    default: 'x86_64'
+    values:
+      - x86_64
+      - arm64
+  - name: nugetFeedUrl
+    type: string
+    default: 'https://pkgs.dev.azure.com/bancofibra/_packaging/FibraPackages/nuget/v3/index.json'
+  - name: packageName
+    type: string
+    default: '$(Build.Repository.Name)'
+  - name: artifactName
+    type: string
+    default: 'lambda-package'
+
+jobs:
+  - job: Build
+    displayName: 'Compilar .NET e empacotar Lambda (zip)'
+    pool: ${{ parameters.pool }}
+    variables:
+      ${{ if eq(parameters.architecture, 'arm64') }}:
+        LambdaRid: linux-arm64
+      ${{ else }}:
+        LambdaRid: linux-x64
+
+    steps:
+      - checkout: self
+        displayName: 'Checkout do repositório Git'
+
+      - task: UseDotNet@2
+        displayName: 'Instalar .NET ${{ parameters.dotnetVersion }}'
+        inputs:
+          version: ${{ parameters.dotnetVersion }}
+          includePreviewVersions: true
+
+      - task: NuGetAuthenticate@1
+        displayName: 'Autenticar no feed NuGet'
+
+      - script: |
+          set -euo pipefail
+          CSPROJ="$(Build.SourcesDirectory)/${{ parameters.csprojPath }}"
+          if [ ! -f "$CSPROJ" ]; then
+            echo "##[error]csproj não encontrado: '${{ parameters.csprojPath }}' (lambda.src_path no azure-pipelines.yml)."
+            exit 1
+          fi
+          PROJ_DIR="$(dirname "$CSPROJ")"
+          PUBLISH_DIR="$(Build.BinariesDirectory)/publish"
+          PACKAGE_DIR="$(Build.ArtifactStagingDirectory)/package"
+          ZIP="$PACKAGE_DIR/${{ parameters.packageName }}.zip"
+          RID="$(LambdaRid)"
+
+          # nuget.config do projeto vence; sem ele, um temporário com nuget.org + feed da empresa.
+          CONFIG_ARGS=()
+          if [ -f "$PROJ_DIR/nuget.config" ] || [ -f "$PROJ_DIR/NuGet.Config" ]; then
+            echo "##[section]Usando nuget.config do projeto."
+          else
+            CONFIG="$(Agent.TempDirectory)/nuget.config"
+            cat > "$CONFIG" <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="nuget.org"     value="https://api.nuget.org/v3/index.json" />
+              <add key="FibraPackages" value="${{ parameters.nugetFeedUrl }}" />
+            </packageSources>
+          </configuration>
+          EOF
+            CONFIG_ARGS=(--configfile "$CONFIG")
+          fi
+
+          echo "##[section]Projeto: $CSPROJ  (RID $RID, arquitetura ${{ parameters.architecture }})"
+          dotnet restore "$CSPROJ" --runtime "$RID" "${CONFIG_ARGS[@]}"
+          dotnet publish "$CSPROJ" \
+            --configuration Release \
+            --runtime "$RID" \
+            --self-contained false \
+            --no-restore \
+            --output "$PUBLISH_DIR"
+
+          mkdir -p "$PACKAGE_DIR"
+          (cd "$PUBLISH_DIR" && zip -r9 -q "$ZIP" .)
+
+          ZIP_MB=$(du -m "$ZIP" | cut -f1)
+          UNZIPPED_MB=$(du -sm "$PUBLISH_DIR" | cut -f1)
+          echo "##[section]Pacote: $ZIP (${ZIP_MB} MB zipado, ${UNZIPPED_MB} MB descompactado)"
+          # Limites da AWS: 50 MB no upload direto (é o que o Terraform faz via filename), 250 MB descompactado.
+          if [ "$ZIP_MB" -gt 50 ]; then
+            echo "##[error]Pacote com ${ZIP_MB} MB excede o limite de 50 MB de upload direto do Lambda. Reduza dependências (trim) — upload via S3 não é suportado por esta esteira."
+            exit 1
+          fi
+          if [ "$UNZIPPED_MB" -gt 250 ]; then
+            echo "##[error]Pacote descompactado com ${UNZIPPED_MB} MB excede o limite de 250 MB do Lambda."
+            exit 1
+          fi
+        displayName: 'Restore, publish e zip'
+        env:
+          NUGET_CERT_REVOCATION_MODE: no
+          DOTNET_NUGET_SIGNATURE_VERIFICATION: false
+          VSS_NUGET_EXTERNAL_FEED_ENDPOINTS: >
+            {"endpointCredentials":[{"endpoint":"${{ parameters.nugetFeedUrl }}","username":"build","password":"$(System.AccessToken)"}]}
+
+      - publish: $(Build.ArtifactStagingDirectory)/package
+        artifact: ${{ parameters.artifactName }}
+        displayName: 'Publicar artefato (${{ parameters.artifactName }})'

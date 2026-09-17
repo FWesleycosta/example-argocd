@@ -196,6 +196,73 @@ Deploy_<env> (stages/deploy-frontend.yaml → deploy-frontend.yaml):
   migrado para revisar imports e updates de convergência. O import **não** aposenta o state
   antigo nem adota recursos fora do root — procedimento na entrada `2.7.0` do `CHANGELOG.md`.
 
+## Stack de Lambda (`stacks/lambda.yaml`) — mesmo modelo, alvo AWS Lambda (.NET, Node.js, Python)
+
+Substitui o `azure-pipelines-infrastructure.yaml` legado (cópia em `legado /`, fora do git),
+cuja diferença central era **cada repositório de lambda carregar o próprio `terraform/`** e
+um `config/<app>.yaml` de onde a esteira gerava `terraform.auto.tfvars`. Aqui o app declara
+só dados (`lambda`, `resources`, `config`) e a infra é o root **`manifests/terraform-lambda/`**
+da plataforma (`4.0.0`). Mesmo roteamento por branch e mesmos stages reutilizados
+(`sonarqube/qa-sonar-dotnet.yaml`, `stages/veracode.yaml`, `utils/create-pullrequest.yaml`,
+`steps/terraform-apply.yaml`, `steps/record-prod-release.yaml`); o que muda é o motor:
+
+```
+SonarQube  ← lambda.runtime: dotnet* → qa-sonar-dotnet | nodejs* → qa-sonar-node | python* → qa-sonar-python (gate bloqueante nos três)
+Build      ← lambda.runtime: dotnet/build-lambda-dotnet (publish framework-dependent, RID de lambda.architecture)
+                             | node/build-lambda-node (npm ci → build → output_dir + node_modules --omit=dev, --os/--cpu)
+                             | python/build-lambda-python (pip --target --platform manylinux2014_<arch> --only-binary)
+             → <repo>.zip → artefato lambda-package (contrato único; Node/Python checam que o arquivo/módulo do handler existe no zip)
+Deploy_<env> (stages/deploy-lambda.yaml → deploy-lambda.yaml):
+  checkout self (infra/*.asl.json) + templates → steps/lambda-prepare.yaml (copia root, zip, ASL; _app.auto.tfvars.json;
+  valida nomes ≤ 64) → terraform-apply → verifica State/LastUpdateStatus de cada função (Summary)
+  → steps/lambda-smoke-test.yaml (invoca lambda.smoke_tests; FunctionError falha o stage; sem lista = warning)
+  → resolve-artifact-static (artifactKind: lambda) → record-prod-release   [prd completo / hml reduzido]
+```
+
+- **Runtime é dado**: `lambda.runtime` (default `dotnet10`) roteia Sonar e Build em compile-time
+  (`startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs'|'python')`); fora de
+  `dotnet|nodejs|python` o `Validate` falha. Versão da ferramenta deriva do runtime
+  (`replace(runtime, 'nodejs', '')` → `20.x`), override em `node_version`/`python_version`.
+  Sonar roda sempre na raiz do repo; `src_path` (`.` por default; csproj obrigatório no .NET)
+  só afeta o Build. Handler no formato do runtime: `Assembly::Tipo::Metodo` · `arquivo.export`
+  · `modulo.funcao`. Python arm64 exige wheels manylinux aarch64 (o agente não compila para arm).
+- **Um pacote, N funções**: `lambda.handlers` (`<chave>: <handler>`) vira
+  `<function_name_prefix>-<chave><suffix>` (prefixo default = nome do repositório). Todas
+  compartilham zip, role, sizing e env vars (`config.env_vars` + `config.env_vars_by_env.<env>`).
+- **`lambda` e `resources` são objetos com atributos `optional()` no Terraform**: chave omitida
+  usa o default (diferente do backend, onde objeto parcial substitui o default inteiro).
+  `config.*` omitido chega como `""` e é saneado para lista vazia nos locals.
+- **Recursos** (`resources`): `sqs` (+`dlq_queue_name`), `sns_topics`, `sns_sqs_subscriptions`,
+  `secrets`, `sqs_triggers`, `step_functions` (ASL em `infra/<definition_file>` do app,
+  `templatefile` com `lambda_arns`/`sns_arns`/`sqs_arns`/`sqs_urls`), `pipes` (SQS→SFN).
+  Nomes de fila/tópico são **lógicos**: o root aplica `sqs-<env>-<region>-<nome><suffix>`
+  (convenção do legado e do lookup do backend); referência a nome não declarado vira `data`
+  lookup (fila de outro app). Recursos além da função são nativos do provider — só a função
+  usa `Fibra.DevOps.Terraform//modules/aws_lambda_function` (cópia em `sandbox/`), o que
+  permite `terraform test` offline com override de `source` (README do root).
+- **IAM**: uma role por app, policy inline só com os recursos declarados; StartExecution em
+  state machines por padrão de ARN (evita ciclo função→SFN→definição→função).
+- **VPC** opcional: `subnetsPrivate`/`vpcId` dos `variables/env/*.yaml` (já existem nos 4;
+  hoje com placeholders). Vazio = função fora da VPC.
+- **Sandbox**: sufixo em função, role, SG, filas, tópicos, SFN e pipe; SSM/secrets por prefixo
+  de caminho (`ssm_secrets.tf`, mesma regra do `locals.tf` do backend). Destroy via `stages/destroy-sandbox-lambda.yaml`.
+- **Smoke test** (`steps/lambda-smoke-test.yaml`): `lambda.smoke_tests[] = { handler, payload,
+  environments? }`; roda em **todos** os ambientes, inclusive prd — payload tem de ser inócuo.
+  É a prova de que o código executa (`State/LastUpdateStatus` não provam). Falha = stage
+  vermelho com a versão nova já no ar.
+- **Datadog APM só em prd, só trace**: `stages/deploy-lambda.yaml` passa `datadog*` ao motor
+  **apenas** quando `environment == prd` (dev/hml/sdx nunca instrumentados — decisão de
+  produto, não default); o root Terraform adiciona layers (tracer do runtime + Extension, `-ARM`
+  em arm64) e `DD_*` via `AWS_LAMBDA_EXEC_WRAPPER=/opt/datadog_wrapper`, com logs e enhanced
+  metrics desligados. Valores em `variables/env/prd.yaml` (`datadogSite`,
+  `datadogApiKeySecretArn`, versões das layers por runtime) — **vazios hoje**: prd avisa e segue
+  sem instrumentação até preencher. Opt-out por app: `lambda.datadog_tracing: false`.
+- **Sem rollback** (`rollbackImageTag` não existe no stack): reverter = rodar a release anterior.
+- **Migração de lambda do legado**: state novo em `tfstate-<app>-<env>` com nomes iguais aos
+  antigos ⇒ conflito no 1º apply; usar `planOnly` e importar (não há step de import como no
+  frontend). Validação local: `terraform fmt/validate/test` em `manifests/terraform-lambda`
+  (TF ≥ 1.7 pelo `mock_provider`). Projeto de exemplo: `Workspaces/Lambda` (`lambda-validate`).
+
 ## Contratos que quebram silenciosamente
 
 - **O alias do repositório precisa ser `templates`.** `stages/deploy.yaml` faz

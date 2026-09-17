@@ -1,0 +1,110 @@
+# Smoke test pós-deploy de Lambda: invoca cada handler de lambda.smoke_tests com o payload
+# declarado e FALHA o job se a invocação retornar FunctionError (exceção não tratada, handler
+# inexistente, dependência que não carrega, timeout). Fecha o buraco do "deploy verde só porque a
+# função está Active": State/LastUpdateStatus não provam que o código executa.
+#
+# Contrato (lambda.smoke_tests, lista; ausente = warning, não bloqueia):
+#   - handler: <chave de lambda.handlers>        (obrigatório)
+#     payload: { ping: true }  ou  '{"ping":true}' (default {})
+#     environments: [dev, hml]                   (opcional; ausente = todos, inclusive prd)
+# O payload deve ser INÓCUO — roda também em produção. Não há rollback automático: falha aqui
+# deixa o stage vermelho com a versão nova já no ar (mesmo débito do rollout-verify do EKS).
+parameters:
+  - name: serviceAccount
+    type: string
+  - name: awsRegion
+    type: string
+  - name: environment
+    type: string
+  - name: lambda
+    type: object
+  - name: terraformWorkDir
+    type: string
+    default: '$(Pipeline.Workspace)/terraform'
+  - name: logTailLines
+    type: number
+    default: 30
+
+steps:
+  - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+    displayName: 'Smoke test (invocar handlers de lambda.smoke_tests)'
+    inputs:
+      awsCredentials: ${{ parameters.serviceAccount }}
+      regionName: ${{ parameters.awsRegion }}
+      scriptType: inline
+      inlineScript: |
+        set -euo pipefail
+        cd "${{ parameters.terraformWorkDir }}"
+        ENV="${{ parameters.environment }}"
+        TESTS_JSON='${{ convertToJson(parameters.lambda.smoke_tests) }}'
+
+        if [ -z "$TESTS_JSON" ] || [ "$TESTS_JSON" = "null" ] || [ "$TESTS_JSON" = '""' ] || [ "$(echo "$TESTS_JSON" | jq 'length')" = "0" ]; then
+          echo "##vso[task.logissue type=warning]lambda.smoke_tests não declarado: o deploy fica verde sem provar que a função executa. Declare ao menos um handler com payload inócuo."
+          exit 0
+        fi
+
+        NAMES_JSON=$(terraform output -json function_names)
+        SUMMARY="smoke-summary.md"
+        {
+          echo "## Smoke test — \`$ENV\` · build $(Build.BuildId)"
+          echo ""
+          echo "| Handler | Função | HTTP | FunctionError | Duração |"
+          echo "|---|---|---|---|---|"
+        } > "$SUMMARY"
+
+        FAIL=0; RAN=0
+        COUNT=$(echo "$TESTS_JSON" | jq 'length')
+        for i in $(seq 0 $((COUNT - 1))); do
+          T=$(echo "$TESTS_JSON" | jq ".[$i]")
+          HANDLER=$(echo "$T" | jq -r '.handler // empty')
+          if [ -z "$HANDLER" ]; then
+            echo "##[error]smoke_tests[$i]: 'handler' é obrigatório."; FAIL=1; continue
+          fi
+          # environments (opcional): pula fora da lista
+          if [ "$(echo "$T" | jq -r --arg e "$ENV" '(.environments // null) as $l | if $l == null or $l == "" then true else (($l | if type == "string" then [.] else . end) | map(tostring) | index($e) != null) end')" != "true" ]; then
+            echo "  $HANDLER: pulado (environments não inclui $ENV)"; continue
+          fi
+          FN=$(echo "$NAMES_JSON" | jq -r --arg h "$HANDLER" '.[$h] // empty')
+          if [ -z "$FN" ]; then
+            echo "##[error]smoke_tests[$i]: handler '$HANDLER' não existe em lambda.handlers ($(echo "$NAMES_JSON" | jq -r 'keys | join(", ")'))."; FAIL=1; continue
+          fi
+          PAYLOAD=$(echo "$T" | jq -c '.payload // {} | if type == "string" then (try fromjson catch .) else . end')
+
+          echo "##[section]Invocando $FN ($HANDLER) com payload $PAYLOAD"
+          START=$(date +%s%3N)
+          set +e
+          aws lambda invoke --function-name "$FN" --invocation-type RequestResponse --log-type Tail \
+            --cli-binary-format raw-in-base64-out --cli-read-timeout 900 \
+            --payload "$PAYLOAD" "out-$i.json" > "resp-$i.json" 2> "err-$i.txt"
+          RC=$?
+          set -e
+          DUR=$(( $(date +%s%3N) - START ))
+          RAN=$((RAN + 1))
+
+          if [ "$RC" -ne 0 ]; then
+            echo "##[error]$FN: a chamada 'aws lambda invoke' falhou (rc=$RC): $(head -c 400 "err-$i.txt")"
+            echo "| \`$HANDLER\` | \`$FN\` | - | invoke rc=$RC | ${DUR} ms |" >> "$SUMMARY"
+            FAIL=1; continue
+          fi
+          STATUS=$(jq -r '.StatusCode // "-"' "resp-$i.json")
+          FERR=$(jq -r '.FunctionError // empty' "resp-$i.json")
+          echo "| \`$HANDLER\` | \`$FN\` | $STATUS | ${FERR:-—} | ${DUR} ms |" >> "$SUMMARY"
+
+          if [ -n "$FERR" ] || [ "$STATUS" != "200" ]; then
+            echo "##[error]$FN: FunctionError=${FERR:-<nenhum>} StatusCode=$STATUS"
+            echo "##[group]Resposta (até 800 chars)"; head -c 800 "out-$i.json"; echo; echo "##[endgroup]"
+            echo "##[group]Log da execução (últimas ${{ parameters.logTailLines }} linhas)"
+            jq -r '.LogResult // empty' "resp-$i.json" | base64 -d 2>/dev/null | tail -n ${{ parameters.logTailLines }} || true
+            echo "##[endgroup]"
+            FAIL=1
+          else
+            echo "  ok: HTTP $STATUS em ${DUR} ms"
+          fi
+        done
+
+        echo "##vso[task.uploadsummary]${{ parameters.terraformWorkDir }}/$SUMMARY"
+        if [ "$FAIL" -ne 0 ]; then
+          echo "##[error]Smoke test falhou em $ENV. A versão nova JÁ ESTÁ NO AR — não há rollback automático (reverter = rodar a release anterior)."
+          exit 1
+        fi
+        echo "##[section]Smoke test ok: $RAN invocação(ões) em $ENV."

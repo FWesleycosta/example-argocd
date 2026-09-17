@@ -1,0 +1,12 @@
+project: Fibra.Produtos.CessaoCredito.FCT
+src_path: src/Fibra.Produtos.CessaoCredito.FCT/Fibra.Produtos.CessaoCredito.FCT.csproj
+
+
+defaults:
+  memory_size: 512
+  timeout: 30
+  tracing_config: PassThrough
+  runtime: dotnet10
+
+handlers:
+  calcular-valor-titulo: "Fibra.Produtos.CessaoCredito.FCT::Fibra.Produtos.CessaoCredito.FCT.Handlers.TitulosHandler::HelloWorldAsync"

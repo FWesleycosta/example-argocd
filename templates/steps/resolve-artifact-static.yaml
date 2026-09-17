@@ -13,6 +13,9 @@ parameters:
   - name: artifactTag
     type: string
     default: '$(Build.BuildId)'
+  - name: artifactKind          # static (SPA) | lambda (pacote zip) — rótulo no registro de release
+    type: string
+    default: 'static'
 
 steps:
   - bash: |
@@ -52,7 +55,7 @@ steps:
       echo "  Digest:       ${DIGEST:-<não resolvido>}  (excluindo: ${EXCLUDES:--})"
       [ -n "$SITE_URL" ] && echo "  Site:         $SITE_URL"
 
-      echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_KIND]static"
+      echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_KIND]${{ parameters.artifactKind }}"
       echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_TAG]$TAG"
       echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_URI]$LOCATION"
       echo "##vso[task.setvariable variable=RELEASE_ARTIFACT_DIGEST]$DIGEST"

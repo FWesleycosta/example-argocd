@@ -1,0 +1,115 @@
+# examples/azure-pipelines-lambda.yml
+# ============================================================================
+# COPIE este arquivo para a RAIZ do repositório da LAMBDA como `azure-pipelines.yml`.
+#
+# Antes (azure-pipelines-infrastructure.yaml legado): cada repositório de lambda carregava
+# config/<app>.yaml + terraform/ próprio (main.tf, variables.tf, ...) e a esteira gerava
+# terraform.auto.tfvars a partir do config. Agora: o app só declara DADOS aqui; o Terraform
+# vem da plataforma (manifests/terraform-lambda), pinado por tag. O que sobra no repositório
+# do app é código + infra/*.asl.json (definições de Step Functions, quando houver).
+#
+# Roteamento por branch (igual ao backend): develop -> dev · sandbox/* -> sdx · release/X.Y.Z ->
+# hml + Veracode (CI) e prd só por "Run pipeline" manual (gate de GMUD) · hotfix/* -> prd.
+# ============================================================================
+trigger:
+  batch: true
+  branches:
+    include:
+      - develop
+      - sandbox/*
+      - release/*
+      - hotfix/*
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Fibra.DevOps/Fibra.DevOps.Pipelines
+      ref: refs/tags/v4.0.0      # PINE numa TAG — nunca refs/heads/main (rollout controlado)
+
+extends:
+  template: templates/stacks/lambda.yaml@templates
+  parameters:
+    sistema: operacoes
+    owner: squad-boletador
+
+    # ---- função: um pacote zip, uma função por handler -------------------------------
+    lambda:
+      src_path: src/Fibra.Operacoes.Boletador.FCT/Fibra.Operacoes.Boletador.FCT.csproj
+      dotnet_version: '10.0.x'
+      runtime: dotnet10
+      architecture: x86_64            # RID do publish deriva daqui (linux-x64)
+      memory_size: 512
+      timeout: 600
+      tracing_config: PassThrough
+      # function_name_prefix: ''      # vazio = nome do repositório (<repo>-<handler>)
+      handlers:
+        iniciar-processamento: 'Fibra.Operacoes.Boletador.FCT::Fibra.Operacoes.Boletador.FCT.Handlers.IniciarProcessamentoHandler::ExecutarAsync'
+        salvar-sybase: 'Fibra.Operacoes.Boletador.FCT::Fibra.Operacoes.Boletador.FCT.Handlers.SalvarSybaseHandler::ExecutarAsync'
+        salvar-pg: 'Fibra.Operacoes.Boletador.FCT::Fibra.Operacoes.Boletador.FCT.Handlers.SalvarPgHandler::ExecutarAsync'
+        notificar-tesouraria: 'Fibra.Operacoes.Boletador.FCT::Fibra.Operacoes.Boletador.FCT.Handlers.NotificarTesourariaHandler::ExecutarAsync'
+      # Smoke test pós-deploy: a esteira invoca cada handler abaixo com o payload e FALHA o stage se
+      # houver FunctionError. Roda em todos os ambientes, inclusive prd — use um evento INÓCUO que o
+      # handler reconheça (ex.: {"ping": true} → responde sem efeito colateral). Sem esta lista, só warning.
+      smoke_tests:
+        - handler: iniciar-processamento
+          payload: { ping: true }
+          # environments: [dev, hml]    # opcional: restringe onde roda
+      # datadog_tracing: false          # opt-out do APM Datadog em prd (default: instrumentado, só trace)
+
+    # ---- recursos AWS (todas as chaves opcionais) ------------------------------------
+    # Nomes de fila/tópico são LÓGICOS: a esteira aplica sqs-<env>-<region>-<nome>[<suffix>].
+    resources:
+      sqs:
+        - queue_name: operacoes-boletador-salvar
+          dlq_queue_name: operacoes-boletador-salvar-dlq
+          max_receive_count: 3
+        - queue_name: operacoes-boletador-sacado-falha
+      sns_topics:
+        - topic_name: operacoes-boletador-salvar-resultado
+      # ASL em infra/<definition_file> do repositório do app; dentro dele use
+      # ${lambda_arns["<handler>"]}, ${sns_arns["<topic_name>"]}, ${sqs_arns["<queue_name>"]}.
+      step_functions:
+        - name: boleto-salvar
+          definition_file: sf-boleto-salvar-workflow.asl.json
+      pipes:
+        - name: boleto-salvar
+          source_queue: operacoes-boletador-salvar
+          target_step_function: boleto-salvar
+          batch_size: 1
+      # sqs_triggers:                 # SQS -> função direto (sem step function)
+      #   - handler: notificar-tesouraria
+      #     queue_name: fila-de-outro-app   # não declarada acima => lookup por nome
+      # secrets:
+      #   - name: operacoes/boletador/fct
+      #     keys: [SybaseConnectionString]
+
+    config:
+      env_vars:
+        - name: DOTNET_ENVIRONMENT
+          value: Production
+      env_vars_by_env:
+        dev:
+          - name: DOTNET_ENVIRONMENT
+            value: Development
+        hml:
+          - name: DOTNET_ENVIRONMENT
+            value: Staging
+        prd: []
+      # SSM por ambiente — a esteira seleciona automaticamente o do ambiente certo
+      ssm_parameters:
+        dev:
+          - name: /Operacoes/Boletador/FCT/SybaseEnabled
+            value: 'true'
+          - name: /Operacoes/Boletador/FCT/Titulo/TamanhoPaginaTitulos
+            value: '500'
+        hml:
+          - name: /Operacoes/Boletador/FCT/SybaseEnabled
+            value: 'true'
+          - name: /Operacoes/Boletador/FCT/Titulo/TamanhoPaginaTitulos
+            value: '1000'
+        prd:
+          - name: /Operacoes/Boletador/FCT/SybaseEnabled
+            value: 'true'
+          - name: /Operacoes/Boletador/FCT/Titulo/TamanhoPaginaTitulos
+            value: '1000'

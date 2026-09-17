@@ -1,0 +1,115 @@
+parameters:
+  - name: environment
+    type: string
+  - name: dependsOn
+    type: object
+    default: [Build]
+  - name: condition
+    type: string
+    default: succeeded()
+  - name: lambda
+    type: object
+  - name: resources
+    type: object
+    default: {}
+  - name: env_vars
+    type: object
+    default: []
+  - name: env_vars_env
+    type: object
+    default: []
+  - name: ssm_parameters
+    type: object
+    default: []
+  - name: sistema
+    type: string
+    default: ''
+  - name: owner
+    type: string
+    default: ''
+  - name: resourceSuffix
+    type: string
+    default: ''
+  - name: artifactName
+    type: string
+    default: 'lambda-package'
+  - name: planOnly
+    type: boolean
+    default: false
+
+stages:
+  - stage: Deploy_${{ parameters.environment }}
+    displayName: 'Deploy ${{ parameters.environment }}'
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.condition }}
+    jobs:
+      - deployment: deploy
+        displayName: 'Deploy ${{ parameters.environment }}'
+        environment: ${{ parameters.environment }}
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          - template: ../variables/env/${{ parameters.environment }}.yaml
+            parameters:
+              resourceSuffix: ${{ parameters.resourceSuffix }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                # O repo do app é necessário no deploy pelos ASL das step functions (infra/*.asl.json).
+                - checkout: self
+                  path: s/app
+                - checkout: templates
+                  persistCredentials: true
+                  path: s/templates
+
+                - download: current
+                  artifact: ${{ parameters.artifactName }}
+                  displayName: 'Baixar artefato ${{ parameters.artifactName }}'
+
+                - template: ../infra/setup-git-auth.yaml
+
+                - template: ../deploy-lambda.yaml
+                  parameters:
+                    environment: ${{ parameters.environment }}
+                    resourceSuffix: ${{ variables.resourceSuffix }}
+                    sistema: ${{ parameters.sistema }}
+                    owner: ${{ parameters.owner }}
+                    serviceAccount: ${{ variables.serviceAccount }}
+                    awsRegion: ${{ variables.awsRegion }}
+                    subnetsPrivate: ${{ variables.subnetsPrivate }}
+                    vpcId: ${{ variables.vpcId }}
+                    lambda: ${{ parameters.lambda }}
+                    resources: ${{ parameters.resources }}
+                    env_vars: ${{ parameters.env_vars }}
+                    env_vars_env: ${{ parameters.env_vars_env }}
+                    ssm_parameters: ${{ parameters.ssm_parameters }}
+                    packageDir: '$(Pipeline.Workspace)/${{ parameters.artifactName }}'
+                    planOnly: ${{ parameters.planOnly }}
+                    # Datadog APM só em prd (política: dev/hml/sdx nunca instrumentados). Opt-out do
+                    # app: lambda.datadog_tracing: false. Tracer escolhido pelo runtime.
+                    ${{ if and(eq(parameters.environment, 'prd'), ne(parameters.lambda.datadog_tracing, false)) }}:
+                      datadogTracing: true
+                      datadogSite: ${{ variables.datadogSite }}
+                      datadogApiKeySecretArn: ${{ variables.datadogApiKeySecretArn }}
+                      datadogExtensionLayerVersion: ${{ variables.datadogExtensionLayerVersion }}
+                      ${{ if startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'nodejs') }}:
+                        datadogTracerLayerVersion: ${{ variables.datadogTracerLayerVersionNode }}
+                      ${{ elseif startsWith(coalesce(parameters.lambda.runtime, 'dotnet10'), 'python') }}:
+                        datadogTracerLayerVersion: ${{ variables.datadogTracerLayerVersionPython }}
+                      ${{ else }}:
+                        datadogTracerLayerVersion: ${{ variables.datadogTracerLayerVersionDotnet }}
+
+                - ${{ if and(in(parameters.environment, 'prd', 'hml'), eq(parameters.planOnly, false)) }}:
+                    - template: ../steps/resolve-artifact-static.yaml
+                      parameters:
+                        artifactKind: lambda
+                        artifactPath: '$(Pipeline.Workspace)/${{ parameters.artifactName }}'
+                        artifactLocation: '$(LAMBDA_ARTIFACT_URI)'
+                    - template: ../steps/record-prod-release.yaml
+                      parameters:
+                        environment: ${{ parameters.environment }}
+                        ${{ if ne(parameters.environment, 'prd') }}:
+                          stampRun: false
+                          captureApproval: false
+                          artifactName: 'hml-release'

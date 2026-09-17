@@ -1,0 +1,24 @@
+{
+  "Comment": "Fixture de teste: exercita as variáveis expostas ao templatefile.",
+  "StartAt": "Processar",
+  "States": {
+    "Processar": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${lambda_arns["processar"]}",
+        "Payload.$": "$"
+      },
+      "Next": "Notificar"
+    },
+    "Notificar": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${sns_arns["resultado"]}",
+        "Message.$": "$"
+      },
+      "End": true
+    }
+  }
+}
