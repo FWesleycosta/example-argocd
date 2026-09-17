@@ -308,7 +308,7 @@ run "datadog_tracing_em_prd_dotnet" {
     error_message = "As env vars do app continuam presentes ao lado das DD_*."
   }
   assert {
-    condition     = anytrue([for s in local.lambda_policy_statements : s.sid == "DatadogApiKey" && s.resources == ["arn:aws:secretsmanager:us-east-2:123456789012:secret:datadog/api-key-AbCdEf"]])
+    condition     = anytrue([for s in local.lambda_policy_statements : s.sid == "DatadogApiKey" && s.resources == tolist(["arn:aws:secretsmanager:us-east-2:123456789012:secret:datadog/api-key-AbCdEf"])])
     error_message = "A role precisa de GetSecretValue restrito ao segredo da API key."
   }
 }
@@ -323,6 +323,7 @@ run "datadog_node_arm64" {
       architecture = "arm64"
       handlers     = { enviar = "handlers/enviar.handler" }
     }
+    resources = {} # os recursos do arquivo apontam para os handlers processar/notificar
     datadog = {
       enabled                 = true
       site                    = "datadoghq.com"
@@ -354,6 +355,7 @@ run "datadog_python" {
       runtime  = "python3.12"
       handlers = { conciliar = "src.handlers.conciliar.handler" }
     }
+    resources = {} # os recursos do arquivo apontam para os handlers processar/notificar
     datadog = {
       enabled                 = true
       site                    = "datadoghq.com"
