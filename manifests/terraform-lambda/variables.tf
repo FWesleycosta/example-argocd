@@ -42,7 +42,8 @@ variable "environment" {
 }
 
 variable "aws_region" {
-  type = string
+  description = "Região AWS do ambiente (variables/env/<env>.yaml: awsRegion). Entra no nome de filas/tópicos e nos ARNs das layers Datadog."
+  type        = string
 }
 
 variable "resource_suffix" {
@@ -134,8 +135,9 @@ variable "lambda" {
   }
 }
 
-# As três listas abaixo são `any` de propósito: quando o app omite a chave em `config`, o Azure
-# DevOps entrega "" (e não null), e uma lista tipada rejeitaria. Os locals saneiam para [].
+########################################
+# Datadog APM — só o stage de prd envia (stages/deploy-lambda.yaml)
+########################################
 
 variable "release_version" {
   description = "Build.BuildId da esteira. Vira DD_VERSION quando o tracing Datadog está habilitado."
@@ -168,6 +170,13 @@ variable "datadog" {
     error_message = "datadog.enabled exige site, api_key_secret_arn (ARN do Secrets Manager) e versões > 0 das layers Extension e do tracer do runtime (variables/env/prd.yaml: datadogSite, datadogApiKeySecretArn, datadogExtensionLayerVersion, datadogTracerLayerVersion{Dotnet,Node,Python})."
   }
 }
+
+########################################
+# `config` — env vars e SSM
+########################################
+
+# As três listas abaixo são `any` de propósito: quando o app omite a chave em `config`, o Azure
+# DevOps entrega "" (e não null), e uma lista tipada rejeitaria. Os locals saneiam para [].
 
 variable "environment_variables_common" {
   description = "Env vars iguais nos três ambientes (config.env_vars): lista de {name, value}."

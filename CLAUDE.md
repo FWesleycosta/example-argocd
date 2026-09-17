@@ -245,7 +245,7 @@ Deploy_<env> (stages/deploy-lambda.yaml → deploy-lambda.yaml):
 - **VPC** opcional: `subnetsPrivate`/`vpcId` dos `variables/env/*.yaml` (já existem nos 4;
   hoje com placeholders). Vazio = função fora da VPC.
 - **Sandbox**: sufixo em função, role, SG, filas, tópicos, SFN e pipe; SSM/secrets por prefixo
-  de caminho (mesmo `locals` do backend). Destroy via `stages/destroy-sandbox-lambda.yaml`.
+  de caminho (`ssm_secrets.tf`, mesma regra do `locals.tf` do backend). Destroy via `stages/destroy-sandbox-lambda.yaml`.
 - **Smoke test** (`steps/lambda-smoke-test.yaml`): `lambda.smoke_tests[] = { handler, payload,
   environments? }`; roda em **todos** os ambientes, inclusive prd — payload tem de ser inócuo.
   É a prova de que o código executa (`State/LastUpdateStatus` não provam). Falha = stage

@@ -54,12 +54,31 @@ ser validável offline; a convenção de nomes é a do legado e a que o backend 
 Referência a fila/tópico **não** declarado em `resources` vira lookup por nome
 (`sqs-<env>-<region>-<nome>`, sem sufixo) — é como uma lambda consome a fila de outro app.
 
+## Organização dos arquivos
+
+Um arquivo por domínio, cada um com os próprios `locals` no topo — para mexer num recurso,
+basta abrir o arquivo dele:
+
+| Arquivo | Conteúdo |
+|---|---|
+| `lambda.tf` | nomes das funções, VPC/security group, env vars, `module "lambda"` |
+| `datadog.tf` | só `locals`: layers e `DD_*` (consumidos por `lambda.tf` e `iam.tf`) |
+| `iam.tf` | role das funções, policy inline e as guardas (`precondition`) do root |
+| `ssm_secrets.tf` | SSM Parameters e secrets, com o prefixo de caminho do sandbox |
+| `messaging.tf` | SQS/DLQ, SNS, assinaturas + policy da fila, lookups externos, triggers |
+| `step_functions.tf` | state machines e pipes, cada um com sua role |
+| `locals.tf` | só o transversal: `suffix` e `tags` |
+| `variables.tf` · `outputs.tf` · `providers.tf` · `versions.tf` | contrato e provider |
+
+`ssm_secrets.tf` e `messaging.tf` **espelham** regras de `manifests/terraform/locals.tf`
+(convenção de nomes, prefixo `/sdx/`). Não há módulo compartilhado: mudou num root, mude no outro.
+
 ## Contrato com a esteira
 
 | Origem | Variáveis |
 |---|---|
 | `_app.auto.tfvars.json` (gerado) | `app_name`, `project_name`, `function_name_prefix`, `package_file` |
-| `_pipeline.auto.tfvars.json` (`deploy-lambda.yaml`) | `environment`, `aws_region`, `resource_suffix`, `sistema`, `owner`, `subnet_ids_csv`, `vpc_id`, `lambda`, `resources`, `environment_variables_common`, `environment_variables_env`, `ssm_parameters` |
+| `_pipeline.auto.tfvars.json` (`deploy-lambda.yaml`) | `environment`, `aws_region`, `resource_suffix`, `sistema`, `owner`, `subnet_ids_csv`, `vpc_id`, `lambda`, `resources`, `environment_variables_common`, `environment_variables_env`, `ssm_parameters`, `release_version`, `datadog` (só prd) |
 | copiado do repo do app | `definitions/*.asl.json` (de `infra/`) |
 | outputs lidos pelo motor | `function_names`, `function_arns`, `state_machine_arns` |
 
@@ -85,7 +104,7 @@ Exemplo em `tests/fixtures/exemplo.asl.json`.
 
 O `init` clona o módulo do repositório privado (na esteira, `templates/infra/setup-git-auth.yaml`
 configura o `GIT_PAT` antes). Para validar **local** sem acesso ao remoto, use um override
-(ignorado pelo git — `**/*override.tf`) trocando o `source` pela cópia do `sandbox/`:
+(ignorado pelo git — `**/*_override.tf`) trocando o `source` pela cópia do `sandbox/`:
 
 ```hcl
 # zz_source_override.tf (NÃO versionar)
