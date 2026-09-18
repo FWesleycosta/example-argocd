@@ -165,7 +165,7 @@ variable "topic_name" {
 
 
 variable "sns_sqs_subscriptions" {
-  description = "Assinaturas que ligam um tópico SNS (topic_name) a uma fila SQS (queue_name), ambos declarados em topic_name/queue_name."
+  description = "Assinaturas SNS -> SQS. topic_name/queue_name declarados em sns_topics/sqs são os gerenciados por este stack; qualquer outro nome é tratado como recurso externo e buscado pelo nome LITERAL na AWS (sem prefixo/sufixo automático; inclua \".fifo\" se for FIFO)."
   type = list(object({
     topic_name          = string
     queue_name          = string

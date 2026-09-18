@@ -37,25 +37,15 @@ locals {
     } if q.dlq_queue_name != ""
   }
 
-  sns_name_prefix = "sns-${var.environment}-${data.aws_region.current.name}"
-  sqs_name_prefix = "sqs-${var.environment}-${data.aws_region.current.name}"
-
-  subscriptions = [
-    for s in var.sns_sqs_subscriptions : merge(s, {
-      topic_full_name = "${local.sns_name_prefix}-${s.topic_name}"
-      queue_full_name = "${local.sqs_name_prefix}-${s.queue_name}"
-    })
-  ]
-
   managed_topic_names = toset(keys(local.sns_topics))
   managed_queue_names = toset(keys(local.sqs_queues))
 
   external_topic_names = toset([
-    for s in local.subscriptions : s.topic_name
+    for s in var.sns_sqs_subscriptions : s.topic_name
     if !contains(local.managed_topic_names, s.topic_name)
   ])
   external_queue_names = toset([
-    for s in local.subscriptions : s.queue_name
+    for s in var.sns_sqs_subscriptions : s.queue_name
     if !contains(local.managed_queue_names, s.queue_name)
   ])
 
@@ -67,6 +57,8 @@ locals {
     { for name, mod in module.aws_sqs_queue : name => mod.queue_arn },
     { for name, d in data.aws_sqs_queue.existing : name => d.arn },
   )
+
+
   queue_urls = merge(
     { for name, mod in module.aws_sqs_queue : name => mod.queue_url },
     { for name, d in data.aws_sqs_queue.existing : name => d.url },
