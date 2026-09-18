@@ -186,6 +186,45 @@ flowchart TD
 
  ---
 
+## [4.0.0] - 2026-09-18
+
+**MAJOR** — o lookup de tópico SNS/fila SQS **externos** em `sns_sqs_subscriptions` deixa de
+prefixar `sns|sqs-<ambiente>-<região>-` e passa a buscar pelo **nome literal** declarado.
+Fecha a inconsistência deixada pela `3.0.0`: recursos gerenciados já nasciam sem prefixo
+(`<nome>${resource_suffix}`), mas o data source continuava procurando
+`sns-<env>-<região>-<nome>` — um app não conseguia assinar o tópico criado por **outro app**
+da esteira (`reading SNS Topic (sns-hml-us-east-2-...): empty result` no `terraform plan`).
+
+### Alterado (breaking)
+
+- **`manifests/terraform/datasource.tf`**: `data.aws_sns_topic.existing` e
+  `data.aws_sqs_queue.existing` usam `name = each.value` (o `topic_name`/`queue_name` da
+  subscription, como está). Nenhum prefixo, `resource_suffix` ou `.fifo` é acrescentado — o
+  recurso é de outro dono, o nome é o real da AWS.
+- **`manifests/terraform/locals.tf`**: removidos `sns_name_prefix`, `sqs_name_prefix` e
+  `local.subscriptions` (`topic_full_name`/`queue_full_name` não eram consumidos);
+  `external_topic_names`/`external_queue_names` derivam de `var.sns_sqs_subscriptions`.
+  Com isso some também o `data.aws_region.current` (e o warning `attribute "name" is deprecated`
+  que ele gerava neste root).
+- Sem mudança de parâmetros em `stacks/*`/`deploy-backend.yaml`; o breaking é de **semântica**
+  do valor de `topic_name`/`queue_name` quando o recurso é externo.
+
+### Notas de adoção
+
+- **Quem quebra**: app que assina tópico/fila externo **legado** (nome real com prefixo) e
+  declara o nome curto. Ao subir para `4.0.0`, troque pelo nome completo:
+  `topic_name: "orders"` → `topic_name: "sns-prd-us-east-1-orders"` (FIFO: inclua `.fifo`).
+  Sem o ajuste, o `plan` falha com `empty result` — falha segura, nada é destruído.
+- A chave do `for_each` de `module.aws_sns_sqs_subscription` é `"<topic_name>-<queue_name>"`:
+  renomear o `topic_name` muda o endereço no state e o Terraform **recria a subscription**
+  (destroy + create; janela de segundos sem entrega para aquela fila). Revise o plano.
+- Subscription entre recursos **gerenciados pelo mesmo app** (declarados em
+  `sns_topics`/`sqs`) não muda: continua resolvida pelo nome curto via módulo.
+- `sdx`: recurso externo não recebe `resource_suffix`; para assinar o tópico de outro sandbox,
+  declare o nome já com o sufixo (`orders-sdx`).
+
+---
+
 ## [3.9.0] - 2026-09-11
 
 Defaults TLS mais novos na API Gateway privada e no CloudFront da SPA.
